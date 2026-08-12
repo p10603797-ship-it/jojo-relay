@@ -1,0 +1,27 @@
+# Render Blueprint for the BENEDICT LASO VS JOJO THE DESTROYER relay.
+# This copy is FLAT (relay.js sits next to it in the repo root), so no rootDir.
+# Render reads this file automatically when you deploy the repo as a Blueprint.
+services:
+  - type: web
+    name: benedict-laso-relay
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install --omit=dev
+    startCommand: node relay.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Render injects PORT itself; relay.js reads it.
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: MAX_ROOMS
+        value: "500"
+      - key: MAX_CONNS_PER_IP
+        value: "16"
+      - key: ORIGIN_ALLOWLIST
+        value: ""
