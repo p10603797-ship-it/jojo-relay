@@ -1,0 +1,32 @@
+{
+  "name": "benedict-laso-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dumb WebSocket relay for BENEDICT LASO VS JOJO THE DESTROYER - rooms, join codes and byte forwarding. No game logic.",
+  "license": "MIT",
+  "type": "module",
+  "main": "relay.js",
+  "exports": "./relay.js",
+  "files": [
+    "relay.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node relay.js",
+    "dev": "node --watch relay.js",
+    "health": "node -e \"const p=process.env.PORT||8787;fetch('http://127.0.0.1:'+p+'/health').then(r=>r.text()).then(t=>process.stdout.write(t+'\\n')).catch(e=>{process.stderr.write(String(e.message)+'\\n');process.exit(1);})\""
+  },
+  "keywords": [
+    "websocket",
+    "relay",
+    "game",
+    "coop",
+    "netcode"
+  ],
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
