@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sideload</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A self-hosted over-the-air install portal for signed iOS/iPadOS apps. Works on iPad in Safari with nothing else installed.">
+<meta name="theme-color" content="#12100f">
+<meta name="color-scheme" content="dark">
+<!-- Add-to-home-screen / standalone PWA on iPad -->
+<link rel="manifest" href="app.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sideload">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png" sizes="180x180" type="image/png">
+<style>
+  :root{
+    --bg:#12100f; --bg2:#1a1613; --card:#1e1a18; --card2:#23201d;
+    --line:#332d28; --line2:#433a33;
+    --ink:#f4e9dd; --ink-dim:#b7a99b; --muted:#8d8378;
+    --accent:#e2725b; --accent2:#d2601a; --accent-ink:#1a0f0a;
+    --good:#7fb77e; --bad:#e06a5a; --warn:#e0b15a;
+    --radius:16px; --radius-sm:11px;
+    --tap:48px;
+    --safe-t:env(safe-area-inset-top,0px); --safe-b:env(safe-area-inset-bottom,0px);
+    --safe-l:env(safe-area-inset-left,0px); --safe-r:env(safe-area-inset-right,0px);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:radial-gradient(130% 100% at 50% 0,#1b1613 0,var(--bg) 60%) fixed;
+    color:var(--ink);
+    font:17px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;
+    padding:calc(var(--safe-t) + 18px) calc(var(--safe-r) + 16px) calc(var(--safe-b) + 40px) calc(var(--safe-l) + 16px);
+    -webkit-font-smoothing:antialiased;
+    overscroll-behavior-y:contain;
+  }
+  .wrap{max-width:860px;margin:0 auto}
+  header.top{display:flex;align-items:center;gap:14px;margin:4px 2px 22px}
+  header.top .mark{width:52px;height:52px;border-radius:13px;flex:none;box-shadow:0 2px 12px #0008}
+  header.top h1{font-size:1.5rem;letter-spacing:.14em;margin:0;font-weight:700}
+  header.top p{margin:2px 0 0;color:var(--muted);font-size:.92rem;letter-spacing:.02em}
+
+  .card{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);
+    border-radius:var(--radius);padding:18px;margin:0 0 18px;box-shadow:0 1px 0 #ffffff07 inset,0 10px 30px -22px #000}
+  .card h2{margin:0 0 14px;font-size:1.02rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+  .card h2 .sub{display:block;text-transform:none;letter-spacing:0;color:var(--muted);font-size:.82rem;font-weight:400;margin-top:3px}
+
+  label{display:block;margin:0 0 13px}
+  label .lab{display:block;font-size:.82rem;color:var(--ink-dim);letter-spacing:.03em;margin:0 0 5px}
+  label .lab .opt{color:var(--muted);font-weight:400}
+  input[type=text],input[type=url],textarea{
+    width:100%;min-height:var(--tap);padding:11px 13px;background:#140f0d;color:var(--ink);
+    border:1px solid var(--line2);border-radius:var(--radius-sm);font:inherit;font-size:16px;
+    -webkit-appearance:none;appearance:none;transition:border-color .15s,box-shadow .15s}
+  input:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px #e2725b33}
+  input::placeholder{color:#6f655c}
+  textarea{min-height:120px;resize:vertical;line-height:1.45;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+  @media (max-width:560px){.row2{grid-template-columns:1fr}}
+
+  .btns{display:flex;flex-wrap:wrap;gap:10px}
+  button,.btn{font:inherit;font-weight:600;border-radius:var(--radius-sm);min-height:var(--tap);
+    padding:0 18px;border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;
+    justify-content:center;gap:8px;letter-spacing:.02em;-webkit-tap-highlight-color:transparent;
+    touch-action:manipulation;text-decoration:none;transition:transform .06s,filter .15s,background .15s}
+  button:active,.btn:active{transform:scale(.97)}
+  .btn-primary{background:linear-gradient(180deg,var(--accent),var(--accent2));color:var(--accent-ink)}
+  .btn-primary:hover{filter:brightness(1.06)}
+  .btn-ghost{background:#2a2420;color:var(--ink);border-color:var(--line2)}
+  .btn-ghost:hover{background:#322b26}
+  .btn-sm{min-height:42px;padding:0 14px;font-size:.9rem}
+  .btn-danger{background:#2a1a17;color:#f0a99c;border-color:#4a2a24}
+  .btn-wide{width:100%}
+  button[disabled],.btn[disabled]{opacity:.45;pointer-events:none}
+
+  .field-err{color:var(--bad);font-size:.82rem;margin:-7px 0 12px;min-height:1px}
+
+  /* Library */
+  .lib{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:16px}
+  .app{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);
+    border-radius:var(--radius);padding:16px;display:flex;flex-direction:column;gap:12px}
+  .app .head{display:flex;gap:13px;align-items:center;min-width:0}
+  .app .icon{width:60px;height:60px;border-radius:14px;flex:none;background:#140f0d;border:1px solid var(--line2);
+    object-fit:cover;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:1.6rem;overflow:hidden}
+  .app .meta{min-width:0;flex:1}
+  .app .name{font-weight:700;font-size:1.06rem;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .app .bid{color:var(--muted);font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    font-family:ui-monospace,Menlo,monospace}
+  .app .ver{display:inline-block;margin-top:4px;font-size:.74rem;color:var(--ink-dim);background:#140f0d;
+    border:1px solid var(--line2);border-radius:999px;padding:1px 9px}
+  .app .acts{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;margin-top:auto}
+  .app .acts .btn-sm.icononly{padding:0;width:42px}
+
+  .empty{text-align:center;color:var(--muted);padding:34px 10px;border:1px dashed var(--line2);border-radius:var(--radius)}
+  .empty b{display:block;color:var(--ink-dim);margin-bottom:6px;font-size:1.02rem}
+
+  .bar{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;margin:0 2px 14px}
+  .bar .count{color:var(--muted);font-size:.9rem}
+  .bar .tools{display:flex;gap:8px;flex-wrap:wrap}
+
+  /* Pending / shared-install banner */
+  .pending{border-color:var(--accent);background:linear-gradient(180deg,#2a1d18,#20160f)}
+  .pending h2{color:var(--accent)}
+  .pending .note{color:var(--ink-dim);font-size:.88rem;margin:0 0 14px}
+
+  /* Accordion help */
+  details.help{background:var(--bg2);border:1px solid var(--line);border-radius:var(--radius);
+    padding:0;margin:0 0 18px;overflow:hidden}
+  details.help>summary{list-style:none;cursor:pointer;padding:16px 18px;font-weight:600;letter-spacing:.04em;
+    display:flex;align-items:center;gap:10px;min-height:var(--tap)}
+  details.help>summary::-webkit-details-marker{display:none}
+  details.help>summary .chev{margin-left:auto;color:var(--muted);transition:transform .2s}
+  details.help[open]>summary .chev{transform:rotate(90deg)}
+  details.help .body{padding:0 18px 18px;color:var(--ink-dim);font-size:.94rem}
+  details.help .body h3{color:var(--ink);font-size:.95rem;margin:16px 0 6px;letter-spacing:.02em}
+  details.help .body ol,details.help .body ul{margin:8px 0;padding-left:22px}
+  details.help .body li{margin:5px 0}
+  details.help .body code{background:#140f0d;border:1px solid var(--line2);border-radius:5px;padding:1px 6px;
+    font-family:ui-monospace,Menlo,monospace;font-size:.86em;color:var(--accent2);word-break:break-word}
+  details.help .body a{color:var(--accent)}
+  .callout{border-left:3px solid var(--accent);background:#ffffff06;padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0}
+  .callout.warn{border-left-color:var(--warn)}
+
+  /* Settings + dialog */
+  dialog{border:1px solid var(--line2);background:var(--card);color:var(--ink);border-radius:var(--radius);
+    padding:20px;max-width:min(560px,92vw);width:100%}
+  dialog::backdrop{background:#000a;backdrop-filter:blur(2px)}
+  dialog h2{margin-top:0}
+  .dlg-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
+
+  /* Toast */
+  #toast{position:fixed;left:50%;bottom:calc(var(--safe-b) + 22px);transform:translateX(-50%) translateY(20px);
+    background:#000d;color:#fff;border:1px solid var(--line2);padding:11px 18px;border-radius:999px;
+    font-size:.9rem;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:50;max-width:90vw}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  footer{color:var(--muted);font-size:.8rem;text-align:center;margin-top:26px;line-height:1.7}
+  footer a{color:var(--accent2)}
+  .https-warn{display:none;background:#2a1a17;border:1px solid #4a2a24;color:#f0a99c;border-radius:var(--radius);
+    padding:12px 16px;margin:0 0 18px;font-size:.9rem}
+  .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <img class="mark" src="icon-180.png" alt="" width="52" height="52">
+    <div>
+      <h1>SIDELOAD</h1>
+      <p>Install your signed apps straight from Safari &mdash; no computer, no cables.</p>
+    </div>
+  </header>
+
+  <div class="https-warn" id="httpsWarn">
+    This page is not being served over <b>HTTPS</b>. iOS will refuse over-the-air installs unless both this
+    page and the app files are on <code>https://</code>. Open the hosted URL instead of a local file.
+  </div>
+
+  <!-- Shared / deep-link install lands here -->
+  <section class="card pending" id="pending" hidden>
+    <h2>Ready to install</h2>
+    <p class="note" id="pendingNote"></p>
+    <div class="app" id="pendingApp" style="border:0;padding:0;background:none"></div>
+    <div class="btns" style="margin-top:14px">
+      <a class="btn btn-primary btn-wide" id="pendingInstall" href="#">⬇&nbsp; Install now</a>
+    </div>
+    <div class="btns" style="margin-top:10px">
+      <button class="btn-ghost" id="pendingSave" type="button">Save to library</button>
+      <button class="btn-ghost" id="pendingDismiss" type="button">Dismiss</button>
+    </div>
+  </section>
+
+  <!-- Add an app -->
+  <section class="card">
+    <h2>Add an app
+      <span class="sub">Point to a signed <code>.ipa</code> hosted over HTTPS. Everything stays on this iPad.</span>
+    </h2>
+    <form id="addForm" novalidate>
+      <label>
+        <span class="lab">App name</span>
+        <input type="text" id="f-name" placeholder="My App" autocomplete="off" autocapitalize="words" maxlength="80">
+      </label>
+      <label>
+        <span class="lab">.ipa URL <span class="opt">— must start with https://</span></span>
+        <input type="url" id="f-ipa" placeholder="https://example.com/MyApp.ipa" inputmode="url"
+               autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      </label>
+      <div class="field-err" id="err-ipa"></div>
+      <div class="row2">
+        <label>
+          <span class="lab">Bundle identifier</span>
+          <input type="text" id="f-bundle" placeholder="com.example.myapp" autocomplete="off"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="155">
+        </label>
+        <label>
+          <span class="lab">Version</span>
+          <input type="text" id="f-version" placeholder="1.0.0" autocomplete="off"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40">
+        </label>
+      </div>
+      <label>
+        <span class="lab">Icon URL <span class="opt">— optional, https PNG</span></span>
+        <input type="url" id="f-icon" placeholder="https://example.com/icon.png" inputmode="url"
+               autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      </label>
+      <div class="btns" style="margin-top:4px">
+        <button class="btn-primary" type="submit" id="addBtn">Save to library</button>
+        <button class="btn-ghost" type="button" id="installDirect">Save &amp; install</button>
+        <button class="btn-ghost" type="reset">Clear</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Library -->
+  <section>
+    <div class="bar">
+      <span class="count" id="count">0 apps</span>
+      <div class="tools">
+        <button class="btn-ghost btn-sm" type="button" id="importBtn">Import / Export</button>
+        <button class="btn-ghost btn-sm" type="button" id="settingsBtn">Settings</button>
+      </div>
+    </div>
+    <div class="lib" id="lib"></div>
+    <div class="empty" id="empty">
+      <b>Your library is empty</b>
+      Add a signed app above, then tap <b>Install</b> to send it to this iPad over the air.
+    </div>
+  </section>
+
+  <!-- Honest help -->
+  <details class="help">
+    <summary>How this works &amp; what you need <span class="chev">›</span></summary>
+    <div class="body">
+      <p>This portal uses Apple's official <b>over-the-air (OTA) install</b> mechanism &mdash; the same
+      <code>itms-services://</code> + <code>manifest.plist</code> flow used for ad-hoc and in-house app
+      distribution. It makes <i>distribution</i> one tap. It does <b>not</b> bypass Apple's code-signing:
+      an app will only install if it is properly signed and authorised for your device.</p>
+
+      <h3>You need, before an install will succeed</h3>
+      <ol>
+        <li>A <b>signed <code>.ipa</code></b>, hosted over <code>https://</code> with a valid certificate. Signing options:
+          <ul>
+            <li><b>Ad-hoc</b> (paid Apple Developer, $99/yr): signed with a provisioning profile that lists your
+            device's <b>UDID</b>. Installs on registered devices only.</li>
+            <li><b>Enterprise</b> (Apple Developer Enterprise, $299/yr): in-house distribution, for your own org.</li>
+            <li><b>Your own dev builds</b>: typically installed via Xcode/AltStore for free accounts &mdash; a free
+            personal Apple ID can't do open OTA installs the same way.</li>
+          </ul>
+        </li>
+        <li>The <b>manifest</b> (this site generates it for you) served over <code>https://</code> too &mdash; which
+        happens automatically when you open this portal from its hosted URL.</li>
+        <li>Open install links in <b>Safari</b> (not an in-app browser).</li>
+        <li>After installing, trust the developer under
+        <b>Settings → General → VPN &amp; Device Management</b> if prompted.</li>
+      </ol>
+
+      <div class="callout warn">
+        If an install says <i>"Unable to Install"</i> or <i>"could not be installed at this time,"</i> the <code>.ipa</code>
+        is almost always not signed for this device, the URL isn't reachable over HTTPS, or the bundle id/version is wrong.
+        That's Apple's security check &mdash; no website can get around it.
+      </div>
+
+      <h3>Use it like an app</h3>
+      <p>Tap the <b>Share</b> icon in Safari → <b>Add to Home Screen</b>. It opens full-screen and your library is
+      remembered on this device.</p>
+    </div>
+  </details>
+
+  <footer>
+    Sideload portal · self-hosted OTA installer · <span id="ver"></span><br>
+    For apps you are authorised to install. Your library is stored only in this browser.
+  </footer>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<!-- Settings dialog -->
+<dialog id="settingsDlg">
+  <h2>Settings</h2>
+  <label>
+    <span class="lab">Manifest host <span class="opt">— where manifest.plist is served from</span></span>
+    <input type="url" id="s-host" placeholder="https://your-host.example.com" inputmode="url"
+           autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  </label>
+  <p style="color:var(--muted);font-size:.84rem;margin:-4px 0 0">
+    Leave blank to use this site's own address (recommended). Change it only if you host the generated
+    <code style="color:var(--accent2)">/sideload/manifest.plist</code> endpoint somewhere else. Must be HTTPS.
+  </p>
+  <div class="dlg-actions">
+    <button class="btn-ghost" type="button" id="s-cancel">Cancel</button>
+    <button class="btn-primary" type="button" id="s-save">Save</button>
+  </div>
+</dialog>
+
+<!-- Import / Export dialog -->
+<dialog id="ioDlg">
+  <h2>Import / Export library</h2>
+  <p style="color:var(--muted);font-size:.86rem;margin:0 0 10px">
+    Copy this JSON to back up or move your library to another device. Paste JSON and tap Import to replace it.
+  </p>
+  <textarea id="io-text" spellcheck="false" aria-label="Library JSON"></textarea>
+  <div class="dlg-actions">
+    <button class="btn-ghost" type="button" id="io-copy">Copy</button>
+    <button class="btn-danger" type="button" id="io-import">Import (replace)</button>
+    <button class="btn-ghost" type="button" id="io-close">Close</button>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  'use strict';
+
+  var LS_APPS = 'sideload.apps.v1';
+  var LS_HOST = 'sideload.host.v1';
+  var VERSION = '1.0.0';
+
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+
+  // ---- storage ----------------------------------------------------------
+  function loadApps() {
+    try { var a = JSON.parse(localStorage.getItem(LS_APPS) || '[]'); return Array.isArray(a) ? a : []; }
+    catch (e) { return []; }
+  }
+  function saveApps(a) { try { localStorage.setItem(LS_APPS, JSON.stringify(a)); } catch (e) {} }
+  function getHost() {
+    var h;
+    try { h = localStorage.getItem(LS_HOST); } catch (e) {}
+    return (h && /^https?:\/\//i.test(h)) ? h.replace(/\/+$/, '') : location.origin;
+  }
+  function setHost(v) {
+    try { if (v) localStorage.setItem(LS_HOST, v); else localStorage.removeItem(LS_HOST); } catch (e) {}
+  }
+
+  // ---- helpers ----------------------------------------------------------
+  function isHttps(u) { return /^https:\/\/\S+/i.test(String(u || '').trim()); }
+  function uid() { return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  function clean(s, max) { return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max || 200); }
+
+  function manifestUrl(app) {
+    var qs = new URLSearchParams();
+    qs.set('ipa', app.ipa);
+    qs.set('bundle', app.bundle || '');
+    qs.set('version', app.version || '');
+    qs.set('title', app.name || '');
+    if (app.icon) qs.set('icon', app.icon);
+    return getHost() + '/sideload/manifest.plist?' + qs.toString();
+  }
+  function installUrl(app) {
+    return 'itms-services://?action=download-manifest&url=' + encodeURIComponent(manifestUrl(app));
+  }
+  function shareUrl(app) {
+    var qs = new URLSearchParams();
+    qs.set('ipa', app.ipa);
+    if (app.bundle) qs.set('bundle', app.bundle);
+    if (app.version) qs.set('version', app.version);
+    if (app.name) qs.set('title', app.name);
+    if (app.icon) qs.set('icon', app.icon);
+    return location.origin + location.pathname.replace(/[^/]*$/, '') + '?' + qs.toString();
+  }
+
+  function toast(msg) {
+    var t = $('#toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(toast._t); toast._t = setTimeout(function () { t.classList.remove('show'); }, 2200);
+  }
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); toast('Copied'); return; }
+    catch (e) {}
+    try {
+      var ta = document.createElement('textarea'); ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta);
+      ta.focus(); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copied');
+    } catch (e2) { toast('Could not copy'); }
+  }
+  async function share(app) {
+    var url = shareUrl(app);
+    if (navigator.share) { try { await navigator.share({ title: app.name || 'App', url: url }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
+    copy(url);
+  }
+
+  // ---- rendering --------------------------------------------------------
+  function iconNode(app) {
+    if (app.icon && /^https?:\/\//i.test(app.icon)) {
+      var img = document.createElement('img');
+      img.className = 'icon'; img.alt = ''; img.loading = 'lazy';
+      img.src = app.icon;
+      img.onerror = function () { var f = fallbackIcon(app); img.replaceWith(f); };
+      return img;
+    }
+    return fallbackIcon(app);
+  }
+  function fallbackIcon(app) {
+    var d = document.createElement('div'); d.className = 'icon';
+    d.textContent = (app.name || 'A').trim().charAt(0).toUpperCase() || 'A';
+    return d;
+  }
+
+  function appCard(app) {
+    var el = document.createElement('div'); el.className = 'app';
+
+    var head = document.createElement('div'); head.className = 'head';
+    head.appendChild(iconNode(app));
+    var meta = document.createElement('div'); meta.className = 'meta';
+    var name = document.createElement('p'); name.className = 'name'; name.textContent = app.name || 'Untitled app';
+    var bid = document.createElement('div'); bid.className = 'bid'; bid.textContent = app.bundle || 'no bundle id';
+    meta.appendChild(name); meta.appendChild(bid);
+    if (app.version) { var v = document.createElement('span'); v.className = 'ver'; v.textContent = 'v' + app.version; meta.appendChild(v); }
+    head.appendChild(meta);
+    el.appendChild(head);
+
+    var acts = document.createElement('div'); acts.className = 'acts';
+
+    var install = document.createElement('a');
+    install.className = 'btn btn-primary btn-sm'; install.textContent = '⬇ Install';
+    install.setAttribute('href', installUrl(app));
+
+    var shareB = mkIcon('⤴', 'Share install link', function () { share(app); });
+    var copyB = mkIcon('⧉', 'Copy install link', function () { copy(installUrl(app)); });
+    var delB = mkIcon('🗑', 'Remove', function () {
+      if (!confirm('Remove "' + (app.name || 'this app') + '" from your library?')) return;
+      apps = apps.filter(function (a) { return a.id !== app.id; }); saveApps(apps); render();
+    });
+    delB.classList.add('btn-danger');
+
+    acts.appendChild(install); acts.appendChild(shareB); acts.appendChild(copyB); acts.appendChild(delB);
+    el.appendChild(acts);
+    return el;
+  }
+  function mkIcon(glyph, label, fn) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn-ghost btn-sm icononly';
+    b.textContent = glyph; b.title = label; b.setAttribute('aria-label', label);
+    b.addEventListener('click', fn);
+    return b;
+  }
+
+  function render() {
+    var lib = $('#lib'); lib.textContent = '';
+    apps.forEach(function (a) { lib.appendChild(appCard(a)); });
+    $('#empty').hidden = apps.length > 0;
+    $('#count').textContent = apps.length + (apps.length === 1 ? ' app' : ' apps');
+  }
+
+  // ---- add form ---------------------------------------------------------
+  function readForm() {
+    return {
+      name: clean($('#f-name').value, 80),
+      ipa: clean($('#f-ipa').value, 2000),
+      bundle: clean($('#f-bundle').value, 155),
+      version: clean($('#f-version').value, 40),
+      icon: clean($('#f-icon').value, 2000)
+    };
+  }
+  function validate(d) {
+    $('#err-ipa').textContent = '';
+    if (!isHttps(d.ipa)) { $('#err-ipa').textContent = 'Enter the app’s .ipa URL starting with https://'; $('#f-ipa').focus(); return false; }
+    if (d.icon && !/^https:\/\//i.test(d.icon)) { $('#err-ipa').textContent = 'Icon URL must also start with https:// (or leave it blank).'; return false; }
+    return true;
+  }
+  function addFromForm(then) {
+    var d = readForm();
+    if (!validate(d)) return null;
+    var app = {
+      id: uid(), name: d.name || 'Untitled app', ipa: d.ipa,
+      bundle: d.bundle || 'com.example.app', version: d.version || '1.0',
+      icon: d.icon || '', addedAt: Date.now()
+    };
+    apps.unshift(app); saveApps(apps); render();
+    $('#addForm').reset();
+    if (then) then(app);
+    return app;
+  }
+
+  $('#addForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (addFromForm()) toast('Saved to library');
+  });
+  $('#installDirect').addEventListener('click', function () {
+    addFromForm(function (app) {
+      toast('Opening installer…');
+      window.location.href = installUrl(app);
+    });
+  });
+
+  // ---- pending (deep-link) install -------------------------------------
+  function pendingFromQuery() {
+    var p = new URLSearchParams(location.search);
+    var ipa = p.get('ipa');
+    if (!ipa) return;
+    if (!isHttps(ipa)) return;
+    var app = {
+      id: uid(), name: clean(p.get('title'), 80) || 'Shared app', ipa: clean(ipa, 2000),
+      bundle: clean(p.get('bundle'), 155) || 'com.example.app',
+      version: clean(p.get('version'), 40) || '1.0',
+      icon: /^https:\/\//i.test(p.get('icon') || '') ? clean(p.get('icon'), 2000) : '', addedAt: Date.now()
+    };
+    var box = $('#pending'); box.hidden = false;
+    $('#pendingNote').textContent = 'Someone shared this app with you. Tap Install to send it to this iPad.';
+    var holder = $('#pendingApp'); holder.textContent = '';
+    var head = document.createElement('div'); head.className = 'head';
+    head.appendChild(iconNode(app));
+    var meta = document.createElement('div'); meta.className = 'meta';
+    var nm = document.createElement('p'); nm.className = 'name'; nm.textContent = app.name;
+    var bd = document.createElement('div'); bd.className = 'bid'; bd.textContent = app.bundle + ' · v' + app.version;
+    meta.appendChild(nm); meta.appendChild(bd); head.appendChild(meta); holder.appendChild(head);
+    $('#pendingInstall').setAttribute('href', installUrl(app));
+    $('#pendingSave').onclick = function () { apps.unshift(app); saveApps(apps); render(); box.hidden = true; toast('Saved to library'); };
+    $('#pendingDismiss').onclick = function () { box.hidden = true; };
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  }
+
+  // ---- settings ---------------------------------------------------------
+  var sDlg = $('#settingsDlg');
+  $('#settingsBtn').addEventListener('click', function () {
+    var cur; try { cur = localStorage.getItem(LS_HOST) || ''; } catch (e) { cur = ''; }
+    $('#s-host').value = cur;
+    showDialog(sDlg);
+  });
+  $('#s-cancel').addEventListener('click', function () { sDlg.close(); });
+  $('#s-save').addEventListener('click', function () {
+    var v = clean($('#s-host').value, 300).replace(/\/+$/, '');
+    if (v && !/^https:\/\//i.test(v)) { toast('Host must start with https://'); return; }
+    setHost(v); sDlg.close(); render(); toast('Saved');
+  });
+
+  // ---- import / export --------------------------------------------------
+  var ioDlg = $('#ioDlg');
+  $('#importBtn').addEventListener('click', function () {
+    $('#io-text').value = JSON.stringify(apps, null, 2);
+    showDialog(ioDlg);
+  });
+  $('#io-copy').addEventListener('click', function () { copy($('#io-text').value); });
+  $('#io-close').addEventListener('click', function () { ioDlg.close(); });
+  $('#io-import').addEventListener('click', function () {
+    var parsed;
+    try { parsed = JSON.parse($('#io-text').value); } catch (e) { toast('Invalid JSON'); return; }
+    if (!Array.isArray(parsed)) { toast('Expected a JSON array'); return; }
+    if (!confirm('Replace your current library with ' + parsed.length + ' app(s)?')) return;
+    apps = parsed.map(function (a) {
+      return {
+        id: a.id || uid(), name: clean(a.name, 80) || 'Untitled app', ipa: clean(a.ipa, 2000),
+        bundle: clean(a.bundle, 155) || 'com.example.app', version: clean(a.version, 40) || '1.0',
+        icon: /^https:\/\//i.test(a.icon || '') ? clean(a.icon, 2000) : '', addedAt: a.addedAt || Date.now()
+      };
+    }).filter(function (a) { return isHttps(a.ipa); });
+    saveApps(apps); render(); ioDlg.close(); toast('Imported ' + apps.length + ' app(s)');
+  });
+
+  function showDialog(d) { if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', ''); }
+
+  // ---- boot -------------------------------------------------------------
+  var apps = loadApps();
+  $('#ver').textContent = 'v' + VERSION;
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    $('#httpsWarn').style.display = 'block';
+  }
+  render();
+  pendingFromQuery();
+
+  // Progressive enhancement: offline shell so the portal opens without a connection.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js', { scope: './' }).catch(function () {});
+    });
+  }
+})();
+</script>
+</body>
+</html>

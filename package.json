@@ -9,6 +9,8 @@
   "exports": "./relay.js",
   "files": [
     "relay.js",
+    "sideload.js",
+    "public/",
     "README.md"
   ],
   "engines": {

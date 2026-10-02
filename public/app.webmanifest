@@ -1,0 +1,17 @@
+{
+  "name": "Sideload",
+  "short_name": "Sideload",
+  "description": "Self-hosted over-the-air install portal for signed iOS/iPadOS apps.",
+  "id": "/sideload/",
+  "start_url": "/sideload/",
+  "scope": "/sideload/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#12100f",
+  "theme_color": "#12100f",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

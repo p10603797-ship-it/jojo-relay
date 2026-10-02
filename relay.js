@@ -20,6 +20,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
+import { handleSideloadRequest } from './sideload.js';
 
 /** Relay build version, reported by `GET /health`. @type {string} */
 export const VERSION = '1.0.0';
@@ -456,6 +457,9 @@ export class RelayServer {
    */
   _onRequest(req, res) {
     const path = (req.url || '/').split('?')[0];
+    // Self-hosted OTA app-install portal, mounted under /sideload/ (see sideload.js).
+    // It claims every /sideload* path; everything else falls through to the relay.
+    if (handleSideloadRequest(req, res)) return;
     if (path === '/health' || path === '/healthz') {
       const body = JSON.stringify({
         ok: true,
@@ -503,7 +507,8 @@ code{background:#1e1a18;padding:.15rem .4rem;border-radius:3px;color:#d2601a}p{c
 <dt>rooms</dt><dd>${this.rooms.size} / ${this.config.maxRooms}</dd><dt>peers</dt><dd>${this.conns.size}</dd>
 <dt>uptime</dt><dd>${this.uptime}s (${mins}m)</dd></dl>
 <p>This host relays match traffic only &mdash; no game logic, no persistence.</p>
-<p>Paste <code id="u">wss://&hellip;</code> into the game's SERVER field. Health JSON lives at <code>/health</code>.</p></main>
+<p>Paste <code id="u">wss://&hellip;</code> into the game's SERVER field. Health JSON lives at <code>/health</code>.</p>
+<p>On an iPad? Open the <a href="/sideload/" style="color:#d2601a">Sideload portal</a> to install signed apps over the air.</p></main>
 <script>document.getElementById('u').textContent=(location.protocol==='https:'?'wss://':'ws://')+location.host;</script>`;
   }
 
