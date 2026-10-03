@@ -1,0 +1,21 @@
+{
+  "name": "phortnite",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node test/check.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "0.21.0",
+    "qrcode": "^1.5.4",
+    "three": "0.186.1",
+    "ws": "^8.18.0"
+  },
+  "description": "Phortnite - a 3D battle royale for the browser (iPad friendly) with LAN multiplayer."
+}
