@@ -249,7 +249,8 @@ function leaveRoom(conn) {
 
 setInterval(() => {
   for (const room of rooms.values()) {
-    if (!room.empty) room.tick();
+    if (room.empty) continue;
+    try { room.tick(); } catch (e) { log('tick error', { room: room.code, err: String(e && e.stack || e) }); }
   }
 }, 1000 / TICK_HZ);
 
