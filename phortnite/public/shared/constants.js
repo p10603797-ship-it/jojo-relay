@@ -209,7 +209,7 @@ export function itemKind(k) {
 
 // Animation state codes sent over the network
 export const ANIM = {
-  IDLE: 0, RUN: 1, SPRINT: 2, CROUCH: 3, CROUCH_WALK: 4, AIR: 5, SKYDIVE: 6, GLIDE: 7, BUS: 8, DEAD: 9,
+  IDLE: 0, RUN: 1, SPRINT: 2, CROUCH: 3, CROUCH_WALK: 4, AIR: 5, SKYDIVE: 6, GLIDE: 7, BUS: 8, DEAD: 9, DANCE: 10,
 };
 
 // Bit flags sent with player state

@@ -626,7 +626,7 @@ function setState(p, s) {
   p.vz = clampN(num(s[5]), -80, 80);
   p.yw = num(s[6]);
   p.pt = clampN(num(s[7]), -2, 2);
-  if (p.alive && !p.inBus) p.a = clampN(num(s[8]) | 0, 0, 9);
+  if (p.alive && !p.inBus) p.a = clampN(num(s[8]) | 0, 0, 10);
   p.w = typeof s[9] === 'string' ? s[9].slice(0, 12) : 'pickaxe';
   p.f = num(s[10]) | 0;
   p.lastSeen = Date.now();

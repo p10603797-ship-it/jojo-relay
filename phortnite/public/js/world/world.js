@@ -542,7 +542,7 @@ normal = normalize((viewMatrix * vec4(wN, 0.0)).xyz);
     this.barrels = d.barrels.map((b, i) => {
       const body = this.physics.world.createRigidBody(R.RigidBodyDesc.dynamic()
         .setTranslation(b.x, b.y + 0.05, b.z).setLinearDamping(0.2).setAngularDamping(0.6).setCcdEnabled(true));
-      this.physics.collider(R.ColliderDesc.cylinder(0.55, 0.38).setDensity(0.5).setFriction(0.8).setRestitution(0.25),
+      this.physics.collider(R.ColliderDesc.cylinder(0.55, 0.38).setMass(25).setFriction(0.8).setRestitution(0.25),
         { kind: 'barrel', i, mat: 'metal' }, body, GROUP.PROP);
       return { body, home: { x: b.x, y: b.y + 0.05, z: b.z } };
     });

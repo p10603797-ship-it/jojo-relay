@@ -82,7 +82,7 @@ export class Input {
     return {
       mx: 0, my: 0, lookX: 0, lookY: 0, fire: false, firePressed: false, ads: false, adsPressed: false, jump: false, crouch: false,
       sprint: false, reload: false, interact: false, slot: -1, build: null, buildToggle: false, matCycle: false,
-      map: false, menu: false, scroll: 0, interactHeld: false,
+      map: false, menu: false, scroll: 0, interactHeld: false, emote: false,
     };
   }
 
@@ -195,6 +195,7 @@ export class Input {
       ['ramp', '<span class="ico">◢</span><small>Ramp</small>', 'tb-ramp bonly', false],
       ['mat', '<span class="ico">⛏</span><small>Mat</small>', 'tb-mat bonly', false],
       ['interact', '<span class="lbl">Pick up</span>', 'tb-interact', false],
+      ['emote', '<span class="ico">💃</span>', 'tb-emote', false],
     ];
     this.tbEls = {};
     for (const [name, html, cls, alsoLook] of defs) {
@@ -272,6 +273,7 @@ export class Input {
     s.matCycle = this.any(KEYS.mat, P);
     s.map = this.any(KEYS.map, P);
     s.menu = this.any(['KeyP'], P);
+    s.emote = P.has('KeyT');
     if (this.any(KEYS.pickaxe, P)) s.slot = 0;
     for (let i = 1; i <= 5; i++) if (P.has(`Digit${i}`)) s.slot = i;
     s.scroll = this.wheel;
@@ -301,6 +303,7 @@ export class Input {
       if (TP.has('ramp')) s.build = 'r';
       if (TP.has('mat')) s.matCycle = true;
       if (TP.has('interact')) s.interact = true;
+      if (TP.has('emote')) s.emote = true;
       if (T.has('interact')) s.interactHeld = true;
     }
 

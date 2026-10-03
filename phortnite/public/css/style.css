@@ -342,6 +342,8 @@ body.touch #crosshair { --s: 8px; }
 body.building .tbtn.bonly { display: flex; }
 body.building .tb-ads, body.building .tb-reload { display: none; }
 body.building .tb-build { background: rgba(47, 140, 255, 0.8); }
+.tb-emote { right: calc(26px + var(--sar)); top: calc(260px + var(--sat)); width: 52px; height: 52px; background: rgba(0, 0, 0, 0.25); }
+.tb-emote .ico { font-size: 22px; }
 .tb-interact { right: 50%; bottom: 32%; width: auto; height: 56px; border-radius: 28px; padding: 0 22px; transform: translateX(50%); background: rgba(255, 210, 63, 0.85); color: #2a1a00; display: none; font-size: 18px; }
 .tb-interact.show { display: flex; }
 .tb-interact.down { transform: translateX(50%) scale(0.95); }

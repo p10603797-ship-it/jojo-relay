@@ -66,6 +66,7 @@ export class Combatant {
     this.pendingPick = new Set();
     this.lastHurt = -10;
     this.infinite = false; // lobby warm-up: infinite ammo + mats
+    this.dancing = false;
   }
 
   get pos() { return this.mover.pos; }
@@ -250,6 +251,7 @@ export class Combatant {
       }
     }
     // animation state
+    if (this.dancing && (hs > 0.6 || m.mode !== 'ground' || ctl.fire || ctl.jump)) this.dancing = false;
     let a = ANIM.IDLE;
     switch (m.mode) {
       case 'skydive': a = ANIM.SKYDIVE; break;
@@ -260,6 +262,7 @@ export class Combatant {
         if (m.crouch) a = hs > 0.5 ? ANIM.CROUCH_WALK : ANIM.CROUCH;
         else if (hs > 7) a = ANIM.SPRINT;
         else if (hs > 0.5) a = ANIM.RUN;
+        else if (this.dancing) a = ANIM.DANCE;
     }
     this.anim = a;
   }

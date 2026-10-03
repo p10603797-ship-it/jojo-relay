@@ -31,6 +31,7 @@ export class LocalPlayer extends Combatant {
     this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch + s.lookY * k));
     if (!this.canAct()) return;
 
+    if (s.emote && this.mover.grounded) { this.dancing = !this.dancing; this.buildMode = false; }
     let changed = false;
     if (s.slot >= 0 && (s.slot === 0 || this.inv.slots[s.slot])) { this.select(s.slot); changed = true; }
     if (s.scroll) { this.cycle(s.scroll > 0 ? 1 : -1); changed = true; }

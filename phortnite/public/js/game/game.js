@@ -572,6 +572,7 @@ export class Game {
       this.hud.elim({ ...this.lastElim, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
     } else if (meWon) {
       this.sfx.ui('victory');
+      if (this.me.alive) this.me.dancing = true;
       this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true });
     } else if (this.me && this.me.alive) {
       this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : 'Nobody survived', again: this.solo, leave: true });
@@ -800,23 +801,20 @@ export class Game {
     const d = Math.hypot(cam.x - x, cam.y - y, cam.z - z);
     this.shake(Math.max(0, 1.2 - d / 40));
     // push dynamic bodies
-    for (const bar of this.world.barrels) {
-      const t = bar.body.translation();
+    // radial blast: impulse = mass * velocity change, falling off with distance
+    const blast = (body, reach, speed) => {
+      const t = body.translation();
       const dx = t.x - x, dy = t.y - y, dz = t.z - z;
       const dd = Math.hypot(dx, dy, dz);
-      if (dd < radius * 2.2) {
-        const k = (1 - dd / (radius * 2.2)) * 40 / Math.max(0.5, dd);
-        bar.body.applyImpulse({ x: dx * k, y: Math.abs(dy) * k + 15 * (1 - dd / (radius * 2.2)), z: dz * k }, true);
-      }
-    }
+      if (dd >= reach) return;
+      const f = (1 - dd / reach) * speed * body.mass();
+      const l = Math.max(0.3, dd);
+      body.applyImpulse({ x: (dx / l) * f, y: (Math.max(0, dy) / l) * f + f * 0.6, z: (dz / l) * f }, true);
+      body.applyTorqueImpulse({ x: (Math.random() - 0.5) * f * 0.3, y: (Math.random() - 0.5) * f * 0.3, z: (Math.random() - 0.5) * f * 0.3 }, true);
+    };
+    for (const bar of this.world.barrels) blast(bar.body, radius * 2.2, 11);
     for (const pool of Object.values(this.fx.debris.pools)) {
-      for (const it of pool.items) {
-        if (!it) continue;
-        const t = it.body.translation();
-        const dx = t.x - x, dy = t.y - y, dz = t.z - z;
-        const dd = Math.hypot(dx, dy, dz);
-        if (dd < radius * 2) it.body.applyImpulse({ x: dx * 2, y: 4, z: dz * 2 }, true);
-      }
+      for (const it of pool.items) if (it) blast(it.body, radius * 2, 9);
     }
   }
 

@@ -332,6 +332,25 @@ export class Character {
       this.showWeapon(false);
       return;
     }
+    if (anim === ANIM.DANCE) {
+      // the floss
+      const t = this.time * 7.5;
+      const sw = Math.sin(t);
+      const front = Math.cos(t) > 0 ? 1 : -1;
+      b.hips.rotation.z = sw * 0.18;
+      b.hips.position.x = -sw * 0.08;
+      b.spine.rotation.z = -sw * 0.3;
+      b.armL.rotation.z = 0.35 + sw * 0.55;
+      b.armR.rotation.z = -0.35 + sw * 0.55;
+      b.armL.rotation.x = front * 0.45;
+      b.armR.rotation.x = -front * 0.45;
+      b.thighL.rotation.x = -0.12 + Math.abs(sw) * 0.15;
+      b.thighR.rotation.x = -0.12 + Math.abs(sw) * 0.15;
+      b.shinL.rotation.x = 0.25; b.shinR.rotation.x = 0.25;
+      b.head.rotation.z = sw * 0.15;
+      this.showWeapon(false);
+      return;
+    }
     this.showWeapon(!s.building);
 
     // locomotion
@@ -434,12 +453,13 @@ export class Character {
     this.glider.visible = false;
     if (this.tag) this.tag.visible = false;
     const segs = [
-      { bone: 'hips', shape: () => R.ColliderDesc.capsule(0.22, 0.17).setTranslation(0, 0.3, 0), mass: 1 },
-      { bone: 'head', shape: () => R.ColliderDesc.ball(0.15).setTranslation(0, 0.2, 0), mass: 0.4 },
-      { bone: 'armL', shape: () => R.ColliderDesc.capsule(0.2, 0.06).setTranslation(0, -0.25, 0), mass: 0.25 },
-      { bone: 'armR', shape: () => R.ColliderDesc.capsule(0.2, 0.06).setTranslation(0, -0.25, 0), mass: 0.25 },
-      { bone: 'thighL', shape: () => R.ColliderDesc.capsule(0.3, 0.08).setTranslation(0, -0.4, 0), mass: 0.5 },
-      { bone: 'thighR', shape: () => R.ColliderDesc.capsule(0.3, 0.08).setTranslation(0, -0.4, 0), mass: 0.5 },
+      // masses in kg; keeping the ratios modest keeps the joints stable
+      { bone: 'hips', shape: () => R.ColliderDesc.capsule(0.22, 0.17).setTranslation(0, 0.3, 0), mass: 14 },
+      { bone: 'head', shape: () => R.ColliderDesc.ball(0.15).setTranslation(0, 0.2, 0), mass: 4 },
+      { bone: 'armL', shape: () => R.ColliderDesc.capsule(0.2, 0.06).setTranslation(0, -0.25, 0), mass: 3 },
+      { bone: 'armR', shape: () => R.ColliderDesc.capsule(0.2, 0.06).setTranslation(0, -0.25, 0), mass: 3 },
+      { bone: 'thighL', shape: () => R.ColliderDesc.capsule(0.3, 0.08).setTranslation(0, -0.4, 0), mass: 6 },
+      { bone: 'thighR', shape: () => R.ColliderDesc.capsule(0.3, 0.08).setTranslation(0, -0.4, 0), mass: 6 },
     ];
     const bodies = {};
     for (const s of segs) {
@@ -449,7 +469,7 @@ export class Character {
         .setTranslation(_v1.x, _v1.y, _v1.z)
         .setRotation({ x: _q1.x, y: _q1.y, z: _q1.z, w: _q1.w })
         .setLinearDamping(0.4).setAngularDamping(1.5).setCcdEnabled(true));
-      physics.collider(s.shape().setDensity(s.mass * 8).setFriction(0.9), null, body, GROUP.RAGDOLL, GROUP.WORLD | GROUP.BUILD | GROUP.PROP);
+      physics.collider(s.shape().setMass(s.mass).setFriction(0.9), null, body, GROUP.RAGDOLL, GROUP.WORLD | GROUP.BUILD | GROUP.PROP);
       const iv = impulse || { x: 0, y: 0, z: 0 };
       body.setLinvel({ x: iv.x, y: iv.y + 1.5, z: iv.z }, true);
       body.setAngvel({ x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 4, z: (Math.random() - 0.5) * 4 }, true);

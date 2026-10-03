@@ -157,7 +157,7 @@ export class Ui {
         <tr><td>Aim down sights</td><td>◎ (toggle)</td></tr>
         <tr><td>Build</td><td>⚒ then Wall / Floor / Ramp, fire places it, "Mat" switches material</td></tr>
         <tr><td>Weapons & heals</td><td>Tap the slots at the bottom. Hold fire to use heals.</td></tr>
-        <tr><td>Map</td><td>Tap the minimap</td></tr>
+        <tr><td>Map / dance</td><td>Tap the minimap / 💃</td></tr>
       </table>
       <h3>Keyboard & mouse</h3>
       <table>
@@ -168,7 +168,7 @@ export class Ui {
         <tr><td>Build wall / floor / ramp</td><td><kbd>Q</kbd> / <kbd>Z</kbd> / <kbd>C</kbd> (<kbd>B</kbd> toggles build mode)</td></tr>
         <tr><td>Change material</td><td><kbd>G</kbd> or right mouse while building</td></tr>
         <tr><td>Reload / interact</td><td><kbd>R</kbd> / <kbd>E</kbd></td></tr>
-        <tr><td>Map / menu</td><td><kbd>M</kbd> / <kbd>Esc</kbd></td></tr>
+        <tr><td>Map / menu / dance</td><td><kbd>M</kbd> / <kbd>Esc</kbd> / <kbd>T</kbd></td></tr>
       </table>
       <h3>Controllers</h3>
       <p>Bluetooth game controllers work too: sticks move & look, triggers aim & shoot, A jump, B crouch, X reload/interact, Y build, D-pad picks wall/floor/ramp/material.</p>
