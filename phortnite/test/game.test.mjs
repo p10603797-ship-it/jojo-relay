@@ -104,3 +104,42 @@ test('room survives junk messages', () => {
   }
   assert.ok(room.players.size >= 1);
 });
+
+test('player state is sanitised (yaw wrapped, unknown weapons rejected)', () => {
+  const { room, join } = makeRoom();
+  const a = join('a', 'Ann');
+  room.message('a', { t: 'u', s: [1, 2, 3, 0, 0, 0, 1e300, 0, 1, 'constructor', 0] });
+  assert.ok(Math.abs(a.yw) <= Math.PI + 1e-9);
+  assert.equal(a.w, 'pickaxe');
+  room.message('a', { t: 'u', s: [1, 2, 3, 0, 0, 0, 7, 0, 1, 'sniper:3', 0] });
+  assert.equal(a.w, 'sniper:3');
+  assert.ok(Math.abs(a.yw - (7 - 2 * Math.PI)) < 1e-9);
+});
+
+test('rejected builds always get an answer so materials can be refunded', () => {
+  const { room, inbox, join, tick } = makeRoom();
+  const a = join('a', 'Ann');
+  join('b', 'Ben');
+  room.message('a', { t: 'start', bots: 0, mats: 0 });
+  room.message('a', { t: 'drop' });
+  room.message('b', { t: 'drop' });
+  room.message('b', { t: 'fall', d: 500 }); // Ben falls, Ann wins -> phase 'ended'
+  assert.equal(room.phase, 'ended');
+  room.message('a', { t: 'b', k: pieceKey('w', 0, 0, 0, 'x'), m: 'wood' });
+  assert.ok(inbox.a.some((m) => m.t === 'bno'));
+  assert.ok(a.alive);
+});
+
+test('bots move to an active device when their owner goes quiet', () => {
+  const { room, inbox, join, tick } = makeRoom();
+  join('a', 'Ann');
+  const b = join('b', 'Ben');
+  room.message('a', { t: 'start', bots: 3, mats: 0 });
+  const bots = [...room.players.values()].filter((p) => p.bot);
+  assert.ok(bots.every((x) => x.owner !== b.id));
+  // only Ben keeps talking for 6 seconds
+  for (let i = 0; i < 6; i++) { room.message('b', { t: 'ping', c: i }); tick(1000); }
+  assert.ok(bots.every((x) => x.owner === b.id));
+  assert.ok(inbox.b.some((m) => m.t === 'bots' && m.own.length === 3));
+  assert.ok(inbox.a.some((m) => m.t === 'bots' && m.own.length === 0));
+});

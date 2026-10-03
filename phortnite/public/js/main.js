@@ -117,6 +117,7 @@ class App {
     this.world = new World({ scene: this.scene, physics: this.physics, T: this.T, data, quality: q, renderer });
     this.progress(0.86, 'Getting ready…');
     this.builds = new Builds(this.scene, this.physics, this.T, data, null);
+    this.builds.grid.destroyedObjects = this.world.destroyedIds;
     this.fx = new Effects(this.scene, this.physics, this.sprites, this.builds.mats, q);
     this.builds.fx = this.fx;
     this.input = new Input(canvas, $('#touch'), this.settings);

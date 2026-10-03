@@ -23,6 +23,7 @@ const BONES = [
 const B = Object.fromEntries(BONES.map((b, i) => [b[0], i]));
 
 const geoCache = new Map();
+const gliderCache = new Map();
 let charMat = null;
 
 function part(geo, bone, color) {
@@ -216,7 +217,9 @@ export class Character {
     this.muzzle = new THREE.Object3D();
 
     const sk = SKINS[skin] || SKINS[0];
-    this.glider = new THREE.Mesh(gliderGeometry(sk.outfit, sk.accent), itemMaterial());
+    let gg = gliderCache.get(skin);
+    if (!gg) gliderCache.set(skin, (gg = gliderGeometry(sk.outfit, sk.accent)));
+    this.glider = new THREE.Mesh(gg, itemMaterial());
     this.glider.position.set(0, 2.55, 0);
     this.glider.visible = false;
     this.glider.castShadow = true;

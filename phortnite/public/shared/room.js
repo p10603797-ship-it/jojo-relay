@@ -4,7 +4,7 @@
 // A connection is any object with { id, send(obj), ip }.
 import {
   MAP, BUILD, MAT_KEYS, PLAYER, WEAPONS, WEAPON_KEYS, AMMO, HEALS, STORM, BUS, SKINS, BOT_NAMES,
-  RARITY_WEIGHTS, clampRarity, weaponDamage, MAX_MATS, PROTOCOL, ANIM,
+  RARITY_WEIGHTS, clampRarity, weaponDamage, MAX_MATS, PROTOCOL, ANIM, own,
 } from './constants.js';
 import { generateWorld } from './worldgen.js';
 import { BuildGrid, parseKey } from './buildgrid.js';
@@ -132,7 +132,7 @@ export class Room {
       p.spectator = true;
     }
     this.players.set(id, p);
-    this.conns.set(conn.id, { conn, pid: id });
+    this.conns.set(conn.id, { conn, pid: id, last: this.now() });
     if (!this.leader || !this.players.get(this.leader)) this.leader = id;
     this.send(conn, this.welcome(id));
     this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader }, conn.id);
@@ -169,8 +169,26 @@ export class Room {
     };
   }
 
-  reassignBots() {
-    const owner = this.players.get(this.leader);
+  /** If the device simulating the bots goes quiet, hand them to someone who is active. */
+  checkBotOwner() {
+    const now = this.now();
+    let owner = 0;
+    for (const p of this.players.values()) if (p.bot) { owner = p.owner; break; }
+    if (!owner) return;
+    let ownerConn = null;
+    for (const c of this.conns.values()) if (c.pid === owner) ownerConn = c;
+    if (ownerConn && now - ownerConn.last < 5000) return;
+    let next = null;
+    for (const c of this.conns.values()) {
+      if (c.pid !== owner && now - c.last < 3000) { next = c; break; }
+    }
+    if (!next) return;
+    if (ownerConn) this.send(ownerConn.conn, { t: 'bots', own: [] });
+    this.reassignBots(next.pid);
+  }
+
+  reassignBots(to = this.leader) {
+    const owner = this.players.get(to);
     if (!owner) return;
     const own = [];
     for (const p of this.players.values()) {
@@ -199,6 +217,7 @@ export class Room {
     if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') return;
     const c = this.conns.get(connId);
     if (!c) return;
+    c.last = this.now();
     const h = this.handlers[msg.t];
     if (!h) return;
     try {
@@ -581,6 +600,7 @@ export class Room {
     }
 
     if (this.phase === 'bus' || this.phase === 'match') {
+      if (now - (this.botCheck || 0) > 1000) { this.botCheck = now; this.checkBotOwner(); }
       this.updateStorm();
       if (now - this.stormTick >= 1000) {
         this.stormTick = now;
@@ -614,6 +634,16 @@ export class Room {
 }
 
 // ------------------------------------------------------------------ handlers
+const TAU = Math.PI * 2;
+const VALID_HELD = new Set(['pickaxe', 'build', ...WEAPON_KEYS, ...Object.keys(HEALS)]);
+function cleanHeld(w) {
+  if (typeof w !== 'string') return 'pickaxe';
+  const [k, r] = w.split(':');
+  if (!VALID_HELD.has(k)) return 'pickaxe';
+  const rr = parseInt(r, 10);
+  return Number.isFinite(rr) && rr > 0 && rr <= 4 ? `${k}:${rr}` : k;
+}
+
 function setState(p, s) {
   if (!Array.isArray(s) || s.length < 11) return;
   if (!p.inBus) {
@@ -624,10 +654,11 @@ function setState(p, s) {
   p.vx = clampN(num(s[3]), -80, 80);
   p.vy = clampN(num(s[4]), -80, 80);
   p.vz = clampN(num(s[5]), -80, 80);
-  p.yw = num(s[6]);
+  const yw = num(s[6]);
+  p.yw = yw - TAU * Math.floor((yw + Math.PI) / TAU);
   p.pt = clampN(num(s[7]), -2, 2);
   if (p.alive && !p.inBus) p.a = clampN(num(s[8]) | 0, 0, 10);
-  p.w = typeof s[9] === 'string' ? s[9].slice(0, 12) : 'pickaxe';
+  p.w = cleanHeld(s[9]);
   p.f = num(s[10]) | 0;
   p.lastSeen = Date.now();
 }
@@ -684,7 +715,10 @@ const HANDLERS = {
   sh(c, m) {
     const p = this.actor(c.conn.id, m.id);
     if (!p || !p.alive) return;
-    this.broadcast({ t: 'sh', id: p.id, w: String(m.w).slice(0, 12), o: m.o, d: m.d, r: m.r | 0 }, c.conn.id);
+    if (!own(WEAPONS, m.w) || !Array.isArray(m.o) || !Array.isArray(m.d)) return;
+    const o = m.o.slice(0, 3).map((v) => num(v));
+    const d = m.d.slice(0, 30).map((v) => clampN(num(v), -1, 1));
+    this.broadcast({ t: 'sh', id: p.id, w: m.w, o, d, r: clampN(num(m.r) | 0, 0, 4) }, c.conn.id);
   },
 
   sw(c, m) {
@@ -697,8 +731,8 @@ const HANDLERS = {
     const tg = this.players.get(m.tg);
     if (!a || !tg || !a.alive || !tg.alive || tg.inBus || a === tg) return;
     if (!this.damageAllowed() || this.sameTeam(a, tg)) return;
+    if (!own(WEAPONS, m.w)) return;
     const w = WEAPONS[m.w];
-    if (!w) return;
     const r = clampRarity(m.w, num(m.r) | 0);
     const dist = clampN(num(m.d), 0, 2000);
     const pellets = w.pellets || 1;
@@ -711,11 +745,12 @@ const HANDLERS = {
 
   boom(c, m) {
     const a = this.actor(c.conn.id, m.id);
-    if (!a) return;
+    if (!a || !own(WEAPONS, m.w)) return;
     const w = WEAPONS[m.w];
-    if (!w || !w.splash) return;
+    if (!w.splash) return;
     const r = clampRarity(m.w, num(m.r) | 0);
     const x = num(m.x), y = num(m.y), z = num(m.z);
+    if (!Object.prototype.hasOwnProperty.call(WEAPONS, m.w)) return;
     this.broadcast({ t: 'boom', id: a.id, x: r2(x), y: r2(y), z: r2(z), w: m.w }, c.conn.id);
     const base = w.dmg[r];
     const R = w.splash;
@@ -753,8 +788,8 @@ const HANDLERS = {
 
   heal(c, m) {
     const p = this.actor(c.conn.id, m.id);
+    if (!p || !p.alive || !own(HEALS, m.k)) return;
     const h = HEALS[m.k];
-    if (!p || !p.alive || !h) return;
     if (h.hp && p.hp < h.cap) p.hp = Math.min(h.cap, p.hp + h.hp);
     if (h.sh && p.sh < h.cap) p.sh = Math.min(h.cap, p.sh + h.sh);
   },
@@ -767,8 +802,10 @@ const HANDLERS = {
 
   b(c, m) {
     const a = this.actor(c.conn.id, m.id);
-    if (!a || !a.alive || a.inBus) return;
-    if (this.phase !== 'lobby' && this.phase !== 'match' && this.phase !== 'bus') return;
+    if (!a || !a.alive || a.inBus || (this.phase !== 'lobby' && this.phase !== 'match' && this.phase !== 'bus')) {
+      this.send(c.conn, { t: 'bno', k: m.k });
+      return;
+    }
     const p = parseKey(m.k);
     if (!p || this.grid.has(m.k) || this.grid.pieces.size >= BUILD.maxPieces) {
       this.send(c.conn, { t: 'bno', k: m.k });
@@ -822,9 +859,9 @@ const HANDLERS = {
       if (!it || typeof it.k !== 'string') continue;
       const k = it.k;
       let item = null;
-      if (WEAPONS[k] && k !== 'pickaxe') item = { k, r: clampRarity(k, num(it.r) | 0), m: clampN(num(it.m) | 0, 0, WEAPONS[k].mag) };
-      else if (AMMO[k]) item = { k, n: clampN(num(it.n) | 0, 1, 999) };
-      else if (HEALS[k]) item = { k, n: clampN(num(it.n) | 0, 1, HEALS[k].stack) };
+      if (own(WEAPONS, k) && k !== 'pickaxe') item = { k, r: clampRarity(k, num(it.r) | 0), m: clampN(num(it.m) | 0, 0, WEAPONS[k].mag) };
+      else if (own(AMMO, k)) item = { k, n: clampN(num(it.n) | 0, 1, 999) };
+      else if (own(HEALS, k)) item = { k, n: clampN(num(it.n) | 0, 1, HEALS[k].stack) };
       else if (MAT_KEYS.includes(k)) item = { k, n: clampN(num(it.n) | 0, 1, MAX_MATS) };
       if (!item) continue;
       const ang = out.length * 1.3;

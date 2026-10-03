@@ -28,11 +28,13 @@ export class LocalPlayer extends Combatant {
     const zoom = this.ads && w && w.zoom ? w.zoom : 1;
     const k = 1 / Math.pow(zoom, 0.8);
     this.yaw += s.lookX * k;
+    if (this.yaw > Math.PI) this.yaw -= Math.PI * 2;
+    else if (this.yaw < -Math.PI) this.yaw += Math.PI * 2;
     this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch + s.lookY * k));
     if (!this.canAct()) return;
 
-    if (s.emote && this.mover.grounded) { this.dancing = !this.dancing; this.buildMode = false; }
     let changed = false;
+    if (s.emote && this.mover.grounded) { this.dancing = !this.dancing; this.buildMode = false; changed = true; }
     if (s.slot >= 0 && (s.slot === 0 || this.inv.slots[s.slot])) { this.select(s.slot); changed = true; }
     if (s.scroll) { this.cycle(s.scroll > 0 ? 1 : -1); changed = true; }
     if (s.buildToggle) {

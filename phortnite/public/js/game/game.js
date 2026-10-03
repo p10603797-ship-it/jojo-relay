@@ -225,8 +225,8 @@ export class Game {
       if (!ids.has(id)) { r.dispose(); this.remotes.delete(id); }
     }
     this.roster.clear();
+    for (const p of m.players) this.roster.set(p.id, p);
     for (const p of m.players) {
-      this.roster.set(p.id, p);
       if (p.id !== this.myId) {
         const r = this.ensureRemote(p);
         if (r) { r.revive(); r.buf.length = 0; r.hasState = false; r.setNameVisible(!p.bot && p.team === this.teamOf(this.myId)); }
@@ -244,6 +244,7 @@ export class Game {
     me.mover.mode = 'bus';
     me.mover.setEnabled(false);
     me.char.setVisible(false);
+    this.input.resetToggles();
     this.bus.start(m.bus);
     this.storm.clear();
     this.kills = 0;
@@ -330,6 +331,7 @@ export class Game {
     me.select(1);
     me.yaw = Math.random() * Math.PI * 2;
     me.pitch = -0.05;
+    this.input.resetToggles();
   }
 
   on_s(m) {
@@ -454,6 +456,7 @@ export class Game {
   onMyDeath(m, killer) {
     if (this.phase === 'match' || this.phase === 'bus') this.dropAll(this.me);
     this.sfx.ui('elim');
+    this.input.resetToggles();
     document.body.classList.add('dead');
     this.spectateId = killer && killer !== this.me ? killer.id : 0;
     this.specYaw = this.me.yaw;
@@ -475,7 +478,12 @@ export class Game {
   }
 
   on_bAdd(m) {
-    const mine = this.pendingBuilds.has(m.k);
+    const pend = this.pendingBuilds.get(m.k);
+    const mine = !!pend && pend.id === m.by;
+    if (pend && !mine) {
+      const a = this.actorById(pend.id);
+      if (a && a.inv && !a.infinite) a.addMats(pend.m, BUILD.cost);
+    }
     const p = this.builds.add(m);
     this.pendingBuilds.delete(m.k);
     if (p && !mine) this.sfx.build(p.pos, false);
@@ -488,11 +496,13 @@ export class Game {
     }
     // unsupported pieces tumble down one after another
     (m.c || []).forEach((k, i) => {
+      const p = this.builds.remove(k, false);
+      if (!p) return;
       setTimeout(() => {
         if (this.disposed) return;
-        const p = this.builds.remove(k, true, { x: 0, y: -2, z: 0 });
-        if (p && i < 4) this.sfx.breakSound(p.pos, p.m);
-      }, 80 + i * 45 + Math.random() * 60);
+        this.builds.shatter(p, { x: 0, y: -2, z: 0 });
+        if (i < 4) this.sfx.breakSound(p.pos, p.m);
+      }, 80 + Math.min(i, 30) * 45 + Math.random() * 60);
     });
   }
 
@@ -541,6 +551,12 @@ export class Game {
     const a = this.actorById(m.id);
     if (!a || !a.addItem) return;
     a.pendingPick.delete(m.l);
+    const kind = itemKind(m.item.k);
+    if (!m.swap && (kind === 'weapon' || kind === 'heal') && !a.canAutoPick(m.item)) {
+      // an automatic pickup that no longer fits: put it straight back instead of swapping
+      this.send({ t: 'dropi', id: a.id, items: [{ ...m.item, near: true }], x: a.pos.x, y: a.pos.y, z: a.pos.z });
+      return;
+    }
     const drops = a.addItem(m.item);
     if (drops.length) this.send({ t: 'dropi', id: a.id, items: drops.map((d) => ({ ...d, near: true })), x: a.pos.x, y: a.pos.y, z: a.pos.z });
     if (a === this.me) this.sfx.pickup();
@@ -643,12 +659,26 @@ export class Game {
 
   onJump() {}
 
-  botPick(bot, l) { this.pick(bot, l); }
+  botPick(bot, l) {
+    const kind = itemKind(l.item.k);
+    if ((kind === 'weapon' || kind === 'heal') && this.slotPickPending(bot)) return;
+    this.pick(bot, l);
+  }
 
-  pick(a, l) {
+  pick(a, l, swap = false) {
     if (a.pendingPick.has(l.id)) return;
     a.pendingPick.add(l.id);
-    this.send({ t: 'pick', id: a.id, l: l.id });
+    this.send({ t: 'pick', id: a.id, l: l.id, swap });
+  }
+
+  /** Is a weapon/heal pickup already on its way to this actor? */
+  slotPickPending(a) {
+    for (const id of a.pendingPick) {
+      const it = this.loot.items.get(id);
+      const kind = it ? itemKind(it.item.k) : 'weapon';
+      if (kind === 'weapon' || kind === 'heal') return true;
+    }
+    return false;
   }
 
   openChest(a, i) {
@@ -684,7 +714,7 @@ export class Game {
     if (!t.free || !t.supported) return false;
     if (!a.autoMat()) { if (a === this.me) this.sfx.ui('error'); return false; }
     const mat = a.buildMat;
-    const p = this.builds.add({ k: t.k, m: mat, d: t.d }, true);
+    const p = this.builds.add({ k: t.k, m: mat, d: t.d, by: a.id }, true);
     if (!p) return false;
     a.spendBuild();
     this.pendingBuilds.set(t.k, { id: a.id, m: mat });
@@ -769,10 +799,18 @@ export class Game {
   resolvePellet(b) {
     if (!b.auth) return;
     const ps = this.pendingShots.get(b.shot);
-    if (!ps) return;
-    ps.left--;
-    if (ps.left > 0) return;
-    this.pendingShots.delete(b.shot);
+    if (ps) ps.left--;
+  }
+
+  /** Send the hits gathered this frame (pellets that land later are sent when they land). */
+  flushShots() {
+    for (const [shot, ps] of this.pendingShots) {
+      if (ps.hits.size) this.sendHits(ps);
+      if (ps.left <= 0) this.pendingShots.delete(shot);
+    }
+  }
+
+  sendHits(ps) {
     for (const [tg, e] of ps.hits) {
       this.send({ t: 'hit', id: ps.owner, tg, w: ps.w, r: ps.r, d: Math.round(e.dist), n: e.n, nh: e.nh, x: e.x, y: e.y, z: e.z });
       if (ps.owner === this.myId) {
@@ -785,12 +823,15 @@ export class Game {
         this.sfx.hitmarker(e.nh > 0, shield, false);
       }
     }
+    ps.hits.clear();
   }
 
   explode(b, x, y, z) {
+    // other players' rockets are shown when their authoritative 'boom' arrives
+    if (!b.auth) return;
     const w = WEAPONS[b.w];
     this.explosionFx(x, y, z, w ? w.splash : 5);
-    if (b.auth) this.send({ t: 'boom', id: b.owner, w: b.w, r: b.r, x, y, z });
+    this.send({ t: 'boom', id: b.owner, w: b.w, r: b.r, x, y, z });
   }
 
   explosionFx(x, y, z, radius) {
@@ -1042,6 +1083,7 @@ export class Game {
 
     this.physics.step(dt);
     this.ballistics.update(dt);
+    this.flushShots();
     this.builds.update(dt);
 
     // build ghost
@@ -1072,9 +1114,16 @@ export class Game {
     const me = this.me;
     if (!me.alive || me.inBus || !me.canAct()) { this.hud.prompt(''); this.input.setInteractLabel(''); return; }
     // auto pickup
+    let slotBusy = this.slotPickPending(me);
     for (const it of this.loot.items.values()) {
       const dx = it.x - me.pos.x, dz = it.z - me.pos.z, dy = it.y - me.pos.y;
-      if (dx * dx + dz * dz < 1.7 * 1.7 && Math.abs(dy) < 1.6 && me.canAutoPick(it.item)) this.pick(me, it);
+      if (dx * dx + dz * dz >= 1.7 * 1.7 || Math.abs(dy) >= 1.6 || !me.canAutoPick(it.item)) continue;
+      const kind = itemKind(it.item.k);
+      if (kind === 'weapon' || kind === 'heal') {
+        if (slotBusy) continue;
+        slotBusy = true;
+      }
+      this.pick(me, it);
     }
     const chest = this.nearestChest(me.pos, 2.8);
     const l = chest ? null : this.loot.nearest(me.pos, 2.6, (it) => !me.pendingPick.has(it.id));
@@ -1091,7 +1140,7 @@ export class Game {
     this.input.setInteractLabel(label);
     if (s.interact) {
       if (chest) this.openChest(me, chest.i);
-      else if (l) this.pick(me, l);
+      else if (l) this.pick(me, l, true);
     }
     // chest shimmer
     const nc = this.nearestChest(me.pos, 18);

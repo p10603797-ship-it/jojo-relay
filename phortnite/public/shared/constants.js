@@ -170,7 +170,7 @@ export const BOT_NAMES = [
 export const RARITY_WEIGHTS = [42, 30, 17, 8, 3];
 
 export function clampRarity(key, r) {
-  const list = WEAPONS[key].rarities;
+  const list = own(WEAPONS, key) ? WEAPONS[key].rarities : [0];
   if (list.includes(r)) return r;
   let best = list[0];
   for (const x of list) if (Math.abs(x - r) < Math.abs(best - r)) best = x;
@@ -178,8 +178,8 @@ export function clampRarity(key, r) {
 }
 
 export function weaponDamage(key, rarity, dist, head) {
+  if (!own(WEAPONS, key)) return 0;
   const w = WEAPONS[key];
-  if (!w) return 0;
   let d = w.dmg[Math.max(0, Math.min(w.dmg.length - 1, rarity | 0))];
   if (head && w.head) d *= w.head;
   if (w.falloff && dist > w.falloff[0]) {
@@ -190,19 +190,22 @@ export function weaponDamage(key, rarity, dist, head) {
   return d;
 }
 
+/** Own-property lookup so keys like "constructor" never match a table. */
+export const own = (table, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(table, k);
+
 export function itemName(item) {
   if (!item) return '';
-  if (item.k in WEAPONS) return `${RARITY[item.r || 0].name} ${WEAPONS[item.k].name}`;
-  if (item.k in HEALS) return HEALS[item.k].name;
-  if (item.k in AMMO) return AMMO[item.k].name;
+  if (own(WEAPONS, item.k)) return `${RARITY[Math.max(0, Math.min(4, item.r | 0))].name} ${WEAPONS[item.k].name}`;
+  if (own(HEALS, item.k)) return HEALS[item.k].name;
+  if (own(AMMO, item.k)) return AMMO[item.k].name;
   if (MAT_KEYS.includes(item.k)) return BUILD.mats[item.k].label;
-  return item.k;
+  return String(item.k);
 }
 
 export function itemKind(k) {
-  if (k in WEAPONS) return 'weapon';
-  if (k in HEALS) return 'heal';
-  if (k in AMMO) return 'ammo';
+  if (own(WEAPONS, k)) return 'weapon';
+  if (own(HEALS, k)) return 'heal';
+  if (own(AMMO, k)) return 'ammo';
   if (MAT_KEYS.includes(k)) return 'mat';
   return 'unknown';
 }

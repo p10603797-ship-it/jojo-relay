@@ -8,7 +8,7 @@ const C = BUILD.cell, L = BUILD.level;
 const RAMP_LEN = Math.hypot(C, L);
 const TYPES = ['w', 'f', 'r'];
 const MATS = ['wood', 'stone', 'metal'];
-const CAP = 700;
+const CAP = BUILD.maxPieces;
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _s = new THREE.Vector3(), _c = new THREE.Color();
 const _qx = new THREE.Quaternion(), _qy = new THREE.Quaternion();
@@ -81,9 +81,14 @@ export class Builds {
   add(msg, local = false) {
     const existing = this.pieces.get(msg.k);
     if (existing) {
-      existing.pending = false;
-      if (msg.hp !== undefined) { existing.hp = msg.hp; existing.max = msg.max; }
-      return existing;
+      const same = existing.m === (msg.m || existing.m) && (existing.d | 0) === (msg.d | 0) && (!msg.by || !existing.by || existing.by === msg.by);
+      if (same) {
+        existing.pending = false;
+        existing.by = msg.by || existing.by;
+        if (msg.hp !== undefined) { existing.hp = msg.hp; existing.max = msg.max; }
+        return existing;
+      }
+      this.remove(msg.k, false);
     }
     const p = parseKey(msg.k);
     if (!p) return null;
@@ -164,13 +169,17 @@ export class Builds {
     mesh.count = last;
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
-    if (fx && this.fx) {
-      const he = p.t === 'w' ? [C / 2, L / 2, 0.1] : p.t === 'f' ? [C / 2, 0.1, C / 2] : [C / 2, L / 2, C / 2];
-      const hx = p.t === 'w' && p.o === 'z' ? he[2] : he[0], hz = p.t === 'w' && p.o === 'z' ? he[0] : he[2];
-      this.fx.shatter(p.m, p.pos.x, p.pos.y, p.pos.z, hx, he[1], hz, push?.x || 0, push?.y || 0, push?.z || 0, 8);
-      this.fx.decals.removeKey(k);
-    }
+    if (this.fx) this.fx.decals.removeKey(k);
+    if (fx) this.shatter(p, push);
     return p;
+  }
+
+  /** Break effect for a removed piece (can be played later than the removal). */
+  shatter(p, push) {
+    if (!this.fx) return;
+    const he = p.t === 'w' ? [C / 2, L / 2, 0.1] : p.t === 'f' ? [C / 2, 0.1, C / 2] : [C / 2, L / 2, C / 2];
+    const hx = p.t === 'w' && p.o === 'z' ? he[2] : he[0], hz = p.t === 'w' && p.o === 'z' ? he[0] : he[2];
+    this.fx.shatter(p.m, p.pos.x, p.pos.y, p.pos.z, hx, he[1], hz, push?.x || 0, push?.y || 0, push?.z || 0, 8);
   }
 
   clear() {

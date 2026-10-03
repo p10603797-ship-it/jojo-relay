@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { RARITY, AMMO } from '../../shared/constants.js';
 import { paint, merge } from '../world/models.js';
 
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
 const cache = new Map();
 const DARK = 0x2a2e35, MID = 0x4b525c, LIGHT = 0x8a929c, WOOD = 0x8a5a32;
 
@@ -165,8 +167,8 @@ export function itemModel(key, rarity = 0) {
   if (m) return m;
   const acc = new THREE.Color(RARITY[rarity] ? RARITY[rarity].color : '#ffffff').getHex();
   let built;
-  if (AMMO[key]) built = BUILDERS.ammo(new THREE.Color(AMMO[key].color).getHex());
-  else if (BUILDERS[key]) built = BUILDERS[key](acc);
+  if (hasOwn(AMMO, key)) built = BUILDERS.ammo(new THREE.Color(AMMO[key].color).getHex());
+  else if (hasOwn(BUILDERS, key) && key !== 'ammo') built = BUILDERS[key](acc);
   else built = BUILDERS.ammo(0xffffff);
   m = { geo: merge(built.parts), muzzle: new THREE.Vector3(...built.muzzle) };
   cache.set(ck, m);

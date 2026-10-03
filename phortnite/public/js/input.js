@@ -162,6 +162,7 @@ export class Input {
     };
     joyZone.addEventListener('pointerup', joyUp);
     joyZone.addEventListener('pointercancel', joyUp);
+    joyZone.addEventListener('lostpointercapture', joyUp);
 
     const lookDown = (e) => {
       e.preventDefault();
@@ -180,6 +181,7 @@ export class Input {
     lookZone.addEventListener('pointermove', lookMove);
     lookZone.addEventListener('pointerup', lookUp);
     lookZone.addEventListener('pointercancel', lookUp);
+    lookZone.addEventListener('lostpointercapture', lookUp);
 
     // buttons: [name, label, class, alsoLook]
     const defs = [
@@ -220,7 +222,19 @@ export class Input {
       b.addEventListener('pointermove', lookMove);
       b.addEventListener('pointerup', up);
       b.addEventListener('pointercancel', up);
+      b.addEventListener('lostpointercapture', up);
     }
+  }
+
+  /** Forget toggles and any touches in flight (used on death / match start / respawn). */
+  resetToggles() {
+    this.crouchToggle = false;
+    this.touchAds = false;
+    this.tbtn.clear();
+    this.looks.clear();
+    this.joy.id = -1; this.joy.x = 0; this.joy.y = 0;
+    if (this.joyBase) { this.joyBase.classList.remove('on'); this.joyKnob.style.transform = ''; }
+    if (this.tbEls) for (const b of Object.values(this.tbEls)) b.classList.remove('down');
   }
 
   setInteractLabel(text) {

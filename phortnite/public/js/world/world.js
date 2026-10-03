@@ -38,6 +38,7 @@ export class World {
     this.time = 0;
     this.falling = [];
     this.chestOpen = new Set();
+    this.destroyedIds = new Set();
 
     this.buildLights();
     this.buildSky();
@@ -582,6 +583,7 @@ normal = normalize((viewMatrix * vec4(wN, 0.0)).xyz);
     const r = this.objs[id];
     if (!r || !r.alive) return null;
     r.alive = false;
+    this.destroyedIds.add(id);
     for (const c of r.colliders) this.physics.removeCollider(c);
     r.colliders = [];
     if (r.inst) {
@@ -597,6 +599,7 @@ normal = normalize((viewMatrix * vec4(wN, 0.0)).xyz);
   }
 
   restoreAll() {
+    this.destroyedIds.clear();
     for (const r of this.objs) {
       if (!r || r.alive) continue;
       r.alive = true;

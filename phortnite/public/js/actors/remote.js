@@ -1,17 +1,21 @@
 // Players simulated elsewhere (other devices, or bots owned by another device):
 // snapshot buffering + interpolation, animated model, kinematic collider, hitboxes.
 import * as THREE from 'three';
-import { ANIM, FLAG, WEAPONS } from '../../shared/constants.js';
+import { ANIM, FLAG, WEAPONS, HEALS } from '../../shared/constants.js';
 import { Character } from './character.js';
 import { GROUP } from '../physics.js';
 
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
 const INTERP_MS = 110;
 
+const TAU = Math.PI * 2;
+function wrap(a) {
+  if (!Number.isFinite(a)) return 0;
+  return a - TAU * Math.floor((a + Math.PI) / TAU);
+}
 function lerpAngle(a, b, t) {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return a + d * t;
+  return a + wrap(b - a) * t;
 }
 
 export class RemotePlayer {
@@ -104,11 +108,9 @@ export class RemotePlayer {
     this.anim = snap.a;
     this.flags = snap.f;
     const [wk, wr] = String(snap.w || 'pickaxe').split(':');
-    this.weapon = wk;
+    this.weapon = wk === 'build' || hasOwn(WEAPONS, wk) || hasOwn(HEALS, wk) ? wk : 'pickaxe';
     this.rarity = wr ? parseInt(wr, 10) || 0 : 0;
-    this.moveAngle = this.speed > 0.4 ? Math.atan2(this.vel.x, this.vel.z) - (yw + Math.PI) : 0;
-    while (this.moveAngle > Math.PI) this.moveAngle -= Math.PI * 2;
-    while (this.moveAngle < -Math.PI) this.moveAngle += Math.PI * 2;
+    this.moveAngle = this.speed > 0.4 ? wrap(Math.atan2(this.vel.x, this.vel.z) - (yw + Math.PI)) : 0;
 
     const visible = this.anim !== ANIM.BUS && !this.dead;
     const far = this.game.isFar(this.pos);
@@ -123,8 +125,8 @@ export class RemotePlayer {
     c.group.position.set(x, y, z);
     c.group.rotation.y = yw + Math.PI;
     const building = this.weapon === 'build';
-    const w = WEAPONS[this.weapon];
-    c.setWeapon(building ? null : this.weapon, this.rarity);
+    const w = hasOwn(WEAPONS, this.weapon) ? WEAPONS[this.weapon] : null;
+    c.setWeapon(building ? null : this.weapon, Math.max(0, Math.min(4, this.rarity)));
     c.update(dt, {
       anim: this.anim, speed: this.speed, moveAngle: this.moveAngle, pitch: pt, ads: !!(this.flags & FLAG.ADS),
       gun: !!(w && !w.melee), building, healing: !!(this.flags & FLAG.HEAL), reload: this.flags & FLAG.RELOAD ? (now % 1000) / 1000 : -1,
