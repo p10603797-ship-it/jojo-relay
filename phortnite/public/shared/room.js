@@ -61,7 +61,7 @@ export class Room {
     this.phase = 'lobby';
     this.phaseEnds = 0;
     this.leader = 0;
-    this.settings = { bots: solo ? 19 : 8, mats: 0 };
+    this.settings = { bots: solo ? 19 : 8, mats: 0, mode: 'ffa' };
     this.loot = new Map();
     this.nextLoot = 1;
     this.chestsOpened = new Set();
@@ -94,7 +94,7 @@ export class Room {
 
   roster() {
     return [...this.players.values()].map((p) => ({
-      id: p.id, name: p.name, skin: p.skin, bot: p.bot, alive: p.alive, kills: p.kills, spec: p.spectator,
+      id: p.id, name: p.name, skin: p.skin, bot: p.bot, alive: p.alive, kills: p.kills, spec: p.spectator, team: p.team,
     }));
   }
 
@@ -163,7 +163,7 @@ export class Room {
 
   makePlayer(id, name, skin, bot) {
     return {
-      id, name, skin, bot, owner: 0, alive: false, spectator: false, hp: PLAYER.maxHp, sh: 0, kills: 0,
+      id, name, skin, bot, owner: 0, alive: false, spectator: false, hp: PLAYER.maxHp, sh: 0, kills: 0, team: id,
       x: 0, y: 60, z: 0, vx: 0, vy: 0, vz: 0, yw: 0, pt: 0, a: ANIM.IDLE, w: 'pickaxe', f: 0,
       inBus: false, ip: '', lastSeen: this.now(),
     };
@@ -230,6 +230,7 @@ export class Room {
       b.owner = this.leader;
       this.players.set(id, b);
     }
+    const squad = this.settings.mode === 'squad';
     for (const p of this.players.values()) {
       p.alive = true;
       p.spectator = false;
@@ -238,6 +239,8 @@ export class Room {
       p.kills = 0;
       p.inBus = true;
       p.a = ANIM.BUS;
+      // squad mode: every human on the same team against the bots
+      p.team = squad && !p.bot ? 1 : 1000 + p.id;
     }
     // bus path across the island
     const ang = Math.random() * Math.PI * 2;
@@ -359,17 +362,23 @@ export class Room {
     if (this.phase !== 'match' && this.phase !== 'bus') return;
     const alive = this.alivePlayers();
     const humansAlive = alive.filter((p) => !p.bot).length;
-    if (alive.length <= 1 || humansAlive === 0) {
-      let w = alive.length === 1 ? alive[0] : null;
+    const teams = new Set(alive.map((p) => p.team));
+    if (teams.size <= 1 || humansAlive === 0) {
+      let w = teams.size === 1 ? alive.find((p) => !p.bot) || alive[0] : null;
       if (!w && humansAlive === 0 && alive.length > 1) {
         w = alive.slice().sort((a, b) => b.kills - a.kills)[0];
       }
+      const squad = w && this.settings.mode === 'squad' && !w.bot && alive.filter((p) => p.team === w.team).length > 1;
       this.phase = 'ended';
       this.winner = w ? w.id : 0;
-      this.phaseEnds = this.now() + (humansAlive === 0 && alive.length > 1 ? 7000 : 10000);
-      this.broadcast({ t: 'win', id: this.winner, name: w ? w.name : '', bot: w ? w.bot : false, early: alive.length > 1 });
+      this.phaseEnds = this.now() + (humansAlive === 0 && teams.size > 1 ? 7000 : 10000);
+      this.broadcast({
+        t: 'win', id: this.winner, team: w ? w.team : 0, name: squad ? 'Your squad' : w ? w.name : '', bot: w ? w.bot : false, early: teams.size > 1,
+      });
     }
   }
+
+  sameTeam(a, b) { return a !== b && a.team === b.team; }
 
   returnToLobby() {
     this.phase = 'lobby';
@@ -384,6 +393,7 @@ export class Room {
       p.sh = 0;
       p.inBus = false;
       p.a = ANIM.IDLE;
+      p.team = p.id;
     }
     this.broadcast({ t: 'lobby', players: this.roster(), leader: this.leader, settings: this.settings });
   }
@@ -645,6 +655,7 @@ const HANDLERS = {
     if (c.pid !== this.leader || this.phase !== 'lobby') return;
     if (m.bots !== undefined) this.settings.bots = clampN(num(m.bots) | 0, 0, 30);
     if (m.mats !== undefined) this.settings.mats = clampN(num(m.mats) | 0, 0, MAX_MATS);
+    if (m.mode === 'ffa' || m.mode === 'squad') this.settings.mode = m.mode;
     this.startMatch();
   },
 
@@ -652,6 +663,7 @@ const HANDLERS = {
     if (c.pid !== this.leader) return;
     if (m.bots !== undefined) this.settings.bots = clampN(num(m.bots) | 0, 0, 30);
     if (m.mats !== undefined) this.settings.mats = clampN(num(m.mats) | 0, 0, MAX_MATS);
+    if (m.mode === 'ffa' || m.mode === 'squad') this.settings.mode = m.mode;
     this.broadcast({ t: 'settings', settings: this.settings });
   },
 
@@ -684,7 +696,7 @@ const HANDLERS = {
     const a = this.actor(c.conn.id, m.id);
     const tg = this.players.get(m.tg);
     if (!a || !tg || !a.alive || !tg.alive || tg.inBus || a === tg) return;
-    if (!this.damageAllowed()) return;
+    if (!this.damageAllowed() || this.sameTeam(a, tg)) return;
     const w = WEAPONS[m.w];
     if (!w) return;
     const r = clampRarity(m.w, num(m.r) | 0);
@@ -709,7 +721,7 @@ const HANDLERS = {
     const R = w.splash;
     if (this.damageAllowed()) {
       for (const p of this.players.values()) {
-        if (!p.alive || p.inBus || p === a) continue;
+        if (!p.alive || p.inBus || p === a || this.sameTeam(p, a)) continue;
         const dx = p.x - x, dy = p.y + 0.9 - y, dz = p.z - z;
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (d < R) this.applyDamage(p, base * (1 - 0.6 * d / R), a, { w: m.w, c: 'boom' });

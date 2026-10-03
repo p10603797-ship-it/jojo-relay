@@ -348,7 +348,9 @@ export class Hud {
     const isLeader = state.leader === state.you;
     $('.lp-leader', L).style.display = isLeader ? 'block' : 'none';
     $('.lp-wait', L).style.display = isLeader ? 'none' : 'block';
-    const bots = $('.lp-bots', L), botsv = $('.lp-botsv', L), mats = $('.lp-mats', L);
+    const bots = $('.lp-bots', L), botsv = $('.lp-botsv', L), mats = $('.lp-mats', L), mode = $('.lp-mode', L);
+    if (document.activeElement !== mode) mode.value = state.settings.mode || 'ffa';
+    mode.closest('label').style.display = state.solo ? 'none' : '';
     if (document.activeElement !== bots) { bots.value = state.settings.bots; botsv.textContent = state.settings.bots; }
     if (document.activeElement !== mats) mats.value = String(state.settings.mats);
     $('.lp-share', L).innerHTML = state.share || '';

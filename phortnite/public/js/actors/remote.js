@@ -111,13 +111,14 @@ export class RemotePlayer {
     while (this.moveAngle < -Math.PI) this.moveAngle += Math.PI * 2;
 
     const visible = this.anim !== ANIM.BUS && !this.dead;
-    this.char.setVisible(visible || !!this.char.ragdoll);
+    const far = this.game.isFar(this.pos);
+    this.char.setVisible((visible && !far) || !!this.char.ragdoll);
     if (this.char.ragdoll) {
       this.char.update(dt, {});
       return;
     }
     this.collider.setTranslation({ x, y: visible ? y + 0.9 : -500, z });
-    if (!visible) return;
+    if (!visible || far) return;
     const c = this.char;
     c.group.position.set(x, y, z);
     c.group.rotation.y = yw + Math.PI;

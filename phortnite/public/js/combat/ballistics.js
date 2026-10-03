@@ -76,6 +76,7 @@ export class Ballistics {
     o.vx = b.dx * b.speed; o.vy = b.dy * b.speed; o.vz = b.dz * b.speed;
     o.g = (b.grav || 0) * GRAVITY;
     o.owner = b.owner;
+    o.team = b.team;
     o.w = b.w;
     o.r = b.r || 0;
     o.auth = !!b.auth;
@@ -118,7 +119,7 @@ export class Ballistics {
           if (wh) best = { kind: 'world', dist: wh.dist, x: wh.x, y: wh.y, z: wh.z, nx: wh.nx, ny: wh.ny, nz: wh.nz, info: wh.info, collider: wh.collider };
           const targets = this.hooks.targets(b.owner);
           for (const t of targets) {
-            if (t.id === b.owner) continue;
+            if (t.id === b.owner || (b.team !== undefined && t.team === b.team)) continue;
             const maxD = best ? best.dist : len;
             const th = raySphere(b.x, b.y, b.z, dx, dy, dz, t.head[0], t.head[1], t.head[2], t.head[3]);
             const tb = rayCapsule(b.x, b.y, b.z, dx, dy, dz, t.body[0], t.body[1], t.body[2], t.body[3], t.body[4], t.body[5], t.body[6]);

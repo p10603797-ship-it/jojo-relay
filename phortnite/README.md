@@ -29,8 +29,9 @@ QR code with the iPad camera).
 * **Play Solo** — you against up to 30 bots. Runs entirely in the browser.
 * **Play with Friends** — create a party, everyone else taps it in the list (parties from your
   own Wi-Fi are marked *SAME WI-FI*) or types its 4-letter code. While waiting you can warm up
-  on the island. The party leader chooses the number of bots and starting materials, then hits
-  **Start match**.
+  on the island. The party leader picks the mode — *Everyone for themselves* or *Friends team up
+  vs bots* (no friendly fire, the whole squad wins together) — plus the number of bots and
+  starting materials, then hits **Start match**.
 
 Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
 screen for a true full-screen game.
@@ -38,7 +39,10 @@ screen for a true full-screen game.
 If Windows asks about the firewall the first time, allow Node.js on *private* networks,
 otherwise the iPads can't reach the server.
 
-`PORT=3000 npm start` changes the port.
+`PORT=3000 npm start` changes the port. `npm test` runs the game-logic tests.
+
+Solo mode needs no server at all: `npm run build:static` copies the libraries into
+`public/vendor/`, after which the `public/` folder can be put on any static web host.
 
 ## What's in it
 

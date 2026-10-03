@@ -125,7 +125,7 @@ export class Bot extends Combatant {
     let best = null, bestD = 90;
     for (const a of g.actors()) {
       if (a === this || !a.alive || a.mode === 'bus' || a.inBus) continue;
-      if (g.phase === 'lobby') continue;
+      if (g.phase === 'lobby' || g.friendly(a.id, this.id)) continue;
       const d = a.pos.distanceTo(this.pos);
       if (d > bestD) continue;
       _e.set(a.pos.x, a.pos.y + 1.2, a.pos.z);

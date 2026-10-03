@@ -39,13 +39,14 @@ export class Ui {
     $('.es-leave').addEventListener('click', () => this.app.leaveGame());
     const lp = $('#lobbypanel');
     $('.lp-min', lp).addEventListener('click', () => lp.classList.toggle('min'));
-    const bots = $('.lp-bots', lp), botsv = $('.lp-botsv', lp), mats = $('.lp-mats', lp);
+    const bots = $('.lp-bots', lp), botsv = $('.lp-botsv', lp), mats = $('.lp-mats', lp), mode = $('.lp-mode', lp);
+    mode.addEventListener('change', () => this.app.game && this.app.game.send({ t: 'settings', mode: mode.value }));
     bots.addEventListener('input', () => { botsv.textContent = bots.value; });
     bots.addEventListener('change', () => this.app.game && this.app.game.send({ t: 'settings', bots: +bots.value }));
     mats.addEventListener('change', () => this.app.game && this.app.game.send({ t: 'settings', mats: +mats.value }));
     $('.lp-start', lp).addEventListener('click', () => {
       this.app.sfx.ui();
-      this.app.game && this.app.game.startMatch(+bots.value, +mats.value);
+      this.app.game && this.app.game.startMatch(+bots.value, +mats.value, mode.value);
     });
     for (const el of [lp, $('#elimscreen'), $('#menubtn')]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
   }

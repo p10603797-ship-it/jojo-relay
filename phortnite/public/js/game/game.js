@@ -98,7 +98,23 @@ export class Game {
     return r ? r.name : id === 0 ? 'The Storm' : '???';
   }
 
+  /** Characters further than this are not animated or drawn (they'd be fogged out anyway). */
+  isFar(pos) {
+    const c = this.camera.position;
+    const dx = pos.x - c.x, dy = pos.y - c.y, dz = pos.z - c.z;
+    const lim = Math.min(260, this.settings.drawDistLimit || 260);
+    return dx * dx + dy * dy + dz * dz > lim * lim;
+  }
+
   isMine(id) { return (this.me && id === this.me.id) || this.bots.has(id); }
+
+  teamOf(id) {
+    const r = this.roster.get(id);
+    return r && r.team !== undefined ? r.team : id;
+  }
+
+  /** Teammates (squad mode) can't hurt each other and see each other's names. */
+  friendly(a, b) { return a !== b && this.phase !== 'lobby' && this.teamOf(a) === this.teamOf(b); }
 
   send(msg) { this.net.send(msg); }
 
@@ -213,7 +229,7 @@ export class Game {
       this.roster.set(p.id, p);
       if (p.id !== this.myId) {
         const r = this.ensureRemote(p);
-        if (r) { r.revive(); r.buf.length = 0; r.hasState = false; r.setNameVisible(false); }
+        if (r) { r.revive(); r.buf.length = 0; r.hasState = false; r.setNameVisible(!p.bot && p.team === this.teamOf(this.myId)); }
       }
     }
     const me = this.me;
@@ -299,7 +315,7 @@ export class Game {
     this.updateLobby();
     if (this.autoRestart) {
       this.autoRestart = false;
-      this.send({ t: 'start', bots: this.settingsState.bots, mats: this.settingsState.mats });
+      this.send({ t: 'start', bots: this.settingsState.bots, mats: this.settingsState.mats, mode: this.settingsState.mode });
     }
   }
 
@@ -351,7 +367,7 @@ export class Game {
     for (let i = 0; i + 2 < m.d.length; i += 3) {
       this.ballistics.fire({
         ox: m.o[0], oy: m.o[1], oz: m.o[2], dx: m.d[i], dy: m.d[i + 1], dz: m.d[i + 2], speed: w.speed, grav: w.grav,
-        owner: m.id, w: m.w, r: m.r, auth: false, rocket: w.projectile === 'rocket', visX: muzzle.x, visY: muzzle.y, visZ: muzzle.z,
+        owner: m.id, team: this.phase === 'lobby' ? m.id : this.teamOf(m.id), w: m.w, r: m.r, auth: false, rocket: w.projectile === 'rocket', visX: muzzle.x, visY: muzzle.y, visZ: muzzle.z,
       });
     }
     _f.set(m.d[0], m.d[1], m.d[2]);
@@ -549,7 +565,7 @@ export class Game {
 
   on_win(m) {
     this.phase = 'ended';
-    const meWon = m.id === this.myId;
+    const meWon = m.id === this.myId || (!m.bot && m.team !== undefined && m.team === this.teamOf(this.myId));
     this.input.exitLock();
     if (!meWon && this.me && !this.me.alive && this.lastElim) {
       // keep showing how we went out; just add who won
@@ -685,7 +701,7 @@ export class Game {
     for (let i = 0; i < dirs.length; i += 3) {
       this.ballistics.fire({
         ox: origin.x, oy: origin.y, oz: origin.z, dx: dirs[i], dy: dirs[i + 1], dz: dirs[i + 2], speed: w.speed, grav: w.grav,
-        owner: a.id, w: cur.k, r: cur.r | 0, auth: true, rocket: w.projectile === 'rocket', shot,
+        owner: a.id, team: this.phase === 'lobby' ? a.id : this.teamOf(a.id), w: cur.k, r: cur.r | 0, auth: true, rocket: w.projectile === 'rocket', shot,
         visX: muzzle.x, visY: muzzle.y, visZ: muzzle.z,
       });
     }
@@ -814,8 +830,9 @@ export class Game {
     if (dx * aim.dx + dy * aim.dy + dz * aim.dz < 0.3) { dx = aim.dx; dy = aim.dy; dz = aim.dz; }
     const range = w.range;
     let best = null;
+    const myTeam = this.phase === 'lobby' ? a.id : this.teamOf(a.id);
     for (const t of this.hitboxes) {
-      if (t.id === a.id) continue;
+      if (t.id === a.id || t.team === myTeam) continue;
       const th = raySphere(o.x, o.y, o.z, dx, dy, dz, t.head[0], t.head[1], t.head[2], t.head[3] + 0.15);
       const tb = rayCapsule(o.x, o.y, o.z, dx, dy, dz, t.body[0], t.body[1], t.body[2], t.body[3], t.body[4], t.body[5], t.body[6] + 0.15);
       const d = th >= 0 ? (tb >= 0 ? Math.min(th, tb) : th) : tb;
@@ -869,8 +886,9 @@ export class Game {
     let best = 1500;
     let h = this.physics.raycast(o.x + f.x * minD, o.y + f.y * minD, o.z + f.z * minD, f.x, f.y, f.z, 1500, RAY_SOLID);
     if (h) best = h.dist + minD;
+    const myTeam = this.phase === 'lobby' ? this.me.id : this.teamOf(this.me.id);
     for (const t of this.hitboxes) {
-      if (t.id === this.me.id) continue;
+      if (t.id === this.me.id || t.team === myTeam) continue;
       const th = raySphere(o.x, o.y, o.z, f.x, f.y, f.z, t.head[0], t.head[1], t.head[2], t.head[3]);
       const tb = rayCapsule(o.x, o.y, o.z, f.x, f.y, f.z, t.body[0], t.body[1], t.body[2], t.body[3], t.body[4], t.body[5], t.body[6]);
       if (th > minD && th < best) best = th;
@@ -911,7 +929,8 @@ export class Game {
     } else {
       let t = this.spectateId ? this.actorById(this.spectateId) : null;
       if (!t || !t.alive) {
-        t = this.actors().find((a) => a.alive && a !== me && a.mode !== 'bus') || null;
+        const alive = this.actors().filter((a) => a.alive && a !== me && a.mode !== 'bus');
+        t = alive.find((a) => this.friendly(a.id, me.id)) || alive[0] || null;
         this.spectateId = t ? t.id : 0;
       }
       const s = this.input.s;
@@ -976,7 +995,9 @@ export class Game {
     for (const a of this.actors()) {
       if (!a.alive || a.inBus || a.mode === 'bus' || a.mode === 'dead') continue;
       if (a.hasState === false) continue;
-      this.hitboxes.push(a.hitbox());
+      const hb = a.hitbox();
+      hb.team = this.phase === 'lobby' ? a.id : this.teamOf(a.id);
+      this.hitboxes.push(hb);
     }
 
     // local player
@@ -1136,6 +1157,11 @@ export class Game {
     // map
     const extras = {};
     if (this.phase === 'bus' && this.bus.path) { extras.bus = this.bus.path; extras.busPos = this.bus.pos; }
+    if (this.phase !== 'lobby') {
+      const dots = [];
+      for (const r of this.remotes.values()) if (r.alive && !r.isBot && this.friendly(r.id, this.myId)) dots.push({ x: r.pos.x, z: r.pos.z, c: '#4fd2ff' });
+      if (dots.length) extras.dots = dots;
+    }
     const mp = me.inBus ? this.bus.pos : me.alive ? me.pos : (this.actorById(this.spectateId) || me).pos;
     hud.minimap(dt, { x: mp.x, z: mp.z, yaw: me.alive || me.inBus ? me.yaw : this.specYaw }, st && { ...st, ...this.storm.vis }, extras);
     // location name
@@ -1165,8 +1191,8 @@ export class Game {
     });
   }
 
-  startMatch(bots, mats) {
-    this.send({ t: 'start', bots, mats });
+  startMatch(bots, mats, mode) {
+    this.send({ t: 'start', bots, mats, mode: mode || this.settingsState.mode });
   }
 
   playAgain() {

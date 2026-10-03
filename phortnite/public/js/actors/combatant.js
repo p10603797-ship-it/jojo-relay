@@ -443,6 +443,11 @@ export class Combatant {
   }
 
   animate(dt) {
+    if (this.isBot && this.game.isFar(this.pos) && !this.char.ragdoll) {
+      this.char.group.visible = false;
+      return;
+    }
+    if (this.isBot && this.alive) this.char.group.visible = true;
     const cur = this.current();
     const w = cur ? WEAPONS[cur.k] : null;
     this.char.setWeapon(cur && !this.buildMode ? cur.k : null, cur ? cur.r | 0 : 0);
