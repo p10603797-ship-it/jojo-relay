@@ -173,26 +173,25 @@ export class Ui {
       <h3>Controllers</h3>
       <p>Bluetooth game controllers work too: sticks move & look, triggers aim & shoot, A jump, B crouch, X reload/interact, Y build, D-pad picks wall/floor/ramp/material.</p>
       <h3>Playing with friends</h3>
-      <p>One computer runs the Phortnite server (<code>npm start</code>) — or use a hosted copy. Everyone on the same Wi-Fi opens the address it prints (or scans the QR code), taps <b>Play with Friends</b> and joins the same party. The party leader picks how many bots to add and starts the match.</p>`;
+      <p>Everyone opens the Phortnite website and taps <b>Play with Friends</b>. One player hosts a party; the others join with the 4-letter party code it shows (or scan its QR code with the iPad camera). The host picks how many bots to add and starts the match — and must keep the game open, because the match runs on the host's device.</p>`;
     this.modal(html, null, onClose);
   }
 
   // ------------------------------------------------------------------ multiplayer
   async friendsModal() {
     const app = this.app;
+    if (!document.documentElement.dataset.server) {
+      // the website (no Phortnite server behind it): parties are hosted peer-to-peer
+      this.p2pModal();
+      return;
+    }
     this.modal('<h2>PLAY WITH FRIENDS</h2><p>Connecting to the Phortnite server…</p>');
     let net;
     try {
       net = await app.connectServer();
     } catch (e) {
-      this.modal(`<h2>PLAY WITH FRIENDS</h2>
-        <p>Couldn't reach a Phortnite server from this page${location.protocol === 'file:' ? ' (opened as a file)' : ''}.</p>
-        <p>To play with friends on the same Wi-Fi, one computer needs to run the game server:</p>
-        <p><code>cd phortnite<br>npm install<br>npm start</code></p>
-        <p>It prints an address like <code>http://192.168.1.20:8080</code> (and a QR code) — open that on every iPad / computer on the Wi-Fi.</p>
-        <button class="btn yellow retry">TRY AGAIN</button>`, (b) => {
-        $('.retry', b).addEventListener('click', () => this.friendsModal());
-      });
+      // no Phortnite server behind this page (e.g. the GitHub Pages website): play peer-to-peer
+      this.p2pModal();
       return;
     }
     let info = null;
@@ -232,6 +231,34 @@ export class Ui {
     net.send({ t: 'list' });
     clearInterval(this.listTimer);
     this.listTimer = setInterval(() => { if (this.modalOpen() && !app.game) net.send({ t: 'list' }); else clearInterval(this.listTimer); }, 3000);
+  }
+
+  /** Parties without a server: one device hosts, friends join with the code. */
+  p2pModal(prefill = '') {
+    const app = this.app;
+    this.modal(`<h2>PLAY WITH FRIENDS</h2>
+      <p>One player hosts a party on their iPad or computer, then everyone else joins with the 4-letter party code. Works best when you're all on the same Wi-Fi. The host's device runs the match, so the host should keep the game open.</p>
+      <div class="mp-row"><button class="btn big yellow p2p-host" style="width:auto">HOST A PARTY</button></div>
+      <h3>Join a friend's party</h3>
+      <div class="mp-row">
+        <input class="mp-code" maxlength="4" placeholder="CODE" autocomplete="off" autocapitalize="characters" value="${esc(prefill)}">
+        <button class="btn blue p2p-join">JOIN</button>
+      </div>`, (b) => {
+      const go = () => {
+        const code = $('.mp-code', b).value.trim().toUpperCase();
+        if (!/^[A-Z]{4}$/.test(code)) { this.alert('Party codes are 4 letters, like ABCD.'); return; }
+        this.onModalClose = null;
+        this.modalEl.classList.add('hidden');
+        app.startP2PJoin(code);
+      };
+      $('.p2p-host', b).addEventListener('click', () => {
+        this.onModalClose = null;
+        this.modalEl.classList.add('hidden');
+        app.startP2PHost();
+      });
+      $('.p2p-join', b).addEventListener('click', go);
+      $('.mp-code', b).addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    });
   }
 
   join(net, code) {

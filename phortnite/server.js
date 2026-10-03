@@ -47,6 +47,22 @@ function lanAddresses() {
 
 const cache = new Map(); // abs path -> { mtime, raw, gz }
 
+// index.html points at the CDN; when we serve it ourselves use our local copies instead,
+// so a LAN party keeps working even without internet.
+const LOCAL_LIBS = [
+  ['https://cdn.jsdelivr.net/npm/es-module-shims@2.8.4/dist/es-module-shims.js', 'vendor/es-module-shims.js'],
+  ['https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js', './vendor/three.module.js'],
+  ['https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/', './vendor/addons/'],
+  ['https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs', './vendor/rapier.mjs'],
+];
+function localizeHtml(buf) {
+  let s = buf.toString('utf8');
+  for (const [cdn, local] of LOCAL_LIBS) s = s.split(cdn).join(local);
+  // tells the page a party server is behind it (the static website plays peer-to-peer instead)
+  s = s.replace('<html', '<html data-server="1"');
+  return Buffer.from(s);
+}
+
 const ADDONS = path.join(ROOT, 'node_modules/three/examples/jsm');
 
 function resolvePath(urlPath) {
@@ -73,7 +89,8 @@ function serveFile(req, res, abs) {
     const type = TYPES[ext] || 'application/octet-stream';
     let entry = cache.get(abs);
     if (!entry || entry.mtime !== st.mtimeMs) {
-      const raw = fs.readFileSync(abs);
+      let raw = fs.readFileSync(abs);
+      if (abs === path.join(PUBLIC, 'index.html')) raw = localizeHtml(raw);
       entry = { mtime: st.mtimeMs, raw, gz: COMPRESSIBLE.has(ext) && raw.length > 1024 ? zlib.gzipSync(raw, { level: 6 }) : null };
       cache.set(abs, entry);
     }

@@ -334,7 +334,7 @@ export class Hud {
     $('.lp-title', L).textContent = state.solo ? 'WARM-UP' : 'PARTY';
     $('.lp-hint', L).textContent = state.solo
       ? 'Practice on the island with unlimited ammo & materials. Start the match when ready!'
-      : 'Warm up on the island (no damage) while friends join. Everyone on the same Wi-Fi can join from Play with Friends.';
+      : 'Warm up on the island (no damage) while friends join with the party code from Play with Friends.';
     const ul = $('.lp-players', L);
     ul.innerHTML = '';
     for (const p of state.players) {

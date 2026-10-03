@@ -1,14 +1,43 @@
 # PHORTNITE
 
 A 3D battle royale that runs in the browser — made for iPad (touch controls) and computers
-(keyboard/mouse or a game controller), with multiplayer for friends on the same Wi-Fi.
+(keyboard/mouse or a game controller), with multiplayer for friends, straight from a website.
 
 Drop out of a flying bus, loot weapons, harvest materials, build walls/floors/ramps and be the
 last one standing to win a **Phictory Royale**.
 
-## Quick start
+## Play on the website (no computer needed)
 
-You need [Node.js](https://nodejs.org) 18 or newer on one computer.
+Phortnite is a plain static website, so it runs straight from **GitHub Pages**:
+
+**https://p10603797-ship-it.github.io/jojo-relay/**
+
+To switch the website on (one time): on GitHub open the repository's **Settings → Pages**, under
+*Build and deployment* pick **Deploy from a branch**, choose the branch that contains Phortnite
+and the **/ (root)** folder, then **Save**. After a minute or two the address above works. It
+needs to be a public repository (or a paid GitHub plan).
+
+* **Play Solo**: you against up to 30 bots. Everything runs on your iPad.
+* **Play with Friends**: one player taps **Host a party** and gets a 4-letter code plus a QR
+  code. Everyone else taps **Play with Friends**, types the code (or scans the QR code with the
+  iPad camera) and joins. While waiting you can warm up on the island. The host picks the mode
+  (*Everyone for themselves* or *Friends team up vs bots*, with no friendly fire and the whole
+  squad winning together), plus the number of bots and starting materials, then hits
+  **Start match**.
+
+Parties are peer-to-peer: the match runs on the **host's** device and the others connect to it
+directly over WebRTC (the free [PeerJS](https://peerjs.com) service only introduces the devices
+to each other, and relays traffic if a direct link isn't possible). The host must keep the game
+open; if they leave, the party ends. It works best when everyone is on the same Wi-Fi, but
+friends elsewhere can join too.
+
+Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
+screen for a true full-screen game.
+
+## Run your own server (optional)
+
+You can also run Phortnite on a computer, for example to play on a Wi-Fi with no internet. You
+need [Node.js](https://nodejs.org) 18 or newer.
 
 ```bash
 cd phortnite
@@ -24,25 +53,15 @@ The server prints something like:
 ```
 
 plus a QR code. Open the Wi-Fi address on every iPad / laptop on the same network (or scan the
-QR code with the iPad camera).
-
-* **Play Solo** — you against up to 30 bots. Runs entirely in the browser.
-* **Play with Friends** — create a party, everyone else taps it in the list (parties from your
-  own Wi-Fi are marked *SAME WI-FI*) or types its 4-letter code. While waiting you can warm up
-  on the island. The party leader picks the mode — *Everyone for themselves* or *Friends team up
-  vs bots* (no friendly fire, the whole squad wins together) — plus the number of bots and
-  starting materials, then hits **Start match**.
-
-Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
-screen for a true full-screen game.
+QR code with the iPad camera). In this mode the server runs the matches, so nobody has to host:
+**Play with Friends** lists the parties on the server (parties from your own Wi-Fi are marked
+*SAME WI-FI*), or join one by typing its 4-letter code. The server serves the 3D and physics
+libraries itself, so it needs no internet.
 
 If Windows asks about the firewall the first time, allow Node.js on *private* networks,
 otherwise the iPads can't reach the server.
 
 `PORT=3000 npm start` changes the port. `npm test` runs the game-logic tests.
-
-Solo mode needs no server at all: `npm run build:static` copies the libraries into
-`public/vendor/`, after which the `public/` folder can be put on any static web host.
 
 ## What's in it
 
@@ -90,18 +109,21 @@ Game controllers (via the Gamepad API) work too.
 ## How it fits together
 
 ```
-server.js                 HTTP + WebSocket server (serves the site, hosts parties)
-public/index.html         the website / HUD markup
+server.js                 optional HTTP + WebSocket server (serves the site, hosts parties)
+public/index.html         the website / HUD markup (libraries load from the jsDelivr CDN)
 public/shared/            code shared by browser and server
   constants.js            weapons, items, storm, player tuning
   worldgen.js             deterministic island generator (same ids everywhere)
   buildgrid.js            build grid, structural support, collapse
-  room.js                 authoritative match logic (also runs in-browser for solo)
+  room.js                 authoritative match logic (runs on the server, or in the browser
+                          for solo games and on the host's device for website parties)
 public/js/                the game client (three.js + Rapier)
+public/js/net/p2p.js      website parties over WebRTC (PeerJS)
 ```
 
-The server is authoritative for health, damage, eliminations, loot, chests, builds, destruction
+The match logic (`room.js`, on the server or the party host's device) is authoritative for health, damage, eliminations, loot, chests, builds, destruction
 and the storm; each device simulates its own player (and the party leader simulates the bots)
-and sends 20 updates a second, so it feels instant on a home network.
+and sends 20 updates a second, so it feels instant on a home network. On the website, the
+`index.html` at the repository root forwards `/jojo-relay/` to the game in `phortnite/public/`.
 
 Phortnite is a fan-made parody game and is not affiliated with or endorsed by Epic Games.

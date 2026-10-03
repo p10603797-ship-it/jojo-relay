@@ -14,6 +14,7 @@ import { Ui } from './ui/menu.js';
 import { Character } from './actors/character.js';
 import { Game } from './game/game.js';
 import { WsNet, LocalNet } from './net/net.js';
+import { P2PHost, P2PClient, qrDataUrl } from './net/p2p.js';
 
 const TIPS = [
   'Tip: build a wall the moment someone starts shooting at you.',
@@ -154,6 +155,11 @@ class App {
     $('#game').addEventListener('click', () => { if (this.game && !this.input.touchMode && !this.input.locked && !this.ui.modalOpen()) this.input.requestLock(); });
     $('#loading').style.display = 'none';
     this.ui.showMenu(true);
+    const jm = /join=([A-Za-z]{4})/.exec(location.hash || '');
+    if (jm) {
+      history.replaceState(null, '', location.pathname + location.search);
+      this.ui.p2pModal(jm[1].toUpperCase());
+    }
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
     window.__phortnite = this;
@@ -265,6 +271,55 @@ class App {
       }
     };
     return net;
+  }
+
+  /** Host a peer-to-peer party from this device (no server needed). */
+  async startP2PHost() {
+    if (this.game) return;
+    const net = new P2PHost(this.hello());
+    this.shareHtml = 'Creating your party…';
+    this.beginGame(net, false);
+    try {
+      await net.connect();
+    } catch (e) {
+      if (this.game && this.game.net === net) {
+        this.leaveGame();
+        this.ui.alert(e.message || 'Could not create a party.');
+      }
+      return;
+    }
+    if (!this.game || this.game.net !== net) return;
+    const url = `${location.origin}${location.pathname}#join=${net.code}`;
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    this.shareHtml = `Friends tap <b>Play with Friends</b> and type <b style="color:#ffd23f;letter-spacing:3px;font-size:16px">${net.code}</b>, or scan:`;
+    qrDataUrl(url).then((src) => {
+      if (src && this.game && this.game.net === net) {
+        this.shareHtml += `<br><img src="${src}" alt="Join link" style="width:110px;height:110px;margin-top:6px;border-radius:6px"><br><code>${esc(url)}</code>`;
+      }
+    });
+  }
+
+  /** Join a friend's peer-to-peer party by code. */
+  async startP2PJoin(code) {
+    if (this.game) return;
+    const net = new P2PClient(code, this.hello());
+    this.shareHtml = '';
+    this.beginGame(net, false);
+    try {
+      await net.connect();
+    } catch (e) {
+      if (this.game && this.game.net === net) {
+        this.leaveGame();
+        this.ui.alert(e.message || 'Could not join that party.');
+      }
+      return;
+    }
+    net.onClose = () => {
+      if (this.game && this.game.net === net) {
+        this.leaveGame();
+        this.ui.alert('The party host left or lost connection.');
+      }
+    };
   }
 
   startOnlineGame(net, code) {

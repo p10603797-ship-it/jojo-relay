@@ -5,6 +5,7 @@ import { generateWorld } from '../public/shared/worldgen.js';
 import { BuildGrid, pieceKey, parseKey } from '../public/shared/buildgrid.js';
 import { Room } from '../public/shared/room.js';
 import { weaponDamage, MAP } from '../public/shared/constants.js';
+import { frameSender, frameReceiver } from '../public/js/net/p2p.js';
 
 test('world generation is deterministic', () => {
   const a = generateWorld(MAP.seed), b = generateWorld(MAP.seed);
@@ -142,4 +143,21 @@ test('bots move to an active device when their owner goes quiet', () => {
   assert.ok(bots.every((x) => x.owner === b.id));
   assert.ok(inbox.b.some((m) => m.t === 'bots' && m.own.length === 3));
   assert.ok(inbox.a.some((m) => m.t === 'bots' && m.own.length === 0));
+});
+
+test('peer-to-peer messages of any size arrive whole, under the data channel size limit', () => {
+  const wire = [];
+  const send = frameSender({ open: true, send: (d) => wire.push(d) });
+  const got = [];
+  const recv = frameReceiver((m) => got.push(m));
+  const big = { t: 'start', name: 'Zoë 😀'.repeat(3000), list: Array.from({ length: 4000 }, (_, i) => [i, i * 0.5]) };
+  send({ t: 's', p: [[1, 2, 3]] });
+  send(big);
+  send({ t: 'pong', c: 5 });
+  assert.ok(wire.length > 5, 'big message was split');
+  for (const d of wire) assert.ok(Buffer.byteLength(d, 'utf8') < 16000);
+  for (const d of wire) recv(d);
+  assert.deepEqual(got, [{ t: 's', p: [[1, 2, 3]] }, big, { t: 'pong', c: 5 }]);
+  recv('~zz|0|2|{"t":'); recv('not json'); recv(42);
+  assert.equal(got.length, 3, 'junk and incomplete messages are ignored');
 });
