@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Phortnite">
+  <meta name="theme-color" content="#1a0f3d">
+  <meta name="description" content="Phortnite — a free 3D battle royale you can play in the browser, on iPad, with friends on the same Wi-Fi.">
+  <title>PHORTNITE</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Russo+One&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Libraries come from the jsDelivr CDN so the site works on any static host.
+       The bundled Node server (npm start) rewrites these to its own local copies. -->
+  <!-- import maps polyfill for older Safari / iPadOS (only kicks in when needed) -->
+  <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@2.8.4/dist/es-module-shims.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+        "rapier": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="touch"></div>
+
+  <!-- ===================================================== HUD -->
+  <div id="hud" class="hidden">
+    <div id="stormtint"></div>
+    <div id="hurt"></div>
+    <div id="hitdirs"></div>
+    <div id="scope"><div class="scope-ring"></div></div>
+
+    <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><b></b></div>
+    <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+    <div id="dmgnums"></div>
+
+    <button id="menubtn" class="hudbtn" aria-label="Menu">☰</button>
+    <div id="netinfo"></div>
+    <div id="fps"></div>
+
+    <div id="topright">
+      <canvas id="minimap" width="200" height="200"></canvas>
+      <div id="stats">
+        <span id="st-storm" class="pill storm"><b class="ico">◷</b><span>0:00</span></span>
+        <span id="st-alive" class="pill"><b class="ico">👤</b><span>1</span></span>
+        <span id="st-kills" class="pill"><b class="ico">✖</b><span>0</span></span>
+      </div>
+      <div id="poi"></div>
+    </div>
+
+    <div id="killfeed"></div>
+    <div id="notice"></div>
+    <div id="bigmsg"></div>
+
+    <div id="bars">
+      <div class="bar shield"><div class="fill"></div><span class="num">0</span></div>
+      <div class="bar health"><div class="fill"></div><span class="num">100</span></div>
+    </div>
+
+    <div id="mats">
+      <div class="mat" data-m="wood"><i></i><span>0</span></div>
+      <div class="mat" data-m="stone"><i></i><span>0</span></div>
+      <div class="mat" data-m="metal"><i></i><span>0</span></div>
+    </div>
+
+    <div id="ammo"><span class="mag">–</span><span class="res"></span><span class="wname"></span></div>
+    <div id="hotbar"></div>
+    <div id="buildbar">
+      <div class="bp" data-t="w"><b>▮</b><span>Wall</span><kbd>Q</kbd></div>
+      <div class="bp" data-t="f"><b>▬</b><span>Floor</span><kbd>Z</kbd></div>
+      <div class="bp" data-t="r"><b>◢</b><span>Ramp</span><kbd>C</kbd></div>
+    </div>
+
+    <div id="prompt"></div>
+    <div id="progress"><div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg"/></svg></div><span></span></div>
+    <div id="busprompt"></div>
+
+    <div id="lobbypanel" class="panel">
+      <div class="lp-head"><span class="lp-title">PARTY</span><span class="lp-code"></span><button class="lp-min" aria-label="Minimise">–</button></div>
+      <div class="lp-body">
+        <div class="lp-hint"></div>
+        <ul class="lp-players"></ul>
+        <div class="lp-leader">
+          <label>Bots <input type="range" min="0" max="30" value="8" class="lp-bots"><b class="lp-botsv">8</b></label>
+          <label>Mode
+            <select class="lp-mode"><option value="ffa">Everyone for themselves</option><option value="squad">Friends team up vs bots</option></select>
+          </label>
+          <label>Start materials
+            <select class="lp-mats"><option value="0">0 (classic)</option><option value="200">200</option><option value="500">500</option><option value="999">999 (builder pro)</option></select>
+          </label>
+          <button class="btn yellow lp-start">START MATCH</button>
+        </div>
+        <div class="lp-wait">Waiting for the party leader to start…</div>
+        <div class="lp-share"></div>
+      </div>
+    </div>
+
+    <div id="elimscreen" class="hidden">
+      <div class="es-place"></div>
+      <div class="es-title"></div>
+      <div class="es-sub"></div>
+      <div class="es-btns">
+        <button class="btn es-again yellow">PLAY AGAIN</button>
+        <button class="btn es-spec">SPECTATE</button>
+        <button class="btn es-leave">LEAVE</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="fullmap" class="hidden"><canvas width="900" height="900"></canvas><div class="fm-close">Tap / M to close</div></div>
+
+  <!-- ===================================================== MENUS -->
+  <div id="menu" class="hidden">
+    <div class="logo">
+      <div class="logo-main">PHORTNITE</div>
+      <div class="logo-sub">BATTLE ROYALE · BUILD · PHIGHT</div>
+    </div>
+    <div class="menu-left">
+      <label class="namebox">Your name<input id="name" maxlength="16" autocomplete="off" spellcheck="false"></label>
+      <button class="btn big yellow" id="btn-solo">PLAY SOLO <small>vs bots</small></button>
+      <button class="btn big blue" id="btn-friends">PLAY WITH FRIENDS <small>same Wi-Fi</small></button>
+      <div class="row">
+        <button class="btn" id="btn-locker">LOCKER</button>
+        <button class="btn" id="btn-settings">SETTINGS</button>
+        <button class="btn" id="btn-help">HOW TO PLAY</button>
+      </div>
+      <button class="btn small" id="btn-fullscreen">⛶ FULL SCREEN</button>
+    </div>
+    <div class="menu-right">
+      <div class="skin-name" id="skin-name"></div>
+      <div class="skin-arrows"><button class="btn round" id="skin-prev">◀</button><button class="btn round" id="skin-next">▶</button></div>
+    </div>
+    <div class="menu-foot">A fan-made battle royale. Not affiliated with any game company.</div>
+  </div>
+
+  <div id="modal" class="hidden"><div class="modal-card"><button class="modal-x" aria-label="Close">✕</button><div class="modal-body"></div></div></div>
+
+  <div id="loading">
+    <div class="logo"><div class="logo-main">PHORTNITE</div></div>
+    <div class="load-bar"><div class="load-fill"></div></div>
+    <div class="load-text">Loading…</div>
+    <div class="load-tip"></div>
+  </div>
+
+  <div id="rotate">↻ Turn your iPad sideways to play</div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
