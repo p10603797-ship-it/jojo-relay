@@ -23,6 +23,7 @@ const VENDOR = {
   '/vendor/three.module.js': 'node_modules/three/build/three.module.js',
   '/vendor/three.core.js': 'node_modules/three/build/three.core.js',
   '/vendor/rapier.mjs': 'node_modules/@dimforge/rapier3d-compat/dist/rapier.mjs',
+  '/vendor/es-module-shims.js': 'node_modules/es-module-shims/dist/es-module-shims.js',
 };
 
 const TYPES = {
@@ -168,6 +169,13 @@ function roomList(ip) {
 
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
 let connSeq = 0;
+// broadcasts send the same object to many sockets: stringify it once
+const jsonCache = new WeakMap();
+function encode(obj) {
+  let s = jsonCache.get(obj);
+  if (s === undefined) { s = JSON.stringify(obj); jsonCache.set(obj, s); }
+  return s;
+}
 
 wss.on('connection', (ws, req) => {
   const conn = {
@@ -178,7 +186,7 @@ wss.on('connection', (ws, req) => {
     msgCount: 0,
     msgWindow: Date.now(),
     send(obj) {
-      if (ws.readyState === 1) ws.send(JSON.stringify(obj));
+      if (ws.readyState === 1 && ws.bufferedAmount < 2 * 1024 * 1024) ws.send(encode(obj));
     },
   };
   ws.on('pong', () => { conn.alive = true; });

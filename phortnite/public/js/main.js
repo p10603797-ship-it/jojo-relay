@@ -123,7 +123,7 @@ class App {
     this.input.forceTouch = this.settings.forceTouch;
     if (this.isTouch || this.settings.forceTouch) this.input.setTouchMode(true);
     this.input.onLockChange = (locked) => {
-      if (!locked && this.game && !this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
+      if (!locked && this.game && this.game.wantsPause() && !this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
     };
     this.sfx = new Sfx(this.settings);
     this.hud = new Hud(this.world);

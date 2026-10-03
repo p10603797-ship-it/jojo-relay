@@ -32,7 +32,10 @@ export class Ui {
     // in-game buttons
     $('#menubtn').addEventListener('click', () => this.pauseModal());
     $('.es-again').addEventListener('click', () => { this.app.game && this.app.game.playAgain(); });
-    $('.es-spec').addEventListener('click', () => { this.app.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: this.app.game && this.app.game.solo }); });
+    $('.es-spec').addEventListener('click', () => {
+      this.app.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: this.app.game && this.app.game.solo });
+      this.app.resume();
+    });
     $('.es-leave').addEventListener('click', () => this.app.leaveGame());
     const lp = $('#lobbypanel');
     $('.lp-min', lp).addEventListener('click', () => lp.classList.toggle('min'));

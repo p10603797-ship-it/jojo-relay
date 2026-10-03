@@ -20,6 +20,8 @@ const _q = new THREE.Quaternion();
 const _v = new THREE.Vector3();
 const _s = new THREE.Vector3();
 const _e = new THREE.Euler();
+const _up = new THREE.Vector3();
+const _snap = new THREE.Vector3();
 
 export class World {
   constructor({ scene, physics, T, data, quality, renderer }) {
@@ -690,11 +692,11 @@ normal = normalize((viewMatrix * vec4(wN, 0.0)).xyz);
       const texel = (2 * e) / this.sun.shadow.mapSize.x;
       const fwd = _v.copy(SUN_DIR).negate();
       const right = _s.crossVectors(fwd, THREE.Object3D.DEFAULT_UP).normalize();
-      const up = new THREE.Vector3().crossVectors(right, fwd);
+      const up = _up.crossVectors(right, fwd);
       const rr = Math.round(focus.dot(right) / texel) * texel;
       const uu = Math.round(focus.dot(up) / texel) * texel;
       const ff = focus.dot(fwd);
-      const snapped = new THREE.Vector3().addScaledVector(right, rr).addScaledVector(up, uu).addScaledVector(fwd, ff);
+      const snapped = _snap.set(0, 0, 0).addScaledVector(right, rr).addScaledVector(up, uu).addScaledVector(fwd, ff);
       this.sun.target.position.copy(snapped);
       this.sun.position.copy(snapped).addScaledVector(SUN_DIR, 220);
       this.sun.target.updateMatrixWorld();

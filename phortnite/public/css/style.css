@@ -311,7 +311,9 @@ body.touch #prompt kbd { display: none; }
 @media (orientation: portrait) and (max-width: 1100px) { body.touch.ingame #rotate { display: flex; } }
 
 /* ------------------------------------------------------------------ touch controls */
-#touch { position: fixed; inset: 0; z-index: 12; display: none; touch-action: none; }
+/* below the HUD: the HUD root ignores pointers, so touches fall through to these controls
+   except where the HUD has real buttons (hotbar, minimap, panels) */
+#touch { position: fixed; inset: 0; z-index: 9; display: none; touch-action: none; }
 body.touch.ingame #touch { display: block; }
 body.touch #crosshair { --s: 8px; }
 .tz { position: absolute; top: 0; bottom: 0; touch-action: none; }
@@ -326,7 +328,7 @@ body.touch #crosshair { --s: 8px; }
 .tbtn small { font-size: 10px; margin-top: 2px; }
 .tb-fire { right: calc(120px + var(--sar)); bottom: calc(150px + var(--sab)); width: 100px; height: 100px; background: rgba(255, 60, 60, 0.3); }
 .tb-fire .ico { font-size: 40px; }
-.tb-fire2 { left: calc(40px + var(--sal)); top: 34%; width: 72px; height: 72px; background: rgba(255, 60, 60, 0.25); }
+.tb-fire2 { left: calc(40px + var(--sal)); top: 52%; width: 72px; height: 72px; background: rgba(255, 60, 60, 0.25); }
 .tb-jump { right: calc(26px + var(--sar)); bottom: calc(110px + var(--sab)); }
 .tb-crouch { right: calc(26px + var(--sar)); bottom: calc(196px + var(--sab)); width: 62px; height: 62px; }
 .tb-ads { right: calc(240px + var(--sar)); bottom: calc(190px + var(--sab)); width: 66px; height: 66px; }

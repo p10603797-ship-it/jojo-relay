@@ -131,11 +131,13 @@ export class StormView {
           float n = texture2D(uNoise, vec2(vUv.x * 9.0 + uTime * 0.012, vW.y * 0.008 - uTime * 0.035)).r;
           float n2 = texture2D(uNoise, vec2(vUv.x * 27.0 - uTime * 0.02, vW.y * 0.025 + uTime * 0.05)).g;
           float f = n * 0.7 + n2 * 0.5;
-          vec3 col = mix(vec3(0.32, 0.08, 0.62), vec3(0.88, 0.58, 1.0), smoothstep(0.45, 1.1, f));
-          float a = 0.3 + smoothstep(0.5, 1.0, f) * 0.35;
-          a *= smoothstep(420.0, 160.0, vW.y);
+          vec3 col = mix(vec3(0.3, 0.06, 0.6), vec3(0.85, 0.52, 1.0), smoothstep(0.45, 1.1, f));
+          float a = 0.34 + smoothstep(0.5, 1.0, f) * 0.36;
+          // tall near the player, a faint haze on the horizon
           float cd = length(vW.xz - cameraPosition.xz);
-          a *= mix(1.0, 0.35, smoothstep(120.0, 420.0, cd));
+          float top = mix(240.0, 90.0, smoothstep(60.0, 320.0, cd));
+          a *= 1.0 - smoothstep(top * 0.4, top, vW.y - cameraPosition.y * 0.5);
+          a *= mix(1.0, 0.16, smoothstep(70.0, 300.0, cd));
           gl_FragColor = vec4(col, a);
           #include <colorspace_fragment>
         }`,

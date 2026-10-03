@@ -92,7 +92,8 @@ export class RemotePlayer {
     }
     const snap = s1;
     // teleports (bus drop, respawn) shouldn't be smoothed
-    if (this.pos.distanceToSquared(new THREE.Vector3(x, y, z)) > 30 * 30) this.pos.set(x, y, z);
+    const jx = this.pos.x - x, jy = this.pos.y - y, jz = this.pos.z - z;
+    if (jx * jx + jy * jy + jz * jz > 30 * 30) this.pos.set(x, y, z);
     const px = this.pos.x, pz = this.pos.z;
     this.pos.set(x, y, z);
     this.vel.set(snap.vx, snap.vy, snap.vz);

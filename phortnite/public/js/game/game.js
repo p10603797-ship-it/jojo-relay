@@ -232,6 +232,7 @@ export class Game {
     this.storm.clear();
     this.kills = 0;
     this.spectateId = 0;
+    this.lastElim = null;
     this.hud.elim(null);
     this.hud.lobby(null);
     this.hud.big('THE BUS IS LEAVING!<small>Jump out when you\'re over a good spot</small>');
@@ -293,6 +294,7 @@ export class Game {
     this.spawnWarmup();
     this.hud.elim(null);
     this.spectateId = 0;
+    this.lastElim = null;
     document.body.classList.remove('dead', 'inbus');
     this.updateLobby();
     if (this.autoRestart) {
@@ -440,11 +442,16 @@ export class Game {
     this.spectateId = killer && killer !== this.me ? killer.id : 0;
     this.specYaw = this.me.yaw;
     const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : killer ? `Eliminated by ${this.nameOf(m.k)}` : 'Eliminated';
-    this.hud.elim({
+    this.lastElim = {
       place: m.place, title: 'ELIMINATED', sub: `${how} · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
       again: this.solo, spectate: true, leave: true,
-    });
+    };
+    this.hud.elim(this.lastElim);
+    this.input.exitLock();
   }
+
+  /** Should losing the mouse pointer open the pause menu? */
+  wantsPause() { return !!(this.me && this.me.alive && this.phase !== 'ended'); }
 
   dropAll(actor) {
     const items = actor.allItems();
@@ -543,7 +550,11 @@ export class Game {
   on_win(m) {
     this.phase = 'ended';
     const meWon = m.id === this.myId;
-    if (meWon) {
+    this.input.exitLock();
+    if (!meWon && this.me && !this.me.alive && this.lastElim) {
+      // keep showing how we went out; just add who won
+      this.hud.elim({ ...this.lastElim, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
+    } else if (meWon) {
       this.sfx.ui('victory');
       this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true });
     } else if (this.me && this.me.alive) {
@@ -574,6 +585,7 @@ export class Game {
     this.send({ t: 'drop', id: a.id });
     if (a === this.me) {
       this.sfx.ui('glider');
+      this.input.crouchToggle = false;
       document.body.classList.remove('inbus');
     }
   }
@@ -893,7 +905,7 @@ export class Game {
       const w = cur && WEAPONS[cur.k];
       if (me.ads && w && !w.melee) {
         zoom = w.zoom || 1.3;
-        dist = 1.55; right = 0.58; up = 0.15;
+        dist = 2.2; right = 0.86; up = 0.25;
         if (w.scope) { scope = true; hideMe = true; dist = 0.4; right = 0.2; }
       }
     } else {
