@@ -12,10 +12,9 @@ Phortnite is a plain static website, so it runs straight from **GitHub Pages**:
 
 **https://p10603797-ship-it.github.io/jojo-relay/**
 
-To switch the website on (one time): on GitHub open the repository's **Settings → Pages**, under
-*Build and deployment* pick **Deploy from a branch**, choose the branch that contains Phortnite
-and the **/ (root)** folder, then **Save**. After a minute or two the address above works. It
-needs to be a public repository (or a paid GitHub plan).
+The website is published from the **`gh-pages`** branch, which holds a copy of the `public/`
+folder at its root. To update the website, copy `phortnite/public/` onto the `gh-pages` branch
+and push; GitHub rebuilds the site within a minute or two.
 
 * **Play Solo**: you against up to 30 bots. Everything runs on your iPad.
 * **Play with Friends**: one player taps **Host a party** and gets a 4-letter code plus a QR
@@ -123,7 +122,8 @@ public/js/net/p2p.js      website parties over WebRTC (PeerJS)
 
 The match logic (`room.js`, on the server or the party host's device) is authoritative for health, damage, eliminations, loot, chests, builds, destruction
 and the storm; each device simulates its own player (and the party leader simulates the bots)
-and sends 20 updates a second, so it feels instant on a home network. On the website, the
-`index.html` at the repository root forwards `/jojo-relay/` to the game in `phortnite/public/`.
+and sends 20 updates a second, so it feels instant on a home network. If GitHub Pages is
+ever pointed at a source branch instead of `gh-pages`, the `index.html` at the repository root
+forwards visitors to the game in `phortnite/public/`.
 
 Phortnite is a fan-made parody game and is not affiliated with or endorsed by Epic Games.
