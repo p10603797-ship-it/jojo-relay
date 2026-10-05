@@ -36,7 +36,7 @@ const PRESETS = {
 
 const DEFAULTS = {
   name: '', skin: 0, quality: 'auto', sens: 1, touchSens: 1, invertY: false, fov: 80, volume: 0.8,
-  showFps: false, shake: true, forceTouch: false,
+  showFps: false, shake: true, forceTouch: false, autoFire: true,
 };
 
 function loadSettings() {

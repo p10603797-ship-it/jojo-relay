@@ -18,6 +18,15 @@ const WARMUP = {
   ammo: {}, mats: { wood: 999, stone: 999, metal: 999 },
 };
 
+// Auto-shoot (a setting): farthest (m from the gun) an enemy may be for each gun to fire on its
+// own, so a shotgun doesn't waste shells on someone across the map. Bullet drop is checked too.
+const AUTO_RANGE = { ar: 220, smg: 90, pistol: 90, shotgun: 30, sniper: 250, rocket: 90 };
+// closest: a point-blank rocket would level the player's own walls and floor
+const AUTO_MIN = { rocket: 12 };
+const AUTO_ACQUIRE = 0.06; // s the crosshair must rest on an enemy before firing (like a human reaction)
+const AUTO_GRACE = 0.1; // s to keep firing when tracking slips off the target for a moment
+const GRAVITY = 9.81;
+
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _f = new THREE.Vector3();
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -74,7 +83,12 @@ export class Game {
     this.solo = !!opts.solo;
     this.autoRestart = false;
     this.lastPoi = '';
-    this.aim = { ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: -1, tx: 0, ty: 0, tz: 0 };
+    this.aim = { ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: -1, tx: 0, ty: 0, tz: 0, target: 0 };
+    this.autoOn = 0;
+    this.autoOff = 0;
+    this.autoLock = false;
+    this.autoItem = null;
+    this.autoCtl = {};
     this.unsub = net.onMessage((m) => this.onMessage(m));
     this.disposed = false;
   }
@@ -923,6 +937,8 @@ export class Game {
     const f = forwardFromAngles(this.me.yaw, this.me.pitch, _f);
     const minD = o.distanceTo(_v.set(this.me.pos.x, this.me.pos.y + 1.4, this.me.pos.z)) + 0.4;
     let best = 1500;
+    let target = 0; // enemy under the crosshair (nothing solid in front of it, and drawn on screen)
+    let feet = 0;
     let h = this.physics.raycast(o.x + f.x * minD, o.y + f.y * minD, o.z + f.z * minD, f.x, f.y, f.z, 1500, RAY_SOLID);
     if (h) best = h.dist + minD;
     const myTeam = this.phase === 'lobby' ? this.me.id : this.teamOf(this.me.id);
@@ -930,10 +946,13 @@ export class Game {
       if (t.id === this.me.id || t.team === myTeam) continue;
       const th = raySphere(o.x, o.y, o.z, f.x, f.y, f.z, t.head[0], t.head[1], t.head[2], t.head[3]);
       const tb = rayCapsule(o.x, o.y, o.z, f.x, f.y, f.z, t.body[0], t.body[1], t.body[2], t.body[3], t.body[4], t.body[5], t.body[6]);
-      if (th > minD && th < best) best = th;
-      if (tb > minD && tb < best) best = tb;
+      // an enemy too far away to be drawn still stops the ray but is never a target
+      if (th > minD && th < best) { best = th; target = t.far ? 0 : t.id; feet = t.body[1] - t.body[6]; }
+      if (tb > minD && tb < best) { best = tb; target = t.far ? 0 : t.id; feet = t.body[1] - t.body[6]; }
     }
     const a = this.aim;
+    a.target = target;
+    a.targetFeet = feet;
     a.ox = o.x; a.oy = o.y; a.oz = o.z;
     a.dx = f.x; a.dy = f.y; a.dz = f.z;
     a.tx = o.x + f.x * best; a.ty = o.y + f.y * best; a.tz = o.z + f.z * best;
@@ -1036,6 +1055,7 @@ export class Game {
       if (a.hasState === false) continue;
       const hb = a.hitbox();
       hb.team = this.phase === 'lobby' ? a.id : this.teamOf(a.id);
+      hb.far = this.isFar(a.pos);
       this.hitboxes.push(hb);
     }
 
@@ -1060,9 +1080,13 @@ export class Game {
     this.updateCamera(dt);
     if (me.alive && !me.inBus) {
       const aim = this.computeAim();
-      me.act(dt, s, aim);
+      me.act(dt, this.autoShoot(dt, s, aim), aim);
       me.animate(dt);
-    } else if (me.char.ragdoll) me.char.update(dt, {});
+    } else {
+      this.autoOn = 0;
+      this.autoLock = false;
+      if (me.char.ragdoll) me.char.update(dt, {});
+    }
 
     // owned bots
     for (const b of this.bots.values()) {
@@ -1101,6 +1125,73 @@ export class Game {
     this.interactions(s);
     this.network(dt);
     this.updateHud(dt);
+  }
+
+  /**
+   * Auto-shoot setting: while the crosshair rests on an enemy (and nothing solid is in the way)
+   * the current gun fires by itself. Returns the controls to act on this frame.
+   */
+  autoShoot(dt, s, aim) {
+    const me = this.me;
+    const cur = me.current();
+    const k = cur && cur.k;
+    const w = k && Object.prototype.hasOwnProperty.call(WEAPONS, k) ? WEAPONS[k] : null;
+    // only a gun in hand that can shoot, while the player is playing (no menu open): never
+    // builds, heals or the pickaxe, nor an empty gun, nor during a reload
+    const loaded = !!w && !w.melee && (cur.m > 0 || me.freeAmmo() || (me.inv.ammo[w.ammo] | 0) > 0);
+    const ready = !!(this.settings.autoFire && this.input.enabled && loaded && !me.buildMode && me.canAct()
+      && me.reloadT < 0
+      // a sniper only fires on its own while scoped in: unscoped shots at range almost always miss
+      && (!w.scope || !!s.ads)
+      // a newly picked-up gun waits for its own lock
+      && cur === this.autoItem);
+    this.autoItem = cur;
+    const onTarget = ready && !!aim.target && this.autoShotLands(me, w, k, aim);
+    if (!ready || (aim.target && !onTarget)) { this.autoOn = 0; this.autoOff = 0; }
+    else if (onTarget) { this.autoOn += dt; this.autoOff = 0; }
+    else {
+      // the crosshair slipped off the target for a moment while tracking it
+      this.autoOff += dt;
+      if (this.autoOff > AUTO_GRACE) this.autoOn = 0;
+    }
+    this.autoLock = ready && this.autoOn >= AUTO_ACQUIRE;
+    if (!this.autoLock) return s;
+    // fire as if the trigger were pressed (even if it is held, e.g. dragging the touch fire
+    // button to aim); semi-auto guns shoot as fast as they can cycle
+    const c = Object.assign(this.autoCtl, s);
+    c.fire = true;
+    // in the grace (crosshair slipped off) only an automatic keeps spraying: a semi-auto or rocket
+    // never starts a new shot at whatever is under the crosshair now
+    c.firePressed = !!aim.target || !!s.firePressed;
+    return c;
+  }
+
+  /** Would a shot from the gun reach the enemy under the crosshair? */
+  autoShotLands(me, w, k, aim) {
+    const o = me.shoulder(_v3);
+    const dx = aim.tx - o.x, dy = aim.ty - o.y, dz = aim.tz - o.z;
+    const len = Math.hypot(dx, dy, dz);
+    if (len > (AUTO_RANGE[k] || 100) || len < (AUTO_MIN[k] || 0)) return false;
+    // bullet drop: the shot must still come down on the target, not in the ground in front of it
+    // (a shallow trajectory that dips below the feet lands many metres short, even for a rocket:
+    // only a few cm of slack keep its blast within reach)
+    const drop = w.grav ? 0.5 * GRAVITY * w.grav * (len / w.speed) ** 2 : 0;
+    if (w.grav && aim.ty - drop < aim.targetFeet + (w.splash ? -0.1 : 0.1)) return false;
+    // bullets leave from the shoulder (below the camera) and fall on the way: trace their real
+    // path in a few straight pieces so we never fire into cover the camera can see over
+    const n = drop > 0.02 ? 4 : 1;
+    const end = Math.max(0, 1 - 0.1 / len); // enemies aren't solid, so stop just short of the aim point
+    let px = o.x, py = o.y, pz = o.z;
+    for (let i = 1; i <= n; i++) {
+      const f = (end * i) / n;
+      const qx = o.x + dx * f, qy = o.y + dy * f - drop * f * f, qz = o.z + dz * f;
+      const sx = qx - px, sy = qy - py, sz = qz - pz, sl = Math.hypot(sx, sy, sz);
+      const hit = sl > 1e-4 && this.physics.raycast(px, py, pz, sx / sl, sy / sl, sz / sl, sl, RAY_SOLID);
+      // a rocket that bursts on cover right next to the enemy still catches them in the blast
+      if (hit) return !!w.splash && Math.hypot(hit.x - aim.tx, hit.y - (aim.targetFeet + 0.92), hit.z - aim.tz) < w.splash * 0.5;
+      px = qx; py = qy; pz = qz;
+    }
+    return true;
   }
 
   cycleSpectate() {
@@ -1178,7 +1269,7 @@ export class Game {
         spreadPx = (Math.tan(me.spread(w)) / Math.tan((this.camera.fov * Math.PI) / 360)) * (h / 2);
       } else mode = 'pick';
     }
-    hud.crosshair(spreadPx, mode);
+    hud.crosshair(spreadPx, mode, this.autoLock && mode !== 'pick');
     // heal / reload progress
     if (me.healT >= 0 && cur && HEALS[cur.k]) hud.progress(me.healT / HEALS[cur.k].time, `Using ${HEALS[cur.k].name}`);
     else if (me.reloadT >= 0 && w) hud.progress(me.reloadT / w.reload, 'Reloading');

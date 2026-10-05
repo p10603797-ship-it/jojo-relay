@@ -100,10 +100,15 @@ export class Hud {
     });
   }
 
-  crosshair(spreadPx, mode) {
+  crosshair(spreadPx, mode, lock = false) {
     this.set('chm', mode, (m) => {
       this.el.cross.classList.toggle('pick', m === 'pick');
       this.el.cross.classList.toggle('hide', m === 'none');
+    });
+    // auto-shoot has locked on to an enemy
+    this.set('chl', lock, (v) => {
+      this.el.cross.classList.toggle('lock', v);
+      this.el.scope.classList.toggle('lock', v);
     });
     const s = Math.round(Math.min(80, spreadPx));
     this.set('chs', s, (v) => this.el.cross.style.setProperty('--s', `${v + 5}px`));
