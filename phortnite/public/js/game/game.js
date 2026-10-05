@@ -18,6 +18,12 @@ const WARMUP = {
   ammo: {}, mats: { wood: 999, stone: 999, metal: 999 },
 };
 
+// Auto-shoot (a setting): farthest an enemy may be for each gun to fire on its own, so a
+// shotgun doesn't waste shells on someone across the map.
+const AUTO_RANGE = { ar: 220, smg: 90, pistol: 90, shotgun: 30, sniper: 600, rocket: 200 };
+const AUTO_ACQUIRE = 0.06; // s the crosshair must rest on an enemy before firing (like a human reaction)
+const AUTO_GRACE = 0.1; // s to keep firing when tracking slips off the target for a moment
+
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _f = new THREE.Vector3();
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -74,7 +80,11 @@ export class Game {
     this.solo = !!opts.solo;
     this.autoRestart = false;
     this.lastPoi = '';
-    this.aim = { ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: -1, tx: 0, ty: 0, tz: 0 };
+    this.aim = { ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: -1, tx: 0, ty: 0, tz: 0, target: 0 };
+    this.autoOn = 0;
+    this.autoOff = 0;
+    this.autoLock = false;
+    this.autoCtl = {};
     this.unsub = net.onMessage((m) => this.onMessage(m));
     this.disposed = false;
   }
@@ -923,6 +933,7 @@ export class Game {
     const f = forwardFromAngles(this.me.yaw, this.me.pitch, _f);
     const minD = o.distanceTo(_v.set(this.me.pos.x, this.me.pos.y + 1.4, this.me.pos.z)) + 0.4;
     let best = 1500;
+    let target = 0; // enemy under the crosshair (nothing solid in front of it)
     let h = this.physics.raycast(o.x + f.x * minD, o.y + f.y * minD, o.z + f.z * minD, f.x, f.y, f.z, 1500, RAY_SOLID);
     if (h) best = h.dist + minD;
     const myTeam = this.phase === 'lobby' ? this.me.id : this.teamOf(this.me.id);
@@ -930,10 +941,11 @@ export class Game {
       if (t.id === this.me.id || t.team === myTeam) continue;
       const th = raySphere(o.x, o.y, o.z, f.x, f.y, f.z, t.head[0], t.head[1], t.head[2], t.head[3]);
       const tb = rayCapsule(o.x, o.y, o.z, f.x, f.y, f.z, t.body[0], t.body[1], t.body[2], t.body[3], t.body[4], t.body[5], t.body[6]);
-      if (th > minD && th < best) best = th;
-      if (tb > minD && tb < best) best = tb;
+      if (th > minD && th < best) { best = th; target = t.id; }
+      if (tb > minD && tb < best) { best = tb; target = t.id; }
     }
     const a = this.aim;
+    a.target = target;
     a.ox = o.x; a.oy = o.y; a.oz = o.z;
     a.dx = f.x; a.dy = f.y; a.dz = f.z;
     a.tx = o.x + f.x * best; a.ty = o.y + f.y * best; a.tz = o.z + f.z * best;
@@ -1060,9 +1072,13 @@ export class Game {
     this.updateCamera(dt);
     if (me.alive && !me.inBus) {
       const aim = this.computeAim();
-      me.act(dt, s, aim);
+      me.act(dt, this.autoShoot(dt, s, aim), aim);
       me.animate(dt);
-    } else if (me.char.ragdoll) me.char.update(dt, {});
+    } else {
+      this.autoOn = 0;
+      this.autoLock = false;
+      if (me.char.ragdoll) me.char.update(dt, {});
+    }
 
     // owned bots
     for (const b of this.bots.values()) {
@@ -1101,6 +1117,33 @@ export class Game {
     this.interactions(s);
     this.network(dt);
     this.updateHud(dt);
+  }
+
+  /**
+   * Auto-shoot setting: while the crosshair rests on an enemy (and nothing solid is in the way)
+   * the current gun fires by itself. Returns the controls to act on this frame.
+   */
+  autoShoot(dt, s, aim) {
+    const me = this.me;
+    const cur = me.current();
+    const k = cur && cur.k;
+    const w = k && Object.prototype.hasOwnProperty.call(WEAPONS, k) ? WEAPONS[k] : null;
+    // only for guns in hand (never builds, heals or the pickaxe)
+    const armed = !!(this.settings.autoFire && w && !w.melee && !me.buildMode && me.canAct());
+    // a sniper only fires on its own while scoped in: unscoped shots at range almost always miss
+    const onTarget = armed && aim.target && (!w.scope || !!s.ads) && aim.dist <= (AUTO_RANGE[k] || 100);
+    if (onTarget) { this.autoOn += dt; this.autoOff = 0; }
+    else {
+      this.autoOff += dt;
+      if (!armed || this.autoOff > AUTO_GRACE) this.autoOn = 0;
+    }
+    this.autoLock = armed && this.autoOn >= AUTO_ACQUIRE;
+    if (!this.autoLock || s.fire) return s;
+    // fire as if the trigger were pressed; semi-auto guns shoot as fast as they can cycle
+    const c = Object.assign(this.autoCtl, s);
+    c.fire = true;
+    c.firePressed = true;
+    return c;
   }
 
   cycleSpectate() {
@@ -1178,7 +1221,7 @@ export class Game {
         spreadPx = (Math.tan(me.spread(w)) / Math.tan((this.camera.fov * Math.PI) / 360)) * (h / 2);
       } else mode = 'pick';
     }
-    hud.crosshair(spreadPx, mode);
+    hud.crosshair(spreadPx, mode, this.autoLock && mode !== 'pick');
     // heal / reload progress
     if (me.healT >= 0 && cur && HEALS[cur.k]) hud.progress(me.healT / HEALS[cur.k].time, `Using ${HEALS[cur.k].name}`);
     else if (me.reloadT >= 0 && w) hud.progress(me.reloadT / w.reload, 'Reloading');
