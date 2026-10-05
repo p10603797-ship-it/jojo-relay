@@ -1160,7 +1160,9 @@ export class Game {
     // button to aim); semi-auto guns shoot as fast as they can cycle
     const c = Object.assign(this.autoCtl, s);
     c.fire = true;
-    c.firePressed = true;
+    // in the grace (crosshair slipped off) only an automatic keeps spraying: a semi-auto or rocket
+    // never starts a new shot at whatever is under the crosshair now
+    c.firePressed = !!aim.target || !!s.firePressed;
     return c;
   }
 
@@ -1170,15 +1172,24 @@ export class Game {
     const dx = aim.tx - o.x, dy = aim.ty - o.y, dz = aim.tz - o.z;
     const len = Math.hypot(dx, dy, dz);
     if (len > (AUTO_RANGE[k] || 100) || len < (AUTO_MIN[k] || 0)) return false;
-    // bullets leave from the shoulder, below the camera: don't fire into cover the camera sees over
-    if (len > 0.35 && this.physics.raycast(o.x, o.y, o.z, dx / len, dy / len, dz / len, len - 0.3, RAY_SOLID)) return false;
     // bullet drop: the shot must still come down on the target, not in the ground in front of it
     // (a shallow trajectory that dips below the feet lands many metres short, even for a rocket:
     // only a few cm of slack keep its blast within reach)
-    if (w.grav) {
-      const t = len / w.speed;
-      const drop = 0.5 * GRAVITY * w.grav * t * t;
-      if (aim.ty - drop < aim.targetFeet + (w.splash ? -0.1 : 0.1)) return false;
+    const drop = w.grav ? 0.5 * GRAVITY * w.grav * (len / w.speed) ** 2 : 0;
+    if (w.grav && aim.ty - drop < aim.targetFeet + (w.splash ? -0.1 : 0.1)) return false;
+    // bullets leave from the shoulder (below the camera) and fall on the way: trace their real
+    // path in a few straight pieces so we never fire into cover the camera can see over
+    const n = drop > 0.02 ? 4 : 1;
+    const end = Math.max(0, 1 - 0.1 / len); // enemies aren't solid, so stop just short of the aim point
+    let px = o.x, py = o.y, pz = o.z;
+    for (let i = 1; i <= n; i++) {
+      const f = (end * i) / n;
+      const qx = o.x + dx * f, qy = o.y + dy * f - drop * f * f, qz = o.z + dz * f;
+      const sx = qx - px, sy = qy - py, sz = qz - pz, sl = Math.hypot(sx, sy, sz);
+      const hit = sl > 1e-4 && this.physics.raycast(px, py, pz, sx / sl, sy / sl, sz / sl, sl, RAY_SOLID);
+      // a rocket that bursts on cover right next to the enemy still catches them in the blast
+      if (hit) return !!w.splash && Math.hypot(hit.x - aim.tx, hit.y - (aim.targetFeet + 0.92), hit.z - aim.tz) < w.splash * 0.5;
+      px = qx; py = qy; pz = qz;
     }
     return true;
   }
