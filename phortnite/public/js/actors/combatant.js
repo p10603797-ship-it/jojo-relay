@@ -381,6 +381,7 @@ export class Combatant {
   }
 
   fire(cur, w, aim) {
+    this.dancing = false; // shooting ends an emote (auto-shoot can fire mid-dance)
     cur.m--;
     this.cool = 1 / w.rate;
     const spread = this.spread(w);
