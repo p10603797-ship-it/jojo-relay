@@ -119,7 +119,7 @@ export class Room {
   join(conn, hello = {}) {
     // a friend whose page is still on an older (or newer) build would play by different rules
     if ((hello.v | 0) !== PROTOCOL) {
-      this.send(conn, { t: 'err', ver: true, msg: 'This party is running a different version of Phortnite. Everyone should reload the page, then try again.' });
+      this.send(conn, { t: 'err', ver: true, msg: 'Phortnite was updated, and this page is on a different version than your friends. Everyone should reload the page, then try again.' });
       return false;
     }
     if (this.humans().length >= MAX_HUMANS) {

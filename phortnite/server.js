@@ -227,8 +227,10 @@ wss.on('connection', (ws, req) => {
         const code = newCode();
         const name = String(msg.hello?.name || 'Player').slice(0, 16);
         const room = new Room({ code, name: `${name}'s party`, log });
+        // only list the party once its creator is in (an old cached page is turned away by join)
+        if (!room.join(conn, msg.hello || {})) return;
         rooms.set(code, room);
-        if (room.join(conn, msg.hello || {})) conn.room = room;
+        conn.room = room;
         log('room created', { code, by: name });
         return;
       }
