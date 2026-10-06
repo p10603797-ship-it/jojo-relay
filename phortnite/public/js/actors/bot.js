@@ -82,7 +82,7 @@ const NOISE_PRI = { hit: 6, boom: 4, shot: 4, step: 3, build: 2.5, harvest: 2, c
 // early; loot: how far out of the way they loot; snipe: likes long range; dance: emotes after a kill;
 // hot: likes busy drops
 const PERSONAS = [
-  { key: 'casual', w: 34, aggro: 0.5, build: 0.25, camp: 0.3, rotate: 0.5, loot: 0.6, snipe: 0.3, dance: 0.35, hot: 0.45 },
+  { key: 'casual', w: 34, aggro: 0.5, build: 0.25, camp: 0.3, rotate: 0.5, loot: 0.6, snipe: 0.3, dance: 0.35, hot: 0.35 },
   { key: 'rusher', w: 20, aggro: 0.95, build: 0.45, camp: 0, rotate: 0.25, loot: 0.35, snipe: 0.05, dance: 0.6, hot: 0.9 },
   { key: 'camper', w: 16, aggro: 0.2, build: 0.3, camp: 0.95, rotate: 0.95, loot: 0.6, snipe: 0.5, dance: 0.15, hot: 0.1 },
   { key: 'builder', w: 12, aggro: 0.75, build: 1, camp: 0.1, rotate: 0.6, loot: 0.5, snipe: 0.3, dance: 0.5, hot: 0.6 },
@@ -391,7 +391,9 @@ export class Bot extends Combatant {
       const flying = am === 'skydive' || am === 'glide';
       // players on other devices far from this device's camera aren't animated, so their steps
       // never reach Game.onStep: hear them here instead
-      if (!a.mover && d < 18 && speed > 1 && !flying && this.game.isFar(ap)) this.hear(ap.x, ap.y, ap.z, crouch ? 4 : speed > 7 ? 18 : 12, 'step', a.id);
+      if (!a.mover && d < 18 && speed > 1 && !flying && this.game.isFar(ap)) {
+        this.hear(ap.x, ap.y, ap.z, crouch ? 4 : speed > 7 ? 18 : 12, 'step', a.id);
+      }
       // how far away this target stands out at all
       let range = b.sight;
       if (firing) range *= 1.5;
@@ -584,7 +586,9 @@ export class Bot extends Combatant {
       const d = Math.hypot(r.x - this.pos.x, r.z - this.pos.z);
       const threat = now - r.hurtT < 4;
       b.wantSlot = this.bestWeaponFor(d);
-      const reach = b.wantSlot > 0 ? weaponRange(this.inv.slots[b.wantSlot].k)[2] * 1.2 : 0;
+      // where this gun is actually good, stretched by how keen this player is to fight
+      const rg = b.wantSlot > 0 ? weaponRange(this.inv.slots[b.wantSlot].k) : null;
+      const reach = rg ? Math.min(rg[2] * 1.2, rg[1] * 2 * (0.5 + P.aggro)) : 0;
       if (hpNow < 50 && !b.lowPlan) {
         // losing a fight: box up and heal, run, or keep swinging
         const canBox = this.totalMats() >= 40 && healS > 0 && Math.random() < 0.1 + P.build * (0.4 + 0.6 * b.skill);
@@ -596,11 +600,18 @@ export class Bot extends Combatant {
       else if (urg === 2 && d > 25 && !threat) mode = 'travel';
       else if (b.lowPlan === 'box' && b.boxStep < b.boxN) mode = 'box';
       else if (b.lowPlan === 'flee' && hpNow < 50 && now - b.hurtT < 6 && this.guessHp(t) > hpNow + 20) mode = 'flee';
-      else if (threat || (d < reach && (P.aggro >= 0.4 || d < 35 + 60 * P.snipe))) mode = 'fight';
-      else mode = P.aggro >= 0.4 ? 'fight' : 'watch'; // fight = close the distance
+      else if (threat || d < reach) mode = 'fight';
+      // out of range: the keen (or well kitted) close the distance, patient players keep an eye on
+      // them, everyone else keeps looting and takes the fight if it comes to them
+      else if (P.aggro >= 0.7 || (P.aggro >= 0.4 && this.gunCount() >= 2 && hpNow > 100)) mode = 'fight';
+      else mode = P.camp >= 0.4 || P.snipe >= 0.5 ? 'watch' : 'travel';
     } else if (t) {
-      mode = urg === 2 || !gun ? 'travel' : healS > 0 && hpNow < 75 ? 'heal' : 'search';
-      b.wantSlot = this.bestWeaponFor(Math.hypot(r.x - this.pos.x, r.z - this.pos.z));
+      const d = Math.hypot(r.x - this.pos.x, r.z - this.pos.z);
+      b.wantSlot = this.bestWeaponFor(d);
+      const rg = b.wantSlot > 0 ? weaponRange(this.inv.slots[b.wantSlot].k) : null;
+      // someone we let go by (too far to bother with) isn't worth hunting down either
+      const far = !rg || (d > rg[1] * 2 * (0.5 + P.aggro) && now - r.hurtT > 6 && P.aggro < 0.7);
+      mode = urg === 2 || !gun ? 'travel' : healS > 0 && hpNow < 75 ? 'heal' : far ? 'travel' : 'search';
     } else if (b.danceT > 0) mode = 'emote';
     else if (urg === 2) mode = 'travel';
     else if (healS > 0 && now - b.hurtT > 1.5) mode = 'heal';
@@ -863,7 +874,10 @@ export class Bot extends Combatant {
       case 'loot': {
         const it = b.lootRef;
         if (!it || g.loot.items.get(it.id) !== it || this.pendingPick.has(it.id)) { b.destKind = ''; b.planT = 0; break; }
-        if (Math.hypot(it.x - this.pos.x, it.z - this.pos.z) < 1.8 && Math.abs(it.y - this.pos.y) < 2) { this.grab(it); b.planT = Math.min(b.planT, 0.3); }
+        if (Math.hypot(it.x - this.pos.x, it.z - this.pos.z) < 1.8 && Math.abs(it.y - this.pos.y) < 2) {
+          this.grab(it);
+          b.planT = Math.min(b.planT, 0.3);
+        }
         if (now - b.lootT > 12) { b.badLoot.add(it.id); b.destKind = ''; }
         break;
       }
@@ -1010,7 +1024,13 @@ export class Bot extends Combatant {
       // people look around every few seconds
       b.glanceT -= dt;
       if (b.glanceT <= 0) {
-        if (b.glance) { b.glance = 0; b.glanceT = rnd(1.5, 4.5) * (1.4 - 0.6 * b.skill); } else { b.glance = (Math.random() < 0.5 ? -1 : 1) * rnd(0.6, 1.8); b.glanceT = rnd(0.5, 1.2); }
+        if (b.glance) {
+          b.glance = 0;
+          b.glanceT = rnd(1.5, 4.5) * (1.4 - 0.6 * b.skill);
+        } else {
+          b.glance = (Math.random() < 0.5 ? -1 : 1) * rnd(0.6, 1.8);
+          b.glanceT = rnd(0.5, 1.2);
+        }
       }
     } else b.glance = 0;
     return this.turnHuman(yawT + b.glance, pitchT, dt, b.turnSpeed * 0.6, b.turnK * 0.4);
