@@ -11,7 +11,7 @@ import { Input } from './input.js';
 import { Sfx } from './audio.js';
 import { Hud } from './ui/hud.js';
 import { Ui } from './ui/menu.js';
-import { Character } from './actors/character.js';
+import { Character, prewarmCharacters } from './actors/character.js';
 import { Game } from './game/game.js';
 import { WsNet, LocalNet } from './net/net.js';
 import { P2PHost, P2PClient, qrDataUrl } from './net/p2p.js';
@@ -180,6 +180,7 @@ class App {
     this.menuPos = new THREE.Vector3(px, data.heightAt(px, pz), pz);
     this.menuDir = dir;
     this.setMenuSkin(this.settings.skin);
+    prewarmCharacters(); // build every skin's meshes while the menu is idle
   }
 
   setMenuSkin(skin) {

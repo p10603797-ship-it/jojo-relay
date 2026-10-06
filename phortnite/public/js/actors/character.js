@@ -17,6 +17,7 @@ const approach = (cur, target, rate, dt) => cur + (target - cur) * Math.min(1, d
 const geoCache = new Map();
 const gliderCache = new Map();
 let charMat = null;
+const LODS = 3; // 0: close-up, 1: mid range, 2: distant
 
 function getGeometry(skin, lod = 0) {
   const k = skin * 4 + lod;
@@ -25,34 +26,68 @@ function getGeometry(skin, lod = 0) {
   return g;
 }
 
-// The far LOD of a skin is built in the background (one mesh per tick) so the first character to
-// walk away from the camera does not stall a frame.
+// Lighter LODs, and from the menu every skin, are built in the background (one mesh per idle
+// callback) so neither the bus start nor the first character to walk away stalls a frame.
+// iPad Safari has no requestIdleCallback: a short timeout stands in.
 const lodQueue = [];
 let lodTimer = 0;
+const whenIdle = typeof requestIdleCallback === 'function'
+  ? (fn) => requestIdleCallback(fn, { timeout: 200 })
+  : (fn) => setTimeout(fn, 50);
 function drainLods() {
   lodTimer = 0;
   const k = lodQueue.shift();
   if (k !== undefined && !geoCache.has(k)) geoCache.set(k, buildHumanGeometry(k >> 2, k & 3));
-  if (lodQueue.length) lodTimer = setTimeout(drainLods, 40);
+  if (lodQueue.length) lodTimer = whenIdle(drainLods);
 }
-function queueLod(skin) {
-  const k = skin * 4 + 1;
-  if (geoCache.has(k) || lodQueue.includes(k)) return;
-  lodQueue.push(k);
-  if (!lodTimer) lodTimer = setTimeout(drainLods, 40);
+function queueGeo(k, urgent = false) {
+  if (geoCache.has(k)) return;
+  const i = lodQueue.indexOf(k);
+  if (i === 0 || (i > 0 && !urgent)) return;
+  if (i > 0) lodQueue.splice(i, 1);
+  if (urgent) lodQueue.unshift(k); else lodQueue.push(k);
+  if (!lodTimer) lodTimer = whenIdle(drainLods);
 }
 
-// Far characters swap to a lighter mesh (same skeleton). The camera is captured from the render
-// callback so no hook in the game loop is needed; zoomed (scoped) views count as closer.
-const camPos = new THREE.Vector3();
-let camKnown = false, camZoom = 1;
-const BASE_FOCAL = 1 / Math.tan((70 * Math.PI) / 360);
-function captureCamera(renderer, scene, camera) {
-  camPos.setFromMatrixPosition(camera.matrixWorld);
-  camZoom = camera.projectionMatrix.elements[5] / BASE_FOCAL || 1;
-  camKnown = true;
+/** Queue every skin's meshes (close-up ones first) for background building; call once from the idle menu. */
+export function prewarmCharacters() {
+  for (let lod = 0; lod < LODS; lod++) for (let s = 0; s < SKINS.length; s++) queueGeo(s * 4 + lod);
 }
-const LOD_FAR = 13, LOD_NEAR = 11;
+
+// Far characters swap to lighter meshes (same skeleton) and are posed less often. The camera is
+// captured from the render callback so no hook in the game loop is needed; the game places it
+// before posing the characters, so its current transform is this frame's view. Zoomed (scoped) views
+// and canvases taller than an iPad's at medium quality count as closer.
+let camRef = null, rendererRef = null, viewAt = -1, camZoom = 1;
+const camPos = new THREE.Vector3();
+const BASE_FOCAL = 1 / Math.tan((70 * Math.PI) / 360), REF_H = 1100;
+const _view = new THREE.Frustum(), _viewM = new THREE.Matrix4(), _viewS = new THREE.Sphere();
+function captureCamera(renderer, scene, camera) {
+  camRef = camera;
+  rendererRef = renderer;
+}
+/** Camera position, zoom and view frustum for the coming frame (computed once per rendered frame). */
+function updateView() {
+  const f = rendererRef.info.render.frame;
+  if (f === viewAt) return;
+  viewAt = f;
+  camRef.updateMatrixWorld();
+  camPos.setFromMatrixPosition(camRef.matrixWorld);
+  camZoom = (camRef.projectionMatrix.elements[5] / BASE_FOCAL) * Math.max(1, rendererRef.domElement.height / REF_H) || 1;
+  _view.setFromProjectionMatrix(_viewM.multiplyMatrices(camRef.projectionMatrix, camRef.matrixWorldInverse));
+}
+// LOD switch distances (m, zoom adjusted): going out past LOD_OUT[i] swaps to LOD i+1, coming back
+// inside LOD_IN[i] swaps back (hysteresis avoids flicker). At 10 m a character is ~125 px tall on
+// the reference canvas and the mid LOD looks the same; at 32 m (~40 px) so does the distant one.
+const LOD_OUT = [10, 32], LOD_IN = [9, 29];
+// pose rate: every frame within ANIM_NEAR (raw distance); on screen every frame, 1/2 past ANIM_HALF
+// (~45 px tall), 1/3 past ANIM_THIRD (zoom adjusted); 1/4 off screen
+const ANIM_NEAR = 8, ANIM_HALF = 30, ANIM_THIRD = 60;
+// Frustum culling: a fixed sphere around the body in any pose (skinned bounds are never computed);
+// the on-screen test for LOD and pose rate adds a margin
+const BODY_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 1.9), VIEW_MARGIN = 1;
+const noop = () => {};
+let charSeq = 0;
 
 function nameTag(text, color = '#ffffff') {
   const c = document.createElement('canvas');
@@ -111,7 +146,7 @@ const Q_BAR = [basisQuat([0, 0, -1], [0, -1, 0], [-1, 0, 0]), basisQuat([0, 0, 1
 const PALM = { L: new THREE.Vector3(-0.017, -0.074, 0.004), R: new THREE.Vector3(0.017, -0.074, 0.004) };
 
 // scratch objects (no per-frame allocations)
-const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4();
+const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4(), _mInv = new THREE.Matrix4();
 const _mA = new THREE.Matrix4(), _mB = new THREE.Matrix4();
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 const _S = new THREE.Vector3(), _T = new THREE.Vector3(), _E = new THREE.Vector3(), _P = new THREE.Vector3();
@@ -145,10 +180,13 @@ export class Character {
     this.model = new THREE.Group();
     this.group.add(this.model);
     const geo = getGeometry(skin);
-    queueLod(skin);
+    for (let l = 1; l < LODS; l++) queueGeo(skin * 4 + l);
     const rig = rigFor(skin);
     const RIG = rig.list;
-    const bones = RIG.map(([n]) => { const b = new THREE.Bone(); b.name = n; return b; });
+    // bones are posed through rotation (Euler) and quaternion writes and nothing reads the Euler back
+    // after a quaternion write, so three's quaternion -> Euler sync is switched off (it was the
+    // largest single cost of update())
+    const bones = RIG.map(([n]) => { const b = new THREE.Bone(); b.name = n; b.quaternion._onChange(noop); return b; });
     RIG.forEach(([, parent, p], i) => {
       if (parent < 0) bones[i].position.set(...p);
       else {
@@ -163,12 +201,13 @@ export class Character {
     this.mesh.bind(new THREE.Skeleton(bones));
     this.mesh.castShadow = true;
     this.mesh.receiveShadow = true;
-    this.mesh.frustumCulled = false;
+    this.mesh.boundingSphere = BODY_SPHERE.clone();
     this.mesh.onBeforeRender = captureCamera;
     this.model.add(this.mesh);
     this.bones = Object.fromEntries(BONE_NAMES.map((n, i) => [n, bones[i]]));
     this.rest = bones.map((b) => b.position.clone());
-    this.lod = 0;
+    this.lod = 0; // mesh in use
+    this.lodD = 0; // mesh for the distance (hysteresis state)
 
     // two-bone IK data per arm (rest directions in model space = bone space: rest rotations are identity)
     this.ik = {};
@@ -186,6 +225,7 @@ export class Character {
 
     // weapon holders: guns are posed in the aim frame each update; melee/items sit in the right fist
     this.gunHolder = new THREE.Group();
+    this.gunHolder.quaternion._onChange(noop);
     this.bones.spine.add(this.gunHolder);
     this.handHolder = new THREE.Group();
     this.handHolder.position.copy(PALM.R);
@@ -212,6 +252,16 @@ export class Character {
     this.time = Math.random() * 10;
     this.swing = 0;
     this.recoil = 0;
+    // shooting raises the gun out of the sprint carry for fireT seconds (raiseK eases it back down)
+    this.fireT = 0;
+    this.raiseK = 0;
+    // the raised (port-free) gun in spine space, kept while the gun is carried low, for muzzleWorld()
+    this.aimM = new THREE.Matrix4();
+    this.lowered = false;
+    // pose rate: update() poses on every animEvery-th call (staggered) and catches up the skipped time
+    this.animEvery = 1;
+    this.animN = charSeq++ & 3;
+    this.animDt = 0;
     this.lean = 0;
     this.crouchK = 0;
     this.airK = 0;
@@ -273,25 +323,52 @@ export class Character {
 
   /** World position of the weapon muzzle (falls back to the chest). */
   muzzleWorld(out) {
-    if (this.weaponMesh) return this.muzzle.getWorldPosition(out);
-    return this.bones.chest.getWorldPosition(out).add(_v1.set(0, 0.17, 0));
+    const w = this.weaponMesh;
+    if (!w) return this.bones.chest.getWorldPosition(out).add(_v1.set(0, 0.17, 0));
+    if (!this.lowered || w.parent !== this.gunHolder) return this.muzzle.getWorldPosition(out);
+    // gun carried low (sprinting): the shot leaves from the raised gun the kick is about to bring up
+    this.bones.spine.updateWorldMatrix(true, false);
+    w.updateMatrix();
+    return out.copy(this.muzzle.position).applyMatrix4(w.matrix).applyMatrix4(this.aimM).applyMatrix4(this.bones.spine.matrixWorld);
   }
 
   headWorld(out) { return this.bones.head.getWorldPosition(out).add(_v1.set(0, 0.07, 0)); }
 
   playSwing() { this.swing = 1; }
-  kick(amount) { this.recoil = Math.min(1, this.recoil + amount); }
+  /** Recoil impulse; the gun also stays raised (out of the sprint carry) for `hold` seconds. */
+  kick(amount, hold = 0.5) {
+    this.recoil = Math.min(1, this.recoil + amount);
+    this.fireT = Math.max(this.fireT, hold);
+    this.raiseK = 1;
+  }
 
-  /** Swap to the light mesh when far from the camera (hysteresis avoids flicker). */
+  /** Pick the mesh LOD and the pose rate from the distance to the camera and whether it is in view. */
   updateLod() {
-    if (!camKnown) return;
+    if (!camRef) return;
+    updateView();
     const p = this.group.position;
-    const d = Math.hypot(p.x - camPos.x, p.y - camPos.y, p.z - camPos.z) / Math.max(1, camZoom);
-    const lod = this.lod ? (d > LOD_NEAR ? 1 : 0) : (d > LOD_FAR ? 1 : 0);
+    const dx = p.x - camPos.x, dy = p.y - camPos.y, dz = p.z - camPos.z;
+    const raw = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const d = raw / Math.max(1, camZoom);
+    let lod = this.lodD;
+    while (lod < LODS - 1 && d > LOD_OUT[lod]) lod++;
+    while (lod > 0 && d < LOD_IN[lod - 1]) lod--;
+    this.lodD = lod;
+    // off screen only the shadow pass can draw it, and the distant mesh will do; the view is this
+    // frame's, so a character coming into view already has its proper mesh and pose
+    _viewS.center.set(p.x, p.y + BODY_SPHERE.center.y, p.z);
+    _viewS.radius = BODY_SPHERE.radius + VIEW_MARGIN;
+    const inView = !!this.ragdoll || _view.intersectsSphere(_viewS);
+    if (!inView) lod = LODS - 1;
     if (lod !== this.lod) {
-      this.lod = lod;
-      this.mesh.geometry = getGeometry(this.skin, lod);
+      const g = geoCache.get(this.skin * 4 + lod);
+      if (g) {
+        this.lod = lod;
+        this.mesh.geometry = g;
+      } else queueGeo(this.skin * 4 + lod, true); // keep the current mesh until that one is built
     }
+    // up close includes the local player, also while hidden in first person: its muzzle has to be exact
+    this.animEvery = raw < ANIM_NEAR ? 1 : !inView ? 4 : d > ANIM_THIRD ? 3 : d > ANIM_HALF ? 2 : 1;
   }
 
   /**
@@ -300,6 +377,11 @@ export class Character {
   update(dt, s) {
     this.updateLod();
     if (this.ragdoll) { this.updateRagdoll(dt); return; }
+    this.glider.visible = (s.anim | 0) === ANIM.GLIDE;
+    this.animDt += dt;
+    if (++this.animN % this.animEvery && this.poseCls >= 0) return;
+    dt = this.animDt;
+    this.animDt = 0;
     this.time += dt;
     const anim = s.anim | 0;
     const cls = anim === ANIM.SKYDIVE ? 1 : anim === ANIM.GLIDE ? 2 : anim === ANIM.DANCE ? 3 : 0;
@@ -310,6 +392,8 @@ export class Character {
     }
     this.swing = Math.max(0, this.swing - dt * 3.2);
     this.recoil = Math.max(0, this.recoil - dt * 9);
+    this.fireT = Math.max(0, this.fireT - dt);
+    if (this.fireT <= 0) this.raiseK = approach(this.raiseK, 0, 5, dt);
 
     // reset pose
     const bones = this.mesh.skeleton.bones;
@@ -319,7 +403,6 @@ export class Character {
     }
     this.model.rotation.set(0, 0, 0);
     this.model.position.set(0, 0, 0);
-    this.glider.visible = anim === ANIM.GLIDE;
 
     if (cls === 1) this.poseSkydive(dt, s);
     else if (cls === 2) this.poseGlide(dt, s);
@@ -481,26 +564,39 @@ export class Character {
     if (this.weaponMesh && this.weaponMesh.parent === this.gunHolder) this.aimGun(s, gk);
   }
 
+  /**
+   * Gun (grip) world matrix into `out`, and _gunPos/_qGun: chest + aim-rotated hold offset; recoil
+   * pushes it back and climbs the muzzle, a reload tips it, `port` blends in the sprint carry.
+   */
+  gunMatrix(h, pitch, ads, rc, rl, port, out) {
+    // aiming down, the gun comes back and up along the aim so the support hand still reaches the
+    // foregrip (the torso only takes part of a downward bend)
+    const dn = Math.max(0, -pitch) * (1 - port);
+    _qAim.setFromAxisAngle(_xAxis, -pitch * (1 - port));
+    _v2.set(lerp(h.o[0], h.ads[0], ads) + 0.07 * port, lerp(h.o[1], h.ads[1], ads) - rl * 0.05 - 0.1 * port + 0.05 * dn,
+      lerp(h.o[2], h.ads[2], ads) - rc * 0.07 - 0.04 * port - 0.1 * dn).applyQuaternion(_qAim).applyQuaternion(_qMesh);
+    _gunPos.setFromMatrixPosition(this.bones.chest.matrixWorld).add(_v2);
+    _e1.set(-pitch * (1 - port) - rc * 0.14 + rl * 0.2 + 0.55 * port, 0.6 * port, rl * 0.5 + 0.3 * port);
+    _qGun.setFromEuler(_e1).premultiply(_qMesh);
+    return out.compose(_gunPos, _qGun, _one);
+  }
+
   aimGun(s, gk) {
     const b = this.bones, h = this.hold;
     const pitch = s.pitch || 0;
     const ads = this.adsK, rc = this.recoil;
     const reload = s.reload >= 0 ? s.reload : -1;
-    // sprinting carries the gun low across the chest
-    const port = this.sprintK * (1 - ads);
+    const rl = reload >= 0 ? Math.sin(reload * Math.PI) : 0;
+    // sprinting carries the gun low across the chest, unless aiming or shooting
+    const port = this.sprintK * (1 - ads) * (1 - this.raiseK);
     b.chest.updateWorldMatrix(true, false);
     _qMesh.setFromRotationMatrix(this.mesh.matrixWorld);
-    // gun origin: chest + aim-rotated offset; recoil pushes it back and climbs the muzzle
-    const rl = reload >= 0 ? Math.sin(reload * Math.PI) : 0;
-    _qAim.setFromAxisAngle(_xAxis, -pitch * (1 - port));
-    _v2.set(lerp(h.o[0], h.ads[0], ads) + 0.07 * port, lerp(h.o[1], h.ads[1], ads) - rl * 0.05 - 0.1 * port, lerp(h.o[2], h.ads[2], ads) - rc * 0.07 - 0.04 * port)
-      .applyQuaternion(_qAim).applyQuaternion(_qMesh);
-    _gunPos.setFromMatrixPosition(b.chest.matrixWorld).add(_v2);
-    _e1.set(-pitch * (1 - port) - rc * 0.14 + rl * 0.2 + 0.55 * port, 0.6 * port, rl * 0.5 + 0.3 * port);
-    _qGun.setFromEuler(_e1).premultiply(_qMesh);
-    _m1.compose(_gunPos, _qGun, _one);
     // holder local = spine^-1 * gunWorld
-    _m2.copy(b.spine.matrixWorld).invert().multiply(_m1);
+    _mInv.copy(b.spine.matrixWorld).invert();
+    this.lowered = port > 0.01;
+    if (this.lowered) this.aimM.multiplyMatrices(_mInv, this.gunMatrix(h, pitch, ads, rc, rl, 0, _m1));
+    this.gunMatrix(h, pitch, ads, rc, rl, port, _m1);
+    _m2.multiplyMatrices(_mInv, _m1);
     _m2.decompose(this.gunHolder.position, this.gunHolder.quaternion, this.gunHolder.scale);
     if (gk < 0.002) return;
 
@@ -678,6 +774,8 @@ export class Character {
     this.glider.visible = false;
     this.showWeapon(false);
     if (this.tag) this.tag.visible = false;
+    // the bodies can carry the mesh well away from the group: no culling against the body sphere
+    this.mesh.frustumCulled = false;
     // the torso chain between the hips and the head/arms is rigid while ragdolled: straighten it
     // first so the physics bodies line up with the bones they drive
     for (const n of ['spine', 'chest', 'neck', 'clavL', 'clavR']) {
@@ -781,6 +879,7 @@ export class Character {
     }
     this.poseCls = -1; // no crossfade out of the corpse pose
     this.xfade = 0;
+    this.mesh.frustumCulled = true;
     if (this.tag) this.tag.visible = true;
   }
 
