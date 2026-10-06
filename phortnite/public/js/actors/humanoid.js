@@ -865,18 +865,18 @@ function buildBody(skin, lod) {
   // mouth
   if (!lo) {
     const my = 1.664;
-    const up = [], ur = [], lo = [], lr = [], line = [];
+    const up = [], ur = [], low = [], lr = [], line = [];
     for (let i = 0; i <= 4; i++) {
       const t = i / 4, x = lerp(-0.022, 0.022, t), bow = Math.sin(t * Math.PI);
       up.push([x * (fem ? 0.95 : 0.92), my + 0.0035 + bow * 0.0012, faceZ(x, my + 0.004, fem) + 0.0016 * bow]);
       ur.push(lerp(0.0016, fem ? 0.0046 : 0.0036, bow));
       line.push([x * 0.95, my + 0.0005 - bow * 0.0004, faceZ(x, my, fem) - 0.0004 + 0.0015 * bow]);
       const xl = x * 0.8;
-      lo.push([xl, my - 0.0042 - bow * 0.0012, faceZ(xl, my - 0.005, fem) + 0.0012 * bow]);
+      low.push([xl, my - 0.0042 - bow * 0.0012, faceZ(xl, my - 0.005, fem) + 0.0012 * bow]);
       lr.push(lerp(0.0018, fem ? 0.0058 : 0.0045, bow));
     }
     parts.add(cord(up, ur, lipC, 4), 'head');
-    parts.add(cord(lo, lr, lipC, 4), 'head');
+    parts.add(cord(low, lr, lipC, 4), 'head');
     if (hi) parts.add(cord(line, line.map(() => 0.0013), mixC(lipC, '#2a0e0e', 0.6), 4), 'head');
   }
   if (look.shades && !lo) {

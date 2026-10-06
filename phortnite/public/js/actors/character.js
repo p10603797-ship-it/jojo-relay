@@ -55,19 +55,26 @@ export function prewarmCharacters() {
 }
 
 // Far characters swap to lighter meshes (same skeleton) and are posed less often. The camera is
-// captured from the render callback so no hook in the game loop is needed; zoomed (scoped) views
-// and canvases taller than an iPad's at medium quality count as closer. The same callback marks the
-// characters that were on screen in the last frame.
+// captured from the render callback so no hook in the game loop is needed; the game places it
+// before posing the characters, so its current transform is this frame's view. Zoomed (scoped) views
+// and canvases taller than an iPad's at medium quality count as closer.
+let camRef = null, rendererRef = null, viewAt = -1, camZoom = 1;
 const camPos = new THREE.Vector3();
-let camKnown = false, camZoom = 1, renderFrame = -1;
 const BASE_FOCAL = 1 / Math.tan((70 * Math.PI) / 360), REF_H = 1100;
+const _view = new THREE.Frustum(), _viewM = new THREE.Matrix4(), _viewS = new THREE.Sphere();
 function captureCamera(renderer, scene, camera) {
-  // `this` is the character mesh about to be drawn
-  renderFrame = renderer.info.render.frame;
-  this.userData.seen = renderFrame;
-  camPos.setFromMatrixPosition(camera.matrixWorld);
-  camZoom = (camera.projectionMatrix.elements[5] / BASE_FOCAL) * Math.max(1, renderer.domElement.height / REF_H) || 1;
-  camKnown = true;
+  camRef = camera;
+  rendererRef = renderer;
+}
+/** Camera position, zoom and view frustum for the coming frame (computed once per rendered frame). */
+function updateView() {
+  const f = rendererRef.info.render.frame;
+  if (f === viewAt) return;
+  viewAt = f;
+  camRef.updateMatrixWorld();
+  camPos.setFromMatrixPosition(camRef.matrixWorld);
+  camZoom = (camRef.projectionMatrix.elements[5] / BASE_FOCAL) * Math.max(1, rendererRef.domElement.height / REF_H) || 1;
+  _view.setFromProjectionMatrix(_viewM.multiplyMatrices(camRef.projectionMatrix, camRef.matrixWorldInverse));
 }
 // LOD switch distances (m, zoom adjusted): going out past LOD_OUT[i] swaps to LOD i+1, coming back
 // inside LOD_IN[i] swaps back (hysteresis avoids flicker). At 10 m a character is ~125 px tall on
@@ -76,8 +83,9 @@ const LOD_OUT = [10, 32], LOD_IN = [9, 29];
 // pose rate: every frame within ANIM_NEAR (raw distance) or on screen, 1/2 past ANIM_HALF, 1/3 past
 // ANIM_THIRD (zoom adjusted), 1/4 off screen
 const ANIM_NEAR = 8, ANIM_HALF = 40, ANIM_THIRD = 80;
-// Frustum culling: a fixed sphere around the body in any pose (skinned bounds are never computed)
-const BODY_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 1.9);
+// Frustum culling: a fixed sphere around the body in any pose (skinned bounds are never computed);
+// the on-screen test for LOD and pose rate adds a margin
+const BODY_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 1.9), VIEW_MARGIN = 1;
 const noop = () => {};
 let charSeq = 0;
 
@@ -195,11 +203,11 @@ export class Character {
     this.mesh.receiveShadow = true;
     this.mesh.boundingSphere = BODY_SPHERE.clone();
     this.mesh.onBeforeRender = captureCamera;
-    this.mesh.userData.seen = -1;
     this.model.add(this.mesh);
     this.bones = Object.fromEntries(BONE_NAMES.map((n, i) => [n, bones[i]]));
     this.rest = bones.map((b) => b.position.clone());
-    this.lod = 0;
+    this.lod = 0; // mesh in use
+    this.lodD = 0; // mesh for the distance (hysteresis state)
 
     // two-bone IK data per arm (rest directions in model space = bone space: rest rotations are identity)
     this.ik = {};
@@ -334,16 +342,24 @@ export class Character {
     this.raiseK = 1;
   }
 
-  /** Pick the mesh LOD and the pose rate from the distance to the camera. */
+  /** Pick the mesh LOD and the pose rate from the distance to the camera and whether it is in view. */
   updateLod() {
-    if (!camKnown) return;
+    if (!camRef) return;
+    updateView();
     const p = this.group.position;
     const dx = p.x - camPos.x, dy = p.y - camPos.y, dz = p.z - camPos.z;
     const raw = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const d = raw / Math.max(1, camZoom);
-    let lod = this.lod;
+    let lod = this.lodD;
     while (lod < LODS - 1 && d > LOD_OUT[lod]) lod++;
     while (lod > 0 && d < LOD_IN[lod - 1]) lod--;
+    this.lodD = lod;
+    // off screen only the shadow pass can draw it, and the distant mesh will do; the view is this
+    // frame's, so a character coming into view already has its proper mesh and pose
+    _viewS.center.set(p.x, p.y + BODY_SPHERE.center.y, p.z);
+    _viewS.radius = BODY_SPHERE.radius + VIEW_MARGIN;
+    const inView = !!this.ragdoll || _view.intersectsSphere(_viewS);
+    if (!inView) lod = LODS - 1;
     if (lod !== this.lod) {
       const g = geoCache.get(this.skin * 4 + lod);
       if (g) {
@@ -352,7 +368,7 @@ export class Character {
       } else queueGeo(this.skin * 4 + lod, true); // keep the current mesh until that one is built
     }
     // up close includes the local player, also while hidden in first person: its muzzle has to be exact
-    this.animEvery = raw < ANIM_NEAR ? 1 : this.mesh.userData.seen !== renderFrame ? 4 : d > ANIM_THIRD ? 3 : d > ANIM_HALF ? 2 : 1;
+    this.animEvery = raw < ANIM_NEAR ? 1 : !inView ? 4 : d > ANIM_THIRD ? 3 : d > ANIM_HALF ? 2 : 1;
   }
 
   /**
