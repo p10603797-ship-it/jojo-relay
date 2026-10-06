@@ -15,6 +15,8 @@ const SIPHON_CSS = `
 #bars .bar.shield { --glow: rgba(127, 214, 255, 0.95); }
 #bars .bar.health { --glow: rgba(109, 240, 106, 0.95); }
 #bars .bar.glow { animation: siphonglow 0.8s ease-out; }
+/* phones: the centred hotbar starts right after the bars, so pop over the bar's end with a heavier outline */
+@media (max-width: 900px) { #bars .siphon { left: auto; right: 10px; font-size: 20px; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000, 0 1px 1px #000; } }
 @keyframes siphonpop { 0% { opacity: 0; transform: translateX(-10px) scale(1.6); } 12% { opacity: 1; transform: none; } 70% { opacity: 1; transform: translateY(-5px); } 100% { opacity: 0; transform: translateY(-14px); } }
 @keyframes siphonglow { 0% { filter: brightness(1.8); box-shadow: 0 0 16px 4px var(--glow); } 100% { filter: brightness(1); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4); } }
 `;
