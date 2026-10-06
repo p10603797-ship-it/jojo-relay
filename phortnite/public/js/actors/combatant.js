@@ -385,8 +385,8 @@ export class Combatant {
         else this.game.onDryFire(this);
         this.cool = 0.25;
       } else {
-        // carry the (at most one frame) overshoot so held fire averages exactly w.rate
-        this.cool = Math.max(this.cool, -dt) + 1 / w.rate;
+        // cool is at most one frame below zero: carrying that overshoot keeps held fire at w.rate
+        this.cool += 1 / w.rate;
         if (w.burst > 1) {
           this.burstLeft = Math.min(w.burst, cur.m) - 1;
           this.burstT = w.burstGap || 0.07;

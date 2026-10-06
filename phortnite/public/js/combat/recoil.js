@@ -55,15 +55,17 @@ export class Recoil {
     // exponential return (fast at first, then easing in) with a small linear floor so it lands
     const k = 1 - Math.exp(-(w.recover || 6) * dt);
     const floor = 0.004 * dt;
-    const step = (x) => {
-      const a = Math.abs(x);
-      const d = Math.min(a, Math.max(a * k, floor));
-      return x > 0 ? d : -d;
-    };
-    const sp = step(this.p), sy = step(this.y);
+    const sp = step(this.p, k, floor), sy = step(this.y, k, floor);
     this.p -= sp;
     this.y -= sy;
     this.dp = -sp;
     this.dy = -sy;
   }
+}
+
+/** Part of offset x paid back this frame (same sign as x, never past zero). */
+function step(x, k, floor) {
+  const a = Math.abs(x);
+  const d = Math.min(a, Math.max(a * k, floor));
+  return x > 0 ? d : -d;
 }
