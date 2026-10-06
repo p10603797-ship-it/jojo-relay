@@ -1341,13 +1341,16 @@ export class Game {
       e = { at: -1, bits: 0 };
       A.vis.set(t.id, e);
     }
-    if ((e.at >= 0 && this.time - e.at < AA.losEvery) || A.rays <= 0) return e.bits;
+    const age = e.at < 0 ? 1e9 : this.time - e.at;
+    // out of checks this frame: an answer up to a second old will do, anything older counts as hidden
+    if (age < AA.losEvery || A.rays <= 0) return age < 1 ? e.bits : 0;
     A.rays--;
     e.at = this.time;
     e.bits = this.aaClear(cx, cy, cz) ? 1 : this.aaClear(t.head[0], t.head[1], t.head[2]) ? 2 : 0;
     return e.bits;
   }
 
+  /** Nothing solid between the camera and a point (stopping a little short of it). */
   aaClear(x, y, z) {
     const o = this.camera.position;
     const dx = x - o.x, dy = y - o.y, dz = z - o.z;
