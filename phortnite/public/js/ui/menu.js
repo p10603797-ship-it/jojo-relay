@@ -120,6 +120,7 @@ export class Ui {
       <div class="setting"><span>Field of view</span><input id="s-fov" type="range" min="65" max="100" step="1" value="${st.fov}"></div>
       <div class="setting"><span>Volume</span><input id="s-vol" type="range" min="0" max="1" step="0.05" value="${st.volume}"></div>
       <div class="setting"><span>Auto-shoot when the crosshair is on an enemy</span><input id="s-auto" type="checkbox" ${st.autoFire ? 'checked' : ''}></div>
+      <div class="setting"><span>Aim assist (touch &amp; controller)</span><input id="s-aa" type="checkbox" ${st.aimAssist ? 'checked' : ''}></div>
       <div class="setting"><span>Invert look up/down</span><input id="s-inv" type="checkbox" ${st.invertY ? 'checked' : ''}></div>
       <div class="setting"><span>Camera shake</span><input id="s-shake" type="checkbox" ${st.shake ? 'checked' : ''}></div>
       <div class="setting"><span>Show FPS counter</span><input id="s-fps" type="checkbox" ${st.showFps ? 'checked' : ''}></div>
@@ -140,6 +141,7 @@ export class Ui {
       bind('#s-fov', 'fov', Number);
       bind('#s-vol', 'volume', Number, () => this.app.sfx.setVolume(st.volume));
       bind('#s-auto', 'autoFire', Boolean);
+      bind('#s-aa', 'aimAssist', Boolean);
       bind('#s-inv', 'invertY', Boolean);
       bind('#s-shake', 'shake', Boolean);
       bind('#s-fps', 'showFps', Boolean, () => this.app.hud.fps(''));
@@ -157,6 +159,7 @@ export class Ui {
         <tr><td>Shoot</td><td>Red ✛ buttons (right and left) — or let <b>auto-shoot</b> fire for you: when your crosshair turns red over an enemy your gun fires by itself (snipers while scoped in). Switch it on or off in Settings.</td></tr>
         <tr><td>Jump / crouch</td><td>⤒ and ⤓</td></tr>
         <tr><td>Aim down sights</td><td>◎ (toggle)</td></tr>
+        <tr><td>Aim assist</td><td>Aiming slows down over enemies and helps you stay on them while you aim or shoot; tap ◎ near an enemy and your aim swings onto them. Touch and controllers only — switch it off in Settings.</td></tr>
         <tr><td>Build</td><td>⚒ then Wall / Floor / Ramp, fire places it, "Mat" switches material</td></tr>
         <tr><td>Weapons & heals</td><td>Tap the slots at the bottom. Hold fire to use heals.</td></tr>
         <tr><td>Map / dance</td><td>Tap the minimap / 💃</td></tr>

@@ -37,6 +37,23 @@ const GRAVITY = 9.81;
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _f = new THREE.Vector3();
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Aim assist (a setting, touch + controller only): angles in rad, rates in rad/s.
+const AA = {
+  range: 120, rangeScoped: 200, // m: farthest enemy that is assisted (a scoped sniper reaches further, weakly)
+  bubble: 1.12, // m around the chest (body radius 0.37 + margin) where the look slows down
+  coneMin: 0.02, coneMax: 0.16, // that bubble as an angle: ~1.2° far away .. ~9° up close
+  pullCone: 1.5, // tracking reaches this many bubbles out
+  slowAds: 0.55, slowHip: 0.65, // look sensitivity at the bubble's centre
+  pull: 0.18, // ~10°/s toward the chest while aiming down sights (half when hip firing)
+  follow: 0.5, // share of the target's angular motion the view follows
+  chest: 0.15, // m around the chest point with no pull, so it never feels locked on
+  snapCone: 0.157, snapRange: 80, snapTime: 0.12, // ADS snap: within ~9°, 80 m, takes 0.12 s
+  swipeLo: 0.6, swipeHi: 3, // look input: full assist below, none above (half as much when swiping away)
+  losEvery: 0.2, losRays: 3, // re-check line of sight 5x a second per target, at most 3 checks a frame
+};
+const aaWrap = (a) => a - Math.PI * 2 * Math.round(a / (Math.PI * 2));
+const aaClamp = (v, m) => (v > m ? m : v < -m ? -m : v);
+
 export class Game {
   constructor(app, net, opts) {
     this.app = app;
@@ -1091,6 +1108,7 @@ export class Game {
       this.hud.bus('');
     }
     if (me.alive && !me.inBus) {
+      this.aimAssist(dt, s);
       me.control(dt, s);
       me.move(dt, s);
     } else if (!me.alive) {
@@ -1212,6 +1230,152 @@ export class Game {
       px = qx; py = qy; pz = qz;
     }
     return true;
+  }
+
+  // ------------------------------------------------------------------ aim assist
+  /**
+   * Aim assist setting, for thumbs (touch, controller) and never a mouse, like console/mobile
+   * shooters: the look slows down over a visible enemy; while aiming down sights or firing the
+   * view follows the target and drifts toward its chest; and starting to aim down sights swings
+   * the crosshair onto a nearby enemy. Runs before control() and adjusts the look input / angles.
+   */
+  aimAssist(dt, s) {
+    const me = this.me;
+    const A = this.aa || (this.aa = {
+      prevAds: false, id: 0, yawT: 0, pitchT: 0, err: 0, slow: 1, snapId: 0, snapT: 0, rays: 0, vis: new Map(),
+    });
+    const adsEdge = !!s.ads && !A.prevAds;
+    A.prevAds = !!s.ads;
+    A.slow = 1;
+    const inp = this.input;
+    const cur = me.current();
+    const w = cur && Object.prototype.hasOwnProperty.call(WEAPONS, cur.k) ? WEAPONS[cur.k] : null;
+    if (!this.settings.aimAssist || !inp.enabled || !(inp.touchMode || inp.lookDev === 'pad')
+      || !w || w.melee || me.buildMode || !me.canAct()) {
+      A.id = 0; A.snapT = 0;
+      return;
+    }
+    const ads = !!s.ads;
+    const scoped = ads && !!w.scope;
+    // The crosshair ray runs along the view direction through the camera's shoulder point (see
+    // updateCamera; use the offsets it is easing toward), so solve the view angles that put that
+    // ray through each enemy's chest: yaw turns a little extra for the sideways offset.
+    const camR = ads ? (w.scope ? 0.2 : 0.86) : 0.72;
+    const px = me.pos.x, pz = me.pos.z;
+    const py = me.pos.y + (me.mover.crouch ? 1.15 : 1.58) + (ads ? 0.25 : 0.3);
+    const cp = Math.cos(me.pitch);
+    const range = scoped ? AA.rangeScoped : AA.range;
+    const myTeam = this.phase === 'lobby' ? me.id : this.teamOf(me.id);
+    A.rays = AA.losRays;
+    // best target in reach (any visible part) and the snap target (visible chest), as plain numbers
+    let id = 0, score = AA.pullCone, eY = 0, eP = 0, err = 0, cone = 1, dead = 0, yawT = 0, pitchT = 0, chest = false;
+    let snapId = 0, snapErr = AA.snapCone, sY = 0, sP = 0, sYawT = 0, sPitchT = 0, snapLive = false;
+    for (const t of this.hitboxes) {
+      if (t.id === me.id || t.team === myTeam || t.far) continue;
+      const b = t.body;
+      const cx = b[3], cy = b[4] - 0.18, cz = b[5];
+      const dx = cx - px, dy = cy - py, dz = cz - pz;
+      const r2 = dx * dx + dz * dz;
+      if (r2 < 2.25 || r2 + dy * dy > range * range) continue;
+      const dist = Math.sqrt(r2 + dy * dy);
+      const ty = Math.atan2(-dx, -dz) + Math.asin(camR / Math.sqrt(r2));
+      const tp = Math.atan2(dy, Math.sqrt(r2 - camR * camR));
+      const ey = aaWrap(ty - me.yaw), ep = tp - me.pitch;
+      const e = Math.hypot(ey * cp, ep);
+      // the bubble: body plus a margin, as an angle (wider up close)
+      const c = Math.min(AA.coneMax, Math.max(AA.coneMin, Math.atan(AA.bubble / dist)));
+      const inSnap = e < AA.snapCone && dist < AA.snapRange;
+      const snapping = A.snapT > 0 && t.id === A.snapId;
+      if (e > c * AA.pullCone && !inSnap && !snapping) continue;
+      // only enemies the camera can see (cached; also kept fresh inside the snap cone for the next ADS)
+      const vis = this.aaVisible(t, cx, cy, cz);
+      if (!vis) continue;
+      const sc = (e / c) * (t.id === A.id ? 0.7 : 1); // stay with the current target when several are close
+      if (sc < score) {
+        score = sc; id = t.id; eY = ey; eP = ep; err = e; cone = c; yawT = ty; pitchT = tp;
+        dead = Math.atan(AA.chest / dist); chest = (vis & 1) !== 0;
+      }
+      if (!(vis & 1)) continue; // swings and pulls only go to a chest that can be seen
+      if (snapping) { snapLive = true; sY = ey; sP = ep; sYawT = ty; sPitchT = tp; }
+      else if (adsEdge && inSnap && e < snapErr) { snapErr = e; snapId = t.id; sY = ey; sP = ep; sYawT = ty; sPitchT = tp; }
+    }
+    // how fast the player is turning (rad/s): the assist backs off while they swipe
+    const inRate = Math.hypot(s.lookX, s.lookY) / Math.max(dt, 1e-3);
+
+    // ADS snap: ease onto the chest so it lands at the end of the window (re-aimed every frame,
+    // so a moving target is still met); a real swipe or letting go of ADS cancels it
+    if (adsEdge && snapId) { A.snapId = snapId; A.snapT = AA.snapTime; snapLive = true; }
+    if (A.snapT > 0) {
+      if (!ads || !snapLive || inRate > AA.swipeHi) A.snapT = 0;
+      else {
+        const k = Math.min(1, dt / A.snapT);
+        me.yaw += sY * k;
+        me.pitch += sP * k;
+        A.snapT -= dt;
+        A.id = A.snapId; A.yawT = sYawT; A.pitchT = sPitchT; A.err = 0;
+        return;
+      }
+    }
+    if (!id) { A.id = 0; A.err = 0; return; }
+
+    // friction: the look slows down over the enemy so a swipe doesn't overshoot
+    const inside = 1 - err / cone;
+    if (inside > 0) {
+      A.slow = 1 - (1 - (ads ? AA.slowAds : AA.slowHip)) * Math.min(1, inside * 1.5);
+      s.lookX *= A.slow;
+      s.lookY *= A.slow;
+    }
+    // tracking while aiming down sights or firing, fading out as the player swipes (sooner when
+    // swiping away from the target, so it never fights a deliberate turn)
+    if (chest && (ads || s.fire || this.autoLock)) {
+      const away = s.lookX * eY * cp * cp + s.lookY * eP < 0;
+      const lo = away ? AA.swipeLo * 0.5 : AA.swipeLo, hi = away ? AA.swipeHi * 0.5 : AA.swipeHi;
+      const str = (ads ? 1 : 0.5) * (scoped ? 0.5 : 1) * Math.max(0, Math.min(1, 1 - (inRate - lo) / (hi - lo)));
+      // full strength over the inner half of the reach, fading to nothing at its edge
+      const near = Math.max(0, Math.min(1, 2 - (2 * err) / (cone * AA.pullCone)));
+      if (str > 0 && near > 0) {
+        // rotational assist: turn with part of the target's motion across the view (its strafing and ours)
+        if (A.id === id) {
+          const f = AA.follow * str * near;
+          me.yaw += aaClamp(aaWrap(yawT - A.yawT), 0.05) * f;
+          me.pitch += aaClamp(pitchT - A.pitchT, 0.05) * f;
+        }
+        // and a gentle, capped pull toward the chest (none on the chest itself)
+        const over = err - dead;
+        if (over > 0) {
+          const step = Math.min(over, AA.pull * str * near * dt);
+          me.yaw += (eY / err) * step;
+          me.pitch += (eP / err) * step;
+        }
+      }
+    }
+    A.id = id; A.yawT = yawT; A.pitchT = pitchT; A.err = err;
+  }
+
+  /** Can the camera see an enemy's chest (1) or head (2)? Cached per enemy, re-checked a few times a second. */
+  aaVisible(t, cx, cy, cz) {
+    const A = this.aa;
+    let e = A.vis.get(t.id);
+    if (!e) {
+      if (A.vis.size > 64) A.vis.clear();
+      e = { at: -1, bits: 0 };
+      A.vis.set(t.id, e);
+    }
+    const age = e.at < 0 ? 1e9 : this.time - e.at;
+    // out of checks this frame: an answer up to a second old will do, anything older counts as hidden
+    if (age < AA.losEvery || A.rays <= 0) return age < 1 ? e.bits : 0;
+    A.rays--;
+    e.at = this.time;
+    e.bits = this.aaClear(cx, cy, cz) ? 1 : this.aaClear(t.head[0], t.head[1], t.head[2]) ? 2 : 0;
+    return e.bits;
+  }
+
+  /** Nothing solid between the camera and a point (stopping a little short of it). */
+  aaClear(x, y, z) {
+    const o = this.camera.position;
+    const dx = x - o.x, dy = y - o.y, dz = z - o.z;
+    const l = Math.hypot(dx, dy, dz);
+    return l < 0.5 || !this.physics.raycast(o.x, o.y, o.z, dx / l, dy / l, dz / l, l - 0.4, RAY_SOLID);
   }
 
   cycleSpectate() {
