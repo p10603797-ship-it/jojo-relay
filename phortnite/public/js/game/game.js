@@ -389,12 +389,14 @@ export class Game {
     _f.set(m.d[0], m.d[1], m.d[2]);
     this.fx.muzzle(muzzle, _f, m.w === 'shotgun' || m.w === 'sniper' || m.w === 'rocket', false);
     this.sfx.shot(m.w, muzzle, false);
+    this.noise(m.o[0], m.o[1], m.o[2], Bot.shotNoise(m.w), 'shot', m.id);
     if (shooter) shooter.char.kick(0.6);
   }
 
   on_sw(m) {
     const r = this.remotes.get(m.id);
     if (r) r.char.playSwing();
+    if (r) this.noise(r.pos.x, r.pos.y, r.pos.z, 25, 'harvest', r.id);
   }
 
   on_dmg(m) {
@@ -416,6 +418,7 @@ export class Game {
       if (m.shd && m.sh === 0) this.sfx.shieldBreak(); else this.sfx.hurt();
     }
     if (t instanceof Bot) t.brain.lastHp = Math.max(t.brain.lastHp, 0);
+    if (t instanceof Bot && m.c !== 'storm' && m.c !== 'fall') t.hurtBy(this.actorById(m.a), m.amt);
   }
 
   on_elim(m) {
@@ -501,6 +504,7 @@ export class Game {
     const p = this.builds.add(m);
     this.pendingBuilds.delete(m.k);
     if (p && !mine) this.sfx.build(p.pos, false);
+    if (p && !mine) this.noise(p.pos.x, p.pos.y, p.pos.z, 30, 'build', m.by);
   }
 
   on_bDel(m) {
@@ -587,6 +591,7 @@ export class Game {
     this.world.setChestOpen(m.c, true);
     this.fx.sparkle(c.x, c.y + 0.5, c.z, [1, 0.85, 0.3], 30);
     this.sfx.chest(_v.set(c.x, c.y, c.z));
+    this.noise(c.x, c.y, c.z, 15, 'chest', 0);
   }
 
   on_boom(m) {
@@ -652,6 +657,7 @@ export class Game {
   onSwing(a) {
     this.send({ t: 'sw', id: a.id });
     if (a === this.me) this.sfx.whoosh(true);
+    this.noise(a.pos.x, a.pos.y, a.pos.z, 25, 'harvest', a.id);
   }
 
   onDryFire(a) { if (a === this.me) this.sfx.ui('error'); }
@@ -665,6 +671,7 @@ export class Game {
     else surf = this.world.surfaceAt(a.pos.x, a.pos.z);
     this.sfx.step(a.pos, surf, a === this.me);
     if (surf === 'sand' && Math.random() < 0.5) this.fx.dust(a.pos.x, a.pos.y, a.pos.z, 0.4, [0.9, 0.84, 0.66]);
+    this.noise(a.pos.x, a.pos.y, a.pos.z, a.crouching ? 4 : a.speed > 7 ? 18 : 12, 'step', a.id);
   }
 
   onLanded(a, speed) {
@@ -672,6 +679,15 @@ export class Game {
   }
 
   onJump() {}
+
+  /**
+   * Something audible happened (shot, footstep, build, chest, explosion): bots in earshot get a
+   * rough position to look at or investigate (see Bot.hear). sourceId 0 = unknown.
+   */
+  noise(x, y, z, radius, kind, sourceId) {
+    if (!this.bots.size || this.phase === 'lobby') return;
+    for (const b of this.bots.values()) if (b.id !== sourceId && b.alive && !b.inBus) b.hear(x, y, z, radius, kind, sourceId);
+  }
 
   botPick(bot, l) {
     const kind = itemKind(l.item.k);
@@ -734,6 +750,7 @@ export class Game {
     this.pendingBuilds.set(t.k, { id: a.id, m: mat });
     this.send({ t: 'b', id: a.id, k: t.k, m: mat, d: t.d });
     this.sfx.build(p.pos, a === this.me);
+    this.noise(p.pos.x, p.pos.y, p.pos.z, 30, 'build', a.id);
     return true;
   }
 
@@ -753,6 +770,7 @@ export class Game {
     _f.set(dirs[0], dirs[1], dirs[2]);
     this.fx.muzzle(muzzle, _f, cur.k === 'shotgun' || cur.k === 'sniper' || cur.k === 'rocket', a === this.me);
     this.sfx.shot(cur.k, muzzle, a === this.me);
+    this.noise(origin.x, origin.y, origin.z, Bot.shotNoise(cur.k), 'shot', a.id);
     a.char.kick(0.7);
     const r3 = (x) => Math.round(x * 1000) / 1000;
     this.send({
@@ -852,6 +870,7 @@ export class Game {
     this.fx.explosion(x, y, z, radius);
     this.fx.decals.add(x, y + 0.05, z, 0, 1, 0, radius * 0.7, null);
     this.sfx.explosion(_v.set(x, y, z));
+    this.noise(x, y, z, 100, 'boom', 0);
     const cam = this.camera.position;
     const d = Math.hypot(cam.x - x, cam.y - y, cam.z - z);
     this.shake(Math.max(0, 1.2 - d / 40));
