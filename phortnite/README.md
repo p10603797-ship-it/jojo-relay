@@ -75,16 +75,29 @@ otherwise the iPads can't reach the server.
   skydiving + glider, swimming, fall damage, ragdolls on elimination, tumbling debris when
   structures break, falling trees, explosions that push barrels and rubble around.
 * **Shooting** — every bullet is a projectile with its own speed and gravity drop (aim high with
-  the sniper!), spread/bloom, first-shot accuracy, recoil, damage falloff, headshots, shotgun
-  pellets, rockets with splash damage, bullet holes, tracers, impact effects per material.
-* **Weapons** — assault rifle, SMG, pump shotgun, bolt sniper, pistol, rocket launcher in five
-  rarities, plus bandages, med kits and shield potions.
+  the sniper!), spread/bloom, first-shot accuracy, per-gun recoil that recovers after you stop
+  firing, damage falloff, headshots, shotgun pellets, rockets with splash damage, bullet holes,
+  tracers, impact effects per material.
+* **Weapons** — assault rifle, burst rifle, SMG, pump and tactical shotguns, bolt sniper, pistol,
+  rocket launcher in five rarities, each with its own fire rate, reload time and kick, plus
+  bandages, med kits and shield potions.
+* **Health & shield** — everyone drops in with 100 health and 100 shield; every elimination
+  gives the winner of the fight 50 back (health first, then shield, up to 200).
+* **Aim help (Settings)** — *Aim assist* for touch and controllers (aim slows near enemies, gently
+  follows them while aiming, and snaps a little when you aim down sights), and *Auto-shoot*,
+  which fires for you while your crosshair is on an enemy. Both are on by default.
+* **Characters** — smooth, fully skinned humans with faces, hands, clothes and a different hair
+  style and look for each of the eight skins; full animation set and ragdolls.
 * **Building** — walls, floors and ramps on a 4 m grid in wood/brick/metal; pieces grow in
   health while building, can be shot down, and anything left floating collapses.
 * **Battle royale** — the bus, a shrinking storm with six phases, floor loot + chests, kill feed,
   spectating, victory screen.
-* **Bots** that loot, fight with lead and human-like aim, throw up walls when shot, heal and flee
-  the storm.
+* **Bots that play like people** — they only see what is in front of them (a view cone, a sight
+  range and line of sight, and it takes a moment to notice someone far away), hear gunshots,
+  footsteps and building, remember where they last saw you, react and aim like humans (they
+  miss), and have personalities: rushers, campers, builders, snipers and loot goblins who land,
+  loot, rotate with the storm, build when shot, box up to heal, push weak enemies and
+  third-party fights.
 * **Performance** — instancing and merged geometry keep draw calls low, the render resolution
   adapts on the fly to hold the display's refresh rate (60 fps on iPad, 120/144 Hz monitors on
   desktop), and there are Low → Ultra presets in Settings (Auto picks Medium on iPad).
