@@ -1,8 +1,8 @@
 // Shared game rules for Phortnite. Imported by the browser client AND the Node server,
 // so this file must stay free of DOM / Node specific APIs.
 
-export const VERSION = '1.0.0';
-export const PROTOCOL = 1;
+export const VERSION = '1.1.0';
+export const PROTOCOL = 2; // bump whenever old and new builds can't share a party
 
 export const TICK_HZ = 20;            // server snapshot rate
 export const SEND_HZ = 20;            // client state upload rate
@@ -34,6 +34,8 @@ export const MAX_MATS = 999;
 export const PLAYER = {
   maxHp: 100,
   maxShield: 100,
+  startShield: 100,                   // everyone spawns with full shield: 200 effective hp, like the real thing
+  siphon: 50,                         // an elimination gives the killer this much back: health first, then shield
   radius: 0.38,
   halfHeight: 0.52,                   // capsule half height (total height = 2*(hh+r) = 1.8)
   eye: 1.55,
@@ -62,51 +64,95 @@ export const RARITY = [
   { key: 'legendary', name: 'Legendary', color: '#ffb22e' },
 ];
 
-// speed in m/s, grav = multiplier on 9.81 m/s^2, spread angles in radians (cone half-angle)
+// speed in m/s, grav = multiplier on 9.81 m/s^2, spread angles in radians (cone half-angle).
+// rate = shots (or bursts) per second; burst guns fire `burst` rounds `burstGap` s apart per pull.
+// Camera recoil (local player only, see js/combat/recoil.js): recoil = vertical kick per shot (rad),
+// recoilSide = random sideways kick, recoilCenter = how hard sideways kicks pull back to centre,
+// recoilMax = the climb flattens out near this offset, recover = return rate (1/s) once
+// recoverDelay s have passed since the last shot. kick = gun kick on the character (0..1),
+// shake = camera shake per shot.
 export const WEAPONS = {
   pickaxe: {
     name: 'Harvesting Tool', short: 'Pick', melee: true, dmg: [20, 20, 20, 20, 20], rate: 1.7,
     range: 2.8, struct: 2.5, rarities: [0],
   },
+  // steady upward climb you pull down against
   ar: {
     name: 'Assault Rifle', short: 'AR', ammo: 'medium', mag: 30, rate: 5.5, auto: true,
     dmg: [30, 31, 33, 35, 36], head: 1.5, speed: 420, grav: 0.35, pellets: 1,
     spread: 0.028, spreadAds: 0.009, firstShot: true, bloom: 0.006, bloomMax: 0.05,
-    recoil: 0.0105, reload: 2.3, falloff: [60, 170, 0.65], struct: 1, zoom: 1.55, rarities: [0, 1, 2, 3, 4],
+    recoil: 0.0098, recoilSide: 0.0024, recoilCenter: 0.25, recoilMax: 0.065, recover: 7, recoverDelay: 0.2,
+    kick: 0.5, shake: 0.12,
+    reload: 2.3, falloff: [60, 170, 0.65], struct: 1, zoom: 1.55, rarities: [0, 1, 2, 3, 4],
   },
+  // three quick rounds per pull, small kick per burst that settles before the next one
+  burst: {
+    name: 'Burst Assault Rifle', short: 'Burst', ammo: 'medium', mag: 24, rate: 1.7, auto: true, burst: 3, burstGap: 0.07,
+    dmg: [27, 28, 30, 31, 33], head: 1.5, speed: 430, grav: 0.33, pellets: 1,
+    spread: 0.024, spreadAds: 0.006, firstShot: true, bloom: 0.004, bloomMax: 0.035,
+    recoil: 0.0072, recoilSide: 0.0026, recoilCenter: 0.3, recoilMax: 0.06, recover: 8, recoverDelay: 0.1,
+    kick: 0.45, shake: 0.1,
+    reload: 2.6, falloff: [70, 190, 0.65], struct: 1, zoom: 1.6, rarities: [0, 1, 2, 3, 4],
+  },
+  // very fast, small kick but jittery side to side
   smg: {
-    name: 'Rapid SMG', short: 'SMG', ammo: 'light', mag: 30, rate: 11, auto: true,
-    dmg: [16, 17, 17, 18, 19], head: 1.75, speed: 360, grav: 0.45, pellets: 1,
+    name: 'Rapid SMG', short: 'SMG', ammo: 'light', mag: 30, rate: 12, auto: true,
+    dmg: [14, 15, 15, 16, 17], head: 1.75, speed: 360, grav: 0.45, pellets: 1,
     spread: 0.034, spreadAds: 0.021, bloom: 0.004, bloomMax: 0.05,
-    recoil: 0.0062, reload: 2.0, falloff: [18, 70, 0.55], struct: 1, zoom: 1.3, rarities: [0, 1, 2, 3],
+    recoil: 0.0036, recoilSide: 0.0055, recoilCenter: 0.5, recoilMax: 0.035, recover: 9, recoverDelay: 0.12,
+    kick: 0.35, shake: 0.07,
+    reload: 1.9, falloff: [18, 70, 0.55], struct: 1, zoom: 1.3, rarities: [0, 1, 2, 3],
   },
+  // one big shove per shot
   shotgun: {
-    name: 'Pump Shotgun', short: 'Pump', ammo: 'shells', mag: 5, rate: 1.05, auto: false,
+    name: 'Pump Shotgun', short: 'Pump', ammo: 'shells', mag: 5, rate: 0.9, auto: false,
     dmg: [8.6, 9.2, 9.8, 10.4, 11], head: 2.0, speed: 280, grav: 0.6, pellets: 10,
     spread: 0.078, spreadAds: 0.062, bloom: 0, bloomMax: 0,
-    recoil: 0.045, reload: 4.2, falloff: [6, 26, 0.3], struct: 0.9, zoom: 1.25, rarities: [0, 1, 2, 3],
+    recoil: 0.05, recoilSide: 0.012, recoilCenter: 0, recoilMax: 0.2, recover: 6, recoverDelay: 0.12,
+    kick: 1, shake: 0.45,
+    reload: 4.5, falloff: [6, 26, 0.3], struct: 0.9, zoom: 1.25, rarities: [0, 1, 2, 3],
+  },
+  // faster, bigger mag, weaker pellets
+  tactical: {
+    name: 'Tactical Shotgun', short: 'Tac', ammo: 'shells', mag: 8, rate: 1.5, auto: false,
+    dmg: [6.2, 6.6, 7.0, 7.4, 7.8], head: 1.75, speed: 280, grav: 0.6, pellets: 10,
+    spread: 0.085, spreadAds: 0.07, bloom: 0, bloomMax: 0,
+    recoil: 0.034, recoilSide: 0.01, recoilCenter: 0, recoilMax: 0.16, recover: 7, recoverDelay: 0.1,
+    kick: 0.8, shake: 0.35,
+    reload: 5.0, falloff: [5, 22, 0.3], struct: 0.8, zoom: 1.25, rarities: [0, 1, 2, 3],
   },
   sniper: {
-    name: 'Bolt Sniper', short: 'Sniper', ammo: 'heavy', mag: 1, rate: 0.55, auto: false,
+    name: 'Bolt Sniper', short: 'Sniper', ammo: 'heavy', mag: 1, rate: 0.5, auto: false,
     dmg: [100, 105, 110, 116, 121], head: 2.5, speed: 320, grav: 1.0, pellets: 1,
     spread: 0.06, spreadAds: 0.0, bloom: 0, bloomMax: 0,
-    recoil: 0.06, reload: 2.7, falloff: null, struct: 1, zoom: 5.2, scope: true, rarities: [2, 3, 4],
+    recoil: 0.065, recoilSide: 0.01, recoilCenter: 0, recoilMax: 0.25, recover: 5.5, recoverDelay: 0.15,
+    kick: 1, shake: 0.45,
+    reload: 2.8, falloff: null, struct: 1, zoom: 5.2, scope: true, rarities: [2, 3, 4],
   },
+  // snappy: a sharp flick up that settles right away
   pistol: {
-    name: 'Pistol', short: 'Pistol', ammo: 'light', mag: 16, rate: 6.5, auto: false,
+    name: 'Pistol', short: 'Pistol', ammo: 'light', mag: 16, rate: 6, auto: false,
     dmg: [24, 25, 26, 28, 29], head: 2.0, speed: 330, grav: 0.5, pellets: 1,
     spread: 0.022, spreadAds: 0.012, bloom: 0.012, bloomMax: 0.05,
-    recoil: 0.012, reload: 1.4, falloff: [25, 70, 0.6], struct: 1, zoom: 1.3, rarities: [0, 1, 2],
+    recoil: 0.016, recoilSide: 0.004, recoilCenter: 0.3, recoilMax: 0.08, recover: 9, recoverDelay: 0.06,
+    kick: 0.55, shake: 0.14,
+    reload: 1.3, falloff: [25, 70, 0.6], struct: 1, zoom: 1.3, rarities: [0, 1, 2],
   },
   rocket: {
-    name: 'Rocket Launcher', short: 'Rocket', ammo: 'rockets', mag: 1, rate: 0.75, auto: false,
+    name: 'Rocket Launcher', short: 'Rocket', ammo: 'rockets', mag: 1, rate: 0.7, auto: false,
     dmg: [85, 90, 95, 100, 110], head: 1, speed: 58, grav: 0.12, pellets: 1, splash: 5.2,
     spread: 0.01, spreadAds: 0.0, bloom: 0, bloomMax: 0,
-    recoil: 0.05, reload: 3.0, falloff: null, struct: 4.5, zoom: 1.4, projectile: 'rocket', rarities: [3, 4],
+    recoil: 0.05, recoilSide: 0.008, recoilCenter: 0, recoilMax: 0.2, recover: 6, recoverDelay: 0.12,
+    kick: 1, shake: 0.45,
+    reload: 3.4, falloff: null, struct: 4.5, zoom: 1.4, projectile: 'rocket', rarities: [3, 4],
   },
 };
 
-export const WEAPON_KEYS = ['ar', 'smg', 'shotgun', 'sniper', 'pistol', 'rocket'];
+export const WEAPON_KEYS = ['ar', 'burst', 'smg', 'shotgun', 'tactical', 'sniper', 'pistol', 'rocket'];
+
+// How often each gun turns up in floor loot and chests (rarity is rolled separately and clamped
+// to the gun's `rarities`).
+export const WEAPON_WEIGHTS = { ar: 22, burst: 12, smg: 16, shotgun: 16, tactical: 13, pistol: 14, sniper: 8, rocket: 6 };
 
 export const AMMO = {
   light:   { name: 'Light Ammo',  pickup: 30, color: '#9fd4ff' },

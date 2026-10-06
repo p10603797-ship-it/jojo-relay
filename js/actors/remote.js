@@ -1,7 +1,7 @@
 // Players simulated elsewhere (other devices, or bots owned by another device):
 // snapshot buffering + interpolation, animated model, kinematic collider, hitboxes.
 import * as THREE from 'three';
-import { ANIM, FLAG, WEAPONS, HEALS } from '../../shared/constants.js';
+import { ANIM, FLAG, WEAPONS, HEALS, PLAYER } from '../../shared/constants.js';
 import { Character } from './character.js';
 import { GROUP } from '../physics.js';
 
@@ -41,7 +41,7 @@ export class RemotePlayer {
     this.rarity = 0;
     this.alive = true;
     this.hp = 100;
-    this.sh = 0;
+    this.sh = PLAYER.startShield;
     this.speed = 0;
     this.moveAngle = 0;
     this.stepAcc = 0;

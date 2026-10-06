@@ -1,6 +1,6 @@
 // Phortnite bootstrap: renderer, assets, world, menus, main loop, dynamic resolution.
 import * as THREE from 'three';
-import { SKINS, VERSION } from '../shared/constants.js';
+import { SKINS, VERSION, PROTOCOL } from '../shared/constants.js';
 import { getWorld } from '../shared/room.js';
 import { Physics } from './physics.js';
 import { buildTextures, spriteTextures } from './gfx/textures.js';
@@ -11,7 +11,7 @@ import { Input } from './input.js';
 import { Sfx } from './audio.js';
 import { Hud } from './ui/hud.js';
 import { Ui } from './ui/menu.js';
-import { Character } from './actors/character.js';
+import { Character, prewarmCharacters } from './actors/character.js';
 import { Game } from './game/game.js';
 import { WsNet, LocalNet } from './net/net.js';
 import { P2PHost, P2PClient, qrDataUrl } from './net/p2p.js';
@@ -36,7 +36,7 @@ const PRESETS = {
 
 const DEFAULTS = {
   name: '', skin: 0, quality: 'auto', sens: 1, touchSens: 1, invertY: false, fov: 80, volume: 0.8,
-  showFps: false, shake: true, forceTouch: false, autoFire: true,
+  showFps: false, shake: true, forceTouch: false, autoFire: true, aimAssist: true,
 };
 
 function loadSettings() {
@@ -180,6 +180,7 @@ class App {
     this.menuPos = new THREE.Vector3(px, data.heightAt(px, pz), pz);
     this.menuDir = dir;
     this.setMenuSkin(this.settings.skin);
+    prewarmCharacters(); // build every skin's meshes while the menu is idle
   }
 
   setMenuSkin(skin) {
@@ -246,7 +247,7 @@ class App {
 
   // ------------------------------------------------------------------ sessions
   hello() {
-    return { name: this.settings.name || 'Player', skin: this.settings.skin };
+    return { name: this.settings.name || 'Player', skin: this.settings.skin, v: PROTOCOL };
   }
 
   async playSolo() {
@@ -314,6 +315,16 @@ class App {
       }
       return;
     }
+    // the host can turn us away before the welcome (party full, different game version)
+    const off = net.onMessage((m) => {
+      if (m.t === 'welcome') off();
+      if (m.t === 'err' && this.game && this.game.net === net && !this.game.me) {
+        off();
+        net.onClose = null;
+        this.leaveGame();
+        this.ui.alert(m.msg || 'Could not join that party.');
+      }
+    });
     net.onClose = () => {
       if (this.game && this.game.net === net) {
         this.leaveGame();
@@ -369,7 +380,7 @@ class App {
     requestAnimationFrame((t) => this.frame(t));
     const raw = (now - this.last) / 1000;
     this.last = now;
-    const dt = Math.min(raw, 0.05);
+    const dt = Math.max(0, Math.min(raw, 0.05)); // never negative (e.g. a timestamp from before a pause)
     let focus;
     if (this.game) {
       // debug/test hook: run extra simulation steps per rendered frame

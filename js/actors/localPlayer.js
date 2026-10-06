@@ -1,11 +1,13 @@
 // The player on this device: turns input into look/move/actions, recoil, HUD sync.
 import { WEAPONS, MAT_KEYS } from '../../shared/constants.js';
 import { Combatant } from './combatant.js';
+import { Recoil } from '../combat/recoil.js';
 
 export class LocalPlayer extends Combatant {
   constructor(game, id, name, skin) {
     super(game, id, name, skin, false);
     this.isLocal = true;
+    this.rc = new Recoil();
   }
 
   onInventory() {
@@ -15,10 +17,19 @@ export class LocalPlayer extends Combatant {
   }
 
   onFired(w) {
-    const k = w.recoil * (this.ads ? 0.7 : 1) * (this.mover.crouch ? 0.8 : 1);
-    this.pitch = Math.min(1.45, this.pitch + k * (0.85 + Math.random() * 0.3));
-    this.yaw += (Math.random() - 0.5) * k * 0.7;
-    this.game.shake(w.pellets > 1 || w.projectile || w.scope ? 0.45 : 0.12);
+    // aiming down sights and crouching steady the gun
+    const rc = this.rc;
+    rc.kick(w, (this.ads ? 0.75 : 1) * (this.mover.crouch ? 0.8 : 1));
+    const p0 = this.pitch;
+    this.pitch = Math.min(Math.max(p0, 1.45), p0 + rc.dp);
+    rc.p += this.pitch - p0 - rc.dp; // looking straight up: only owe back what was applied
+    this.yaw += rc.dy;
+    this.game.shake(w.shake ?? (w.pellets > 1 || w.projectile || w.scope ? 0.45 : 0.12));
+  }
+
+  respawn(x, y, z) {
+    super.respawn(x, y, z);
+    this.rc.reset();
   }
 
   /** Look + inventory/build mode handling from the input state. */
@@ -27,10 +38,17 @@ export class LocalPlayer extends Combatant {
     const w = cur && WEAPONS[cur.k];
     const zoom = this.ads && w && w.zoom ? w.zoom : 1;
     const k = 1 / Math.pow(zoom, 0.8);
-    this.yaw += s.lookX * k;
+    const p0 = this.pitch;
+    this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch + s.lookY * k));
+    // the player's own aim first settles recoil they pulled against; then the camera drifts back
+    // toward where it was before the gun kicked
+    const rc = this.rc;
+    rc.look(this.pitch - p0, s.lookX * k);
+    rc.recover(dt);
+    this.yaw += s.lookX * k + rc.dy;
     if (this.yaw > Math.PI) this.yaw -= Math.PI * 2;
     else if (this.yaw < -Math.PI) this.yaw += Math.PI * 2;
-    this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch + s.lookY * k));
+    this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch + rc.dp));
     if (!this.canAct()) return;
 
     let changed = false;

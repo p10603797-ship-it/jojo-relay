@@ -2,7 +2,7 @@
 // remote players, loot, storm, bus, combat resolution and the third-person camera.
 import * as THREE from 'three';
 import {
-  WEAPONS, HEALS, PLAYER, ANIM, SEND_HZ, SKINS, BUILD, MAT_KEYS, weaponDamage, itemKind,
+  WEAPONS, HEALS, PLAYER, ANIM, SEND_HZ, SKINS, BUILD, MAT_KEYS, PROTOCOL, weaponDamage, itemKind,
 } from '../../shared/constants.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
 import { Bot } from '../actors/bot.js';
@@ -13,14 +13,21 @@ import { LootView, StormView, BusView } from './views.js';
 import { RAY_SOLID } from '../physics.js';
 import { lootLabel } from '../ui/hud.js';
 
+// warm-up loadout: each spawn picks one gun of each pair so every gun gets tried out ([rarity, guns...])
+const WARMUP_PICKS = [[2, 'ar', 'burst'], [2, 'shotgun', 'tactical'], [2, 'smg', 'pistol'], [3, 'sniper'], [3, 'rocket']];
 const WARMUP = {
-  slots: [{ k: 'ar', r: 2, m: 30 }, { k: 'shotgun', r: 2, m: 5 }, { k: 'smg', r: 2, m: 30 }, { k: 'sniper', r: 3, m: 1 }, { k: 'rocket', r: 3, m: 1 }],
+  get slots() {
+    return WARMUP_PICKS.map(([r, ...ks]) => {
+      const k = ks[Math.floor(Math.random() * ks.length)];
+      return { k, r, m: WEAPONS[k].mag };
+    });
+  },
   ammo: {}, mats: { wood: 999, stone: 999, metal: 999 },
 };
 
 // Auto-shoot (a setting): farthest (m from the gun) an enemy may be for each gun to fire on its
 // own, so a shotgun doesn't waste shells on someone across the map. Bullet drop is checked too.
-const AUTO_RANGE = { ar: 220, smg: 90, pistol: 90, shotgun: 30, sniper: 250, rocket: 90 };
+const AUTO_RANGE = { ar: 220, burst: 200, smg: 90, pistol: 90, shotgun: 30, tactical: 25, sniper: 250, rocket: 90 };
 // closest: a point-blank rocket would level the player's own walls and floor
 const AUTO_MIN = { rocket: 12 };
 const AUTO_ACQUIRE = 0.06; // s the crosshair must rest on an enemy before firing (like a human reaction)
@@ -29,6 +36,23 @@ const GRAVITY = 9.81;
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _f = new THREE.Vector3();
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Aim assist (a setting, touch + controller only): angles in rad, rates in rad/s.
+const AA = {
+  range: 120, rangeScoped: 200, // m: farthest enemy that is assisted (a scoped sniper reaches further, weakly)
+  bubble: 1.12, // m around the chest (body radius 0.37 + margin) where the look slows down
+  coneMin: 0.02, coneMax: 0.16, // that bubble as an angle: ~1.2° far away .. ~9° up close
+  pullCone: 1.5, // tracking reaches this many bubbles out
+  slowAds: 0.55, slowHip: 0.65, // look sensitivity at the bubble's centre
+  pull: 0.18, // ~10°/s toward the chest while aiming down sights (half when hip firing)
+  follow: 0.5, // share of the target's angular motion the view follows
+  chest: 0.15, // m around the chest point with no pull, so it never feels locked on
+  snapCone: 0.157, snapRange: 80, snapTime: 0.12, // ADS snap: within ~9°, 80 m, takes 0.12 s
+  swipeLo: 0.6, swipeHi: 3, // look input: full assist below, none above (half as much when swiping away)
+  losEvery: 0.2, losRays: 3, // re-check line of sight 5x a second per target, at most 3 checks a frame
+};
+const aaWrap = (a) => a - Math.PI * 2 * Math.round(a / (Math.PI * 2));
+const aaClamp = (v, m) => (v > m ? m : v < -m ? -m : v);
 
 export class Game {
   constructor(app, net, opts) {
@@ -145,6 +169,12 @@ export class Game {
   }
 
   on_welcome(m) {
+    if (m.v !== PROTOCOL) {
+      // the host is on another build of the game: different rules, so don't mix
+      this.app.leaveGame();
+      this.app.ui.alert('Your friend\'s game is on a different version of Phortnite. Everyone should reload the page, then try again.');
+      return;
+    }
     this.myId = m.you;
     this.leader = m.leader;
     this.phase = m.phase;
@@ -250,7 +280,7 @@ export class Game {
     me.char.endRagdoll();
     me.alive = true;
     me.hp = PLAYER.maxHp;
-    me.sh = 0;
+    me.sh = PLAYER.startShield;
     me.infinite = false;
     const mats = this.settingsState.mats | 0;
     me.resetInventory({ slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
@@ -290,6 +320,7 @@ export class Game {
         bot.brain.dropAt = len * (0.12 + Math.random() * 0.68);
       } else if (last) {
         bot.mover.teleport(last.x, last.y, last.z);
+        bot.brain.spread = true; // a bot taken over mid-air keeps its spot (no bus-drop fan-out)
         bot.mover.mode = last.a === ANIM.SKYDIVE ? 'skydive' : last.a === ANIM.GLIDE ? 'glide' : 'air';
         bot.hp = r.hp;
         bot.sh = r.sh;
@@ -339,6 +370,7 @@ export class Game {
     const me = this.me;
     me.inBus = false;
     me.respawn(sp.x, this.world.data.heightAt(sp.x, sp.z) + 0.3, sp.z);
+    me.sh = PLAYER.startShield; // the room's lobby value; saves a 0-shield flash
     me.mover.mode = 'ground';
     me.infinite = true;
     me.resetInventory(WARMUP);
@@ -387,14 +419,16 @@ export class Game {
       });
     }
     _f.set(m.d[0], m.d[1], m.d[2]);
-    this.fx.muzzle(muzzle, _f, m.w === 'shotgun' || m.w === 'sniper' || m.w === 'rocket', false);
+    this.fx.muzzle(muzzle, _f, w.pellets > 1 || m.w === 'sniper' || m.w === 'rocket', false);
     this.sfx.shot(m.w, muzzle, false);
-    if (shooter) shooter.char.kick(0.6);
+    this.noise(m.o[0], m.o[1], m.o[2], Bot.shotNoise(m.w), 'shot', m.id);
+    if (shooter) shooter.char.kick(w.kick ?? 0.6, Math.max(0.5, 1.2 / w.rate));
   }
 
   on_sw(m) {
     const r = this.remotes.get(m.id);
     if (r) r.char.playSwing();
+    if (r) this.noise(r.pos.x, r.pos.y, r.pos.z, 30, 'harvest', r.id);
   }
 
   on_dmg(m) {
@@ -416,6 +450,21 @@ export class Game {
       if (m.shd && m.sh === 0) this.sfx.shieldBreak(); else this.sfx.hurt();
     }
     if (t instanceof Bot) t.brain.lastHp = Math.max(t.brain.lastHp, 0);
+    if (t instanceof Bot && m.c !== 'storm' && m.c !== 'fall') t.hurtBy(this.actorById(m.a), m.amt);
+    const att = this.bots.get(m.a);
+    if (att && att !== t && att.dealt && m.c !== 'storm' && m.c !== 'fall') att.dealt(t, m.amt | 0, m.sh);
+  }
+
+  // elimination siphon (Room.siphon): apply it now instead of on the next snapshot, and pop "+50"
+  on_siphon(m) {
+    const a = this.actorById(m.id);
+    if (!a) return;
+    a.hp = m.hp;
+    a.sh = m.sh;
+    if (a === this.me && m.amt > 0) {
+      this.hud.siphon(m.dh | 0, m.ds | 0);
+      this.sfx.heal(!(m.dh > 0));
+    }
   }
 
   on_elim(m) {
@@ -501,6 +550,7 @@ export class Game {
     const p = this.builds.add(m);
     this.pendingBuilds.delete(m.k);
     if (p && !mine) this.sfx.build(p.pos, false);
+    if (p && !mine) this.noise(p.pos.x, p.pos.y, p.pos.z, 30, 'build', m.by);
   }
 
   on_bDel(m) {
@@ -587,6 +637,7 @@ export class Game {
     this.world.setChestOpen(m.c, true);
     this.fx.sparkle(c.x, c.y + 0.5, c.z, [1, 0.85, 0.3], 30);
     this.sfx.chest(_v.set(c.x, c.y, c.z));
+    this.noise(c.x, c.y, c.z, 15, 'chest', 0);
   }
 
   on_boom(m) {
@@ -652,6 +703,7 @@ export class Game {
   onSwing(a) {
     this.send({ t: 'sw', id: a.id });
     if (a === this.me) this.sfx.whoosh(true);
+    this.noise(a.pos.x, a.pos.y, a.pos.z, 30, 'harvest', a.id);
   }
 
   onDryFire(a) { if (a === this.me) this.sfx.ui('error'); }
@@ -665,6 +717,7 @@ export class Game {
     else surf = this.world.surfaceAt(a.pos.x, a.pos.z);
     this.sfx.step(a.pos, surf, a === this.me);
     if (surf === 'sand' && Math.random() < 0.5) this.fx.dust(a.pos.x, a.pos.y, a.pos.z, 0.4, [0.9, 0.84, 0.66]);
+    this.noise(a.pos.x, a.pos.y, a.pos.z, a.crouching ? 4 : a.speed > 7 ? 18 : 12, 'step', a.id);
   }
 
   onLanded(a, speed) {
@@ -672,6 +725,15 @@ export class Game {
   }
 
   onJump() {}
+
+  /**
+   * Something audible happened (shot, footstep, build, chest, explosion): bots in earshot get a
+   * rough position to look at or investigate (see Bot.hear). sourceId 0 = unknown.
+   */
+  noise(x, y, z, radius, kind, sourceId) {
+    if (!this.bots.size || this.phase === 'lobby') return;
+    for (const b of this.bots.values()) if (b.id !== sourceId && b.alive && !b.inBus) b.hear(x, y, z, radius, kind, sourceId);
+  }
 
   botPick(bot, l) {
     const kind = itemKind(l.item.k);
@@ -734,6 +796,7 @@ export class Game {
     this.pendingBuilds.set(t.k, { id: a.id, m: mat });
     this.send({ t: 'b', id: a.id, k: t.k, m: mat, d: t.d });
     this.sfx.build(p.pos, a === this.me);
+    this.noise(p.pos.x, p.pos.y, p.pos.z, 30, 'build', a.id);
     return true;
   }
 
@@ -751,9 +814,10 @@ export class Game {
       });
     }
     _f.set(dirs[0], dirs[1], dirs[2]);
-    this.fx.muzzle(muzzle, _f, cur.k === 'shotgun' || cur.k === 'sniper' || cur.k === 'rocket', a === this.me);
+    this.fx.muzzle(muzzle, _f, w.pellets > 1 || cur.k === 'sniper' || cur.k === 'rocket', a === this.me);
     this.sfx.shot(cur.k, muzzle, a === this.me);
-    a.char.kick(0.7);
+    this.noise(origin.x, origin.y, origin.z, Bot.shotNoise(cur.k), 'shot', a.id);
+    a.char.kick(w.kick ?? 0.7, Math.max(0.5, 1.2 / w.rate));
     const r3 = (x) => Math.round(x * 1000) / 1000;
     this.send({
       t: 'sh', id: a.id, w: cur.k, r: cur.r | 0,
@@ -782,7 +846,8 @@ export class Game {
       const info = hit.info;
       let mat = info && info.mat;
       if (!mat || (info && info.kind === 'terrain')) mat = this.world.surfaceAt(hit.x, hit.z);
-      this.fx.impact(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, mat, b.w === 'sniper' ? 1.6 : b.w === 'shotgun' ? 0.5 : 1);
+      const pellet = b.w === 'shotgun' || b.w === 'tactical';
+      this.fx.impact(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, mat, b.w === 'sniper' ? 1.6 : pellet ? 0.5 : 1);
       if (!info || info.kind !== 'barrel') {
         const key = info && info.kind === 'build' ? info.key : info && info.kind === 'obj' ? `o${info.id}` : null;
         this.fx.decals.add(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, b.w === 'sniper' ? 0.22 : 0.14, key);
@@ -790,7 +855,7 @@ export class Game {
       if (Math.random() < 0.5) this.sfx.impact(_v.set(hit.x, hit.y, hit.z), mat);
       if (info && info.kind === 'barrel') {
         const body = this.world.barrels[info.i].body;
-        const k = b.w === 'sniper' ? 3 : b.w === 'shotgun' ? 0.6 : 1.2;
+        const k = b.w === 'sniper' ? 3 : pellet ? 0.6 : 1.2;
         body.applyImpulseAtPoint({ x: hit.dx * k * 8, y: hit.dy * k * 8 + 2, z: hit.dz * k * 8 }, { x: hit.x, y: hit.y, z: hit.z }, true);
       }
       const w = WEAPONS[b.w];
@@ -852,6 +917,7 @@ export class Game {
     this.fx.explosion(x, y, z, radius);
     this.fx.decals.add(x, y + 0.05, z, 0, 1, 0, radius * 0.7, null);
     this.sfx.explosion(_v.set(x, y, z));
+    this.noise(x, y, z, 100, 'boom', 0);
     const cam = this.camera.position;
     const d = Math.hypot(cam.x - x, cam.y - y, cam.z - z);
     this.shake(Math.max(0, 1.2 - d / 40));
@@ -1071,6 +1137,10 @@ export class Game {
       this.hud.bus('');
     }
     if (me.alive && !me.inBus) {
+      const p0 = me.pitch, y0 = me.yaw;
+      this.aimAssist(dt, s);
+      // aim assist's own turn counts as pulling against the recoil, so recovery won't drag the aim back past it
+      me.rc.look(me.pitch - p0, me.yaw - y0);
       me.control(dt, s);
       me.move(dt, s);
     } else if (!me.alive) {
@@ -1192,6 +1262,153 @@ export class Game {
       px = qx; py = qy; pz = qz;
     }
     return true;
+  }
+
+  // ------------------------------------------------------------------ aim assist
+  /**
+   * Aim assist setting, for thumbs (touch, controller) and never a mouse, like console/mobile
+   * shooters: the look slows down over a visible enemy; while aiming down sights or firing the
+   * view follows the target and drifts toward its chest; and starting to aim down sights swings
+   * the crosshair onto a nearby enemy. Runs before control() and adjusts the look input / angles.
+   */
+  aimAssist(dt, s) {
+    const me = this.me;
+    const A = this.aa || (this.aa = {
+      prevAds: false, id: 0, yawT: 0, pitchT: 0, err: 0, slow: 1, snapId: 0, snapT: 0, rays: 0, vis: new Map(),
+    });
+    const inp = this.input;
+    // a toggled/held ADS that carries through a menu is not a new press (input is blank while one is open)
+    const adsEdge = inp.enabled && !!s.ads && !A.prevAds;
+    if (inp.enabled) A.prevAds = !!s.ads;
+    A.slow = 1;
+    const cur = me.current();
+    const w = cur && Object.prototype.hasOwnProperty.call(WEAPONS, cur.k) ? WEAPONS[cur.k] : null;
+    if (!this.settings.aimAssist || !inp.enabled || !(inp.touchMode || inp.lookDev === 'pad')
+      || !w || w.melee || me.buildMode || !me.canAct()) {
+      A.id = 0; A.snapT = 0;
+      return;
+    }
+    const ads = !!s.ads;
+    const scoped = ads && !!w.scope;
+    // The crosshair ray runs along the view direction through the camera's shoulder point (see
+    // updateCamera; use the offsets it is easing toward), so solve the view angles that put that
+    // ray through each enemy's chest: yaw turns a little extra for the sideways offset.
+    const camR = ads ? (w.scope ? 0.2 : 0.86) : 0.72;
+    const px = me.pos.x, pz = me.pos.z;
+    const py = me.pos.y + (me.mover.crouch ? 1.15 : 1.58) + (ads ? 0.25 : 0.3);
+    const cp = Math.cos(me.pitch);
+    const range = scoped ? AA.rangeScoped : AA.range;
+    const myTeam = this.phase === 'lobby' ? me.id : this.teamOf(me.id);
+    A.rays = AA.losRays;
+    // best target in reach (any visible part) and the snap target (visible chest), as plain numbers
+    let id = 0, score = AA.pullCone, eY = 0, eP = 0, err = 0, cone = 1, dead = 0, yawT = 0, pitchT = 0, chest = false;
+    let snapId = 0, snapErr = AA.snapCone, sY = 0, sP = 0, sYawT = 0, sPitchT = 0, snapLive = false;
+    for (const t of this.hitboxes) {
+      if (t.id === me.id || t.team === myTeam || t.far) continue;
+      const b = t.body;
+      const cx = b[3], cy = b[4] - 0.18, cz = b[5];
+      const dx = cx - px, dy = cy - py, dz = cz - pz;
+      const r2 = dx * dx + dz * dz;
+      if (r2 < 2.25 || r2 + dy * dy > range * range) continue;
+      const dist = Math.sqrt(r2 + dy * dy);
+      const ty = Math.atan2(-dx, -dz) + Math.asin(camR / Math.sqrt(r2));
+      const tp = Math.atan2(dy, Math.sqrt(r2 - camR * camR));
+      const ey = aaWrap(ty - me.yaw), ep = tp - me.pitch;
+      const e = Math.hypot(ey * cp, ep);
+      // the bubble: body plus a margin, as an angle (wider up close)
+      const c = Math.min(AA.coneMax, Math.max(AA.coneMin, Math.atan(AA.bubble / dist)));
+      const inSnap = e < AA.snapCone && dist < AA.snapRange;
+      const snapping = A.snapT > 0 && t.id === A.snapId;
+      if (e > c * AA.pullCone && !inSnap && !snapping) continue;
+      // only enemies the camera can see (cached; also kept fresh inside the snap cone for the next ADS)
+      const vis = this.aaVisible(t, cx, cy, cz);
+      if (!vis) continue;
+      const sc = (e / c) * (t.id === A.id ? 0.7 : 1); // stay with the current target when several are close
+      if (sc < score) {
+        score = sc; id = t.id; eY = ey; eP = ep; err = e; cone = c; yawT = ty; pitchT = tp;
+        dead = Math.atan(AA.chest / dist); chest = (vis & 1) !== 0;
+      }
+      if (!(vis & 1)) continue; // swings and pulls only go to a chest that can be seen
+      if (snapping) { snapLive = true; sY = ey; sP = ep; sYawT = ty; sPitchT = tp; }
+      else if (adsEdge && inSnap && e < snapErr) { snapErr = e; snapId = t.id; sY = ey; sP = ep; sYawT = ty; sPitchT = tp; }
+    }
+    // how fast the player is turning (rad/s): the assist backs off while they swipe
+    const inRate = Math.hypot(s.lookX, s.lookY) / Math.max(dt, 1e-3);
+
+    // ADS snap: ease onto the chest so it lands at the end of the window (re-aimed every frame,
+    // so a moving target is still met); a real swipe or letting go of ADS cancels it
+    if (adsEdge && snapId) { A.snapId = snapId; A.snapT = AA.snapTime; snapLive = true; }
+    if (A.snapT > 0) {
+      if (!ads || !snapLive || inRate > AA.swipeHi) A.snapT = 0;
+      else {
+        const k = Math.min(1, dt / A.snapT);
+        me.yaw += sY * k;
+        me.pitch += sP * k;
+        A.snapT -= dt;
+        A.id = A.snapId; A.yawT = sYawT; A.pitchT = sPitchT; A.err = 0;
+        return;
+      }
+    }
+    if (!id) { A.id = 0; A.err = 0; return; }
+
+    // friction: the look slows down over the enemy so a swipe doesn't overshoot
+    const inside = 1 - err / cone;
+    if (inside > 0) {
+      A.slow = 1 - (1 - (ads ? AA.slowAds : AA.slowHip)) * Math.min(1, inside * 1.5);
+      s.lookX *= A.slow;
+      s.lookY *= A.slow;
+    }
+    // tracking while aiming down sights or firing, fading out as the player swipes (sooner when
+    // swiping away from the target, so it never fights a deliberate turn)
+    if (chest && (ads || s.fire || this.autoLock)) {
+      const away = s.lookX * eY * cp * cp + s.lookY * eP < 0;
+      const lo = away ? AA.swipeLo * 0.5 : AA.swipeLo, hi = away ? AA.swipeHi * 0.5 : AA.swipeHi;
+      const str = (ads ? 1 : 0.5) * (scoped ? 0.5 : 1) * Math.max(0, Math.min(1, 1 - (inRate - lo) / (hi - lo)));
+      // full strength over the inner half of the reach, fading to nothing at its edge
+      const near = Math.max(0, Math.min(1, 2 - (2 * err) / (cone * AA.pullCone)));
+      if (str > 0 && near > 0) {
+        // rotational assist: turn with part of the target's motion across the view (its strafing and ours)
+        if (A.id === id) {
+          const f = AA.follow * str * near;
+          me.yaw += aaClamp(aaWrap(yawT - A.yawT), 0.05) * f;
+          me.pitch += aaClamp(pitchT - A.pitchT, 0.05) * f;
+        }
+        // and a gentle, capped pull toward the chest (none on the chest itself)
+        const over = err - dead;
+        if (over > 0) {
+          const step = Math.min(over, AA.pull * str * near * dt);
+          me.yaw += (eY / err) * step;
+          me.pitch += (eP / err) * step;
+        }
+      }
+    }
+    A.id = id; A.yawT = yawT; A.pitchT = pitchT; A.err = err;
+  }
+
+  /** Can the camera see an enemy's chest (1) or head (2)? Cached per enemy, re-checked a few times a second. */
+  aaVisible(t, cx, cy, cz) {
+    const A = this.aa;
+    let e = A.vis.get(t.id);
+    if (!e) {
+      if (A.vis.size > 64) A.vis.clear();
+      e = { at: -1, bits: 0 };
+      A.vis.set(t.id, e);
+    }
+    const age = e.at < 0 ? 1e9 : this.time - e.at;
+    // out of checks this frame: an answer up to a second old will do, anything older counts as hidden
+    if (age < AA.losEvery || A.rays <= 0) return age < 1 ? e.bits : 0;
+    A.rays--;
+    e.at = this.time;
+    e.bits = this.aaClear(cx, cy, cz) ? 1 : this.aaClear(t.head[0], t.head[1], t.head[2]) ? 2 : 0;
+    return e.bits;
+  }
+
+  /** Nothing solid between the camera and a point (stopping a little short of it). */
+  aaClear(x, y, z) {
+    const o = this.camera.position;
+    const dx = x - o.x, dy = y - o.y, dz = z - o.z;
+    const l = Math.hypot(dx, dy, dz);
+    return l < 0.5 || !this.physics.raycast(o.x, o.y, o.z, dx / l, dy / l, dz / l, l - 0.4, RAY_SOLID);
   }
 
   cycleSpectate() {

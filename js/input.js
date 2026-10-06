@@ -32,6 +32,7 @@ export class Input {
     this.locked = false;
     this.enabled = false;
     this.touchMode = false;
+    this.lookDev = ''; // device of the latest look input: 'mouse' | 'touch' | 'pad' (aim assist is for thumbs only)
     this.s = this.blank();
     this.crouchToggle = false;
 
@@ -267,6 +268,7 @@ export class Input {
     s.mx = (this.any(KEYS.right) ? 1 : 0) - (this.any(KEYS.left) ? 1 : 0);
     s.my = (this.any(KEYS.forward) ? 1 : 0) - (this.any(KEYS.back) ? 1 : 0);
     const ms = 0.0022 * st.sens;
+    if (this.mouseDX || this.mouseDY) this.lookDev = 'mouse';
     s.lookX = -this.mouseDX * ms;
     s.lookY = -this.mouseDY * ms * (st.invertY ? -1 : 1);
     s.fire = this.mouseL;
@@ -295,6 +297,7 @@ export class Input {
     // touch
     if (this.touchMode) {
       const ts = 0.0052 * st.touchSens;
+      if (this.touchLookX || this.touchLookY) this.lookDev = 'touch';
       s.lookX += -this.touchLookX * ts;
       s.lookY += -this.touchLookY * ts * (st.invertY ? -1 : 1);
       if (this.joy.id !== -1) {
@@ -347,6 +350,7 @@ export class Input {
     const edge = (i) => btn(i) && !this.padPrev[i];
     const lx = dz(ax[0] || 0), ly = dz(ax[1] || 0), rx = dz(ax[2] || 0), ry = dz(ax[3] || 0);
     if (lx || ly) { s.mx = lx; s.my = -ly; }
+    if (rx || ry || btn(6) || btn(7)) this.lookDev = 'pad';
     const k = 0.055 * this.settings.sens;
     s.lookX += -rx * Math.abs(rx) * k;
     s.lookY += -ry * Math.abs(ry) * k * (this.settings.invertY ? -1 : 1);

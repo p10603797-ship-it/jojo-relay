@@ -160,6 +160,8 @@ export class P2PHost extends Emitter {
     dc.on('data', receiver((msg) => {
       if (msg.t === 'join') {
         if (!joined) joined = this.room.join(conn, msg.hello && typeof msg.hello === 'object' ? msg.hello : {});
+        // turned away (full, different version): let the error message reach them, then hang up
+        if (!joined) setTimeout(() => { try { dc.close(); } catch (e) { /* closing */ } }, 500);
         return;
       }
       if (joined) this.room.message(conn.id, msg);
