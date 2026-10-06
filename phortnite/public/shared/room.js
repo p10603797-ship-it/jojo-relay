@@ -4,7 +4,7 @@
 // A connection is any object with { id, send(obj), ip }.
 import {
   MAP, BUILD, MAT_KEYS, PLAYER, WEAPONS, WEAPON_KEYS, AMMO, HEALS, STORM, BUS, SKINS, BOT_NAMES,
-  RARITY_WEIGHTS, clampRarity, weaponDamage, MAX_MATS, PROTOCOL, ANIM, own,
+  RARITY_WEIGHTS, WEAPON_WEIGHTS, clampRarity, weaponDamage, MAX_MATS, PROTOCOL, ANIM, own,
 } from './constants.js';
 import { generateWorld } from './worldgen.js';
 import { BuildGrid, parseKey } from './buildgrid.js';
@@ -33,7 +33,6 @@ function pickWeighted(weights, rnd = Math.random) {
   return weights.length - 1;
 }
 
-const WEAPON_WEIGHTS = { ar: 30, smg: 18, shotgun: 24, pistol: 14, sniper: 8, rocket: 6 };
 
 export function rollWeapon(boost = 0) {
   const keys = Object.keys(WEAPON_WEIGHTS);

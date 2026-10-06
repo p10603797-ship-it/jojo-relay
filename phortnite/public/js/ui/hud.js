@@ -22,7 +22,7 @@ const SIPHON_CSS = `
 `;
 
 const ICON = {
-  pickaxe: '⛏', ar: 'AR', smg: 'SMG', shotgun: 'PUMP', sniper: 'SNIPER', pistol: 'PISTOL', rocket: 'ROCKET',
+  pickaxe: '⛏', ar: 'AR', burst: 'BURST', smg: 'SMG', shotgun: 'PUMP', tactical: 'TAC', sniper: 'SNIPER', pistol: 'PISTOL', rocket: 'ROCKET',
   bandage: '🩹', medkit: '✚', shield_s: 'MINI', shield_b: 'BIG<br>SHIELD',
 };
 
@@ -121,7 +121,7 @@ export class Hud {
       this.set(`slot${i}`, key, () => {
         const el = this.slots[i];
         el.className = `slot${inv.sel === i && !p.buildMode ? ' sel' : ''}${s && (WEAPONS[s.k] && s.k !== 'pickaxe' || HEALS[s.k]) ? ` r${WEAPONS[s.k] ? s.r | 0 : HEALS[s.k].rarity}` : ''}`;
-        el.children[1].innerHTML = s ? ICON[s.k] || s.k : '';
+        el.children[1].innerHTML = s ? ICON[s.k] || (WEAPONS[s.k] ? WEAPONS[s.k].short.toUpperCase() : s.k) : '';
         el.children[2].textContent = s ? (HEALS[s.k] ? s.n : WEAPONS[s.k] && WEAPONS[s.k].mag ? s.m : '') : '';
       });
     }

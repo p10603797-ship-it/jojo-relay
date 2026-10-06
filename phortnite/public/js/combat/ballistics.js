@@ -161,7 +161,7 @@ export class Ballistics {
         // streak from the muzzle on the first frame, then behind the bullet
         const first = b.visT === 0;
         const ax = first ? b.visOx : sx, ay = first ? b.visOy : sy, az = first ? b.visOz : sz;
-        const w = b.w === 'sniper' ? 0.05 : b.w === 'shotgun' ? 0.018 : 0.028;
+        const w = b.w === 'sniper' ? 0.05 : b.w === 'shotgun' || b.w === 'tactical' ? 0.018 : 0.028;
         const bright = b.w === 'sniper' ? 1.4 : 1;
         tr.add(ax, ay, az, b.x, b.y, b.z, w, 1.0 * bright, 0.85 * bright, 0.55 * bright, 0.9, 0);
       }

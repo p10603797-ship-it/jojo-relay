@@ -39,7 +39,7 @@ export class Combatant {
     this.char = new Character(skin, '', {});
     game.scene.add(this.char.group);
     this.hp = PLAYER.maxHp;
-    this.sh = 0;
+    this.sh = PLAYER.startShield;
     this.alive = true;
     this.yaw = 0;
     this.pitch = 0;
@@ -517,7 +517,7 @@ export class Combatant {
   respawn(x, y, z) {
     this.alive = true;
     this.hp = PLAYER.maxHp;
-    this.sh = 0;
+    this.sh = PLAYER.startShield;
     this.char.endRagdoll();
     this.char.setVisible(true);
     this.mover.setEnabled(true);

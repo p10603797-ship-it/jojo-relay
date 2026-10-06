@@ -363,7 +363,7 @@ export class Game {
     const me = this.me;
     me.inBus = false;
     me.respawn(sp.x, this.world.data.heightAt(sp.x, sp.z) + 0.3, sp.z);
-    me.sh = PLAYER.startShield; // the room's lobby value (respawn() clears it); saves a 0-shield flash
+    me.sh = PLAYER.startShield; // the room's lobby value; saves a 0-shield flash
     me.mover.mode = 'ground';
     me.infinite = true;
     me.resetInventory(WARMUP);
@@ -412,7 +412,7 @@ export class Game {
       });
     }
     _f.set(m.d[0], m.d[1], m.d[2]);
-    this.fx.muzzle(muzzle, _f, m.w === 'shotgun' || m.w === 'sniper' || m.w === 'rocket', false);
+    this.fx.muzzle(muzzle, _f, w.pellets > 1 || m.w === 'sniper' || m.w === 'rocket', false);
     this.sfx.shot(m.w, muzzle, false);
     this.noise(m.o[0], m.o[1], m.o[2], Bot.shotNoise(m.w), 'shot', m.id);
     if (shooter) shooter.char.kick(w.kick ?? 0.6);
@@ -805,7 +805,7 @@ export class Game {
       });
     }
     _f.set(dirs[0], dirs[1], dirs[2]);
-    this.fx.muzzle(muzzle, _f, cur.k === 'shotgun' || cur.k === 'sniper' || cur.k === 'rocket', a === this.me);
+    this.fx.muzzle(muzzle, _f, w.pellets > 1 || cur.k === 'sniper' || cur.k === 'rocket', a === this.me);
     this.sfx.shot(cur.k, muzzle, a === this.me);
     this.noise(origin.x, origin.y, origin.z, Bot.shotNoise(cur.k), 'shot', a.id);
     a.char.kick(w.kick ?? 0.7);
@@ -837,7 +837,8 @@ export class Game {
       const info = hit.info;
       let mat = info && info.mat;
       if (!mat || (info && info.kind === 'terrain')) mat = this.world.surfaceAt(hit.x, hit.z);
-      this.fx.impact(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, mat, b.w === 'sniper' ? 1.6 : b.w === 'shotgun' ? 0.5 : 1);
+      const pellet = b.w === 'shotgun' || b.w === 'tactical';
+      this.fx.impact(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, mat, b.w === 'sniper' ? 1.6 : pellet ? 0.5 : 1);
       if (!info || info.kind !== 'barrel') {
         const key = info && info.kind === 'build' ? info.key : info && info.kind === 'obj' ? `o${info.id}` : null;
         this.fx.decals.add(hit.x, hit.y, hit.z, hit.nx, hit.ny, hit.nz, b.w === 'sniper' ? 0.22 : 0.14, key);
@@ -845,7 +846,7 @@ export class Game {
       if (Math.random() < 0.5) this.sfx.impact(_v.set(hit.x, hit.y, hit.z), mat);
       if (info && info.kind === 'barrel') {
         const body = this.world.barrels[info.i].body;
-        const k = b.w === 'sniper' ? 3 : b.w === 'shotgun' ? 0.6 : 1.2;
+        const k = b.w === 'sniper' ? 3 : pellet ? 0.6 : 1.2;
         body.applyImpulseAtPoint({ x: hit.dx * k * 8, y: hit.dy * k * 8 + 2, z: hit.dz * k * 8 }, { x: hit.x, y: hit.y, z: hit.z }, true);
       }
       const w = WEAPONS[b.w];
