@@ -95,7 +95,7 @@ export const WEAPONS = {
   // very fast, small kick but jittery side to side
   smg: {
     name: 'Rapid SMG', short: 'SMG', ammo: 'light', mag: 30, rate: 12, auto: true,
-    dmg: [15, 15, 16, 17, 18], head: 1.75, speed: 360, grav: 0.45, pellets: 1,
+    dmg: [14, 15, 15, 16, 17], head: 1.75, speed: 360, grav: 0.45, pellets: 1,
     spread: 0.034, spreadAds: 0.021, bloom: 0.004, bloomMax: 0.05,
     recoil: 0.0036, recoilSide: 0.0055, recoilCenter: 0.5, recoilMax: 0.035, recover: 9, recoverDelay: 0.12,
     kick: 0.35, shake: 0.07,
