@@ -13,7 +13,7 @@
 //  - personalities (casual, W-key rusher, camper, builder, loot goblin) over a skill spread
 // Each bot thinks ~4 times a second (staggered); per-frame work is steering and aiming only.
 import * as THREE from 'three';
-import { WEAPONS, HEALS, MAP, FLAG, MAT_KEYS } from '../../shared/constants.js';
+import { WEAPONS, HEALS, MAP, FLAG, MAT_KEYS, PLAYER } from '../../shared/constants.js';
 import { Combatant, forwardFromAngles } from './combatant.js';
 import { RAY_STATIC, RAY_SOLID } from '../physics.js';
 
@@ -31,6 +31,8 @@ const FOV = 1.0;          // half-angle of the view cone (~115°)
 const FOV_WIDE = 1.4;     // peripheral vision (~160°): only close or fast-moving targets
 const FOV_V = 0.95;       // vertical half-angle
 const LOS_CHECKS = 3;     // candidates ray-tested per think (2 rays each at most); the target is extra
+// health + shield: what everyone spawns with (all a player can assume about a stranger), and the most
+const HS_START = PLAYER.maxHp + PLAYER.startShield, HS_MAX = PLAYER.maxHp + PLAYER.maxShield;
 
 // preferred engagement ranges [min, ideal, max] in m; guns not listed are derived from their stats
 const RANGES = { shotgun: [0, 7, 14], smg: [0, 12, 28], pistol: [0, 15, 35], ar: [8, 40, 120], sniper: [45, 110, 400], rocket: [12, 35, 80] };
@@ -152,6 +154,7 @@ export class Bot extends Combatant {
       tapT: 0, burstT: 0, burstOn: false, graceT: 0, scopeT: 0, wantSlot: -1,
       // movement
       strafe: 1, strafeT: 0, crouchOn: false, crouchT: 0, jumpT: 0, avoid: 0, avoidT: 0, probeT: 0, fleeSide: 1,
+      peekT: 0, peekS: 0, peekK: 0, peekUp: false,
       stuckT: 0, stuckN: 0, lastPos: new THREE.Vector3(), moving: false, breakT: 0, breakX: 0, breakY: 0, breakZ: 0,
       progT: 0, progD: 0, progX: 0, progZ: 0, noProg: 0, detourT: 0, detourX: 0, detourZ: 0,
       glance: 0, glanceT: 1,
@@ -159,9 +162,11 @@ export class Bot extends Combatant {
       chestI: -1, harvest: null, treeT: 0,
       urgent: 0, safeKey: 0, safeX: 0, safeZ: 0,
       holdX: 0, holdZ: 0, holdSet: false, holdUntil: 0, campCool: 0, lookYaw: 0, lookT: 0,
-      // ears / getting hurt
+      holdSpot: null, holdChkT: 0, holdD: 0, holdStall: 0, badHold: new Set(),
+      // ears / getting hurt (noiseTX/TZ: where the sound being followed really came from, to tell
+      // more of the same fight from something new)
       noiseT: -99, noiseT0: -99, noisePri: 0, noiseKind: '', noiseSrc: 0, noiseX: 0, noiseY: 0, noiseZ: 0, noiseD: 0,
-      noiseDelay: 0.3, noiseDone: true, noiseGo: false,
+      noiseTX: 0, noiseTZ: 0, noiseDelay: 0.3, noiseDone: true, noiseGo: false,
       hurtT: -99, wallReq: false, buildT: 0, boxStep: 0, boxN: 4, boxYaw: 0, lowPlan: '',
       killT: -99, killX: 0, killY: 0, killZ: 0, danceT: 0,
       // set by the game while in the bus
@@ -326,9 +331,25 @@ export class Bot extends Combatant {
     return g.phase !== 'lobby' && !g.friendly(a.id, this.id);
   }
 
-  /** Someone's health as a player would know it: from our own hit markers, else assume healthy. */
+  /**
+   * Someone's health + shield as a player would know it: what everyone spawns with, minus the
+   * damage numbers we put on them ourselves, healed back up while out of sight.
+   */
   guessHp(a) {
-    return a === this.brain.target && this.time - this.lastShot < 4 ? a.hp + a.sh : 150;
+    const r = this.brain.recs.get(a.id);
+    return r && r.actor === a ? r.est : HS_START;
+  }
+
+  /**
+   * One of our hits landed (from Game.on_dmg): amt is the damage number we'd see, shLeft the
+   * target's shield after it. A hit that leaves no shield shows as plain health damage: under 100.
+   */
+  dealt(a, amt, shLeft) {
+    if (!a || a === this || !this.isEnemy(a)) return;
+    const r = this.recOf(a);
+    r.est = Math.max(1, r.est - amt);
+    if (shLeft === 0) r.est = Math.min(r.est, 100);
+    r.estT = this.time;
   }
 
   /** Still part of this session (remotes can leave mid-match)? */
@@ -344,6 +365,7 @@ export class Bot extends Combatant {
       r = {
         actor: a, aw: 0, spotted: false, vis: false, checkT: -99, seenT: -99, spotT: -99, lostT: -99, heardT: -99, hurtT: -99,
         x: a.pos.x, y: a.pos.y, z: a.pos.z, vx: 0, vy: 0, vz: 0, hx: a.pos.x, hy: a.pos.y, hz: a.pos.z,
+        est: HS_START, estT: -99, // guessed health + shield (guessHp) and when we last hit them
       };
       recs.set(a.id, r);
     }
@@ -416,6 +438,9 @@ export class Bot extends Combatant {
       }
       const was = r.vis;
       r.vis = vis;
+      // a few seconds after our last hit, assume they're patching up whenever we can't see them (or
+      // can see them healing), at about the rate of shield potions or a med kit
+      if (r.est < HS_MAX && now - r.estT > 3 && (!vis || (fl & FLAG.HEAL) !== 0)) r.est = Math.min(HS_MAX, r.est + 12 * dt);
       if (vis) {
         // seconds it takes to notice this target from scratch (~0.3 s up close in plain view,
         // a few seconds far out at the edge of vision)
@@ -467,20 +492,27 @@ export class Bot extends Combatant {
     // you can tell roughly where a sound came from, worse when it is far or faint
     const err = d * (0.05 + 0.2 * (1 - loud)) * (1.25 - 0.5 * b.skill);
     const nx = x + gauss() * err, nz = z + gauss() * err;
-    if (now - b.noiseT > 2.5 || pri >= b.noisePri) {
-      const fresh = now - b.noiseT > 2.5 || b.noiseSrc !== (src || 0);
-      b.noiseT = now; b.noisePri = pri; b.noiseKind = kind; b.noiseSrc = src || 0;
-      b.noiseX = nx; b.noiseY = y; b.noiseZ = nz; b.noiseD = d;
-      if (fresh) {
-        b.noiseT0 = now;
-        b.noiseDelay = rnd(0.15, 0.45) * (1.4 - 0.6 * b.skill);
-        b.noiseDone = false;
-        // go and check (third-party a fight), or just look and hold?
-        const P = b.persona;
-        const fight = kind === 'shot' || kind === 'boom';
-        const healthy = this.hp + this.sh > 60;
-        b.noiseGo = d < 140 && Math.random() < (fight ? P.aggro * (healthy ? 1 : 0.3) : 0.25 + 0.6 * P.aggro);
+    // more from the spot we're already listening to (both sides of the same fight, someone still
+    // walking around there): it hasn't gone quiet, but it isn't news either. A long fight is
+    // worth a fresh look (and a fresh go / stay decision) about every 30 s.
+    const same = now - b.noiseT < 4 && now - b.noiseT0 < 30 && (x - b.noiseTX) ** 2 + (z - b.noiseTZ) ** 2 < 625;
+    if (same) {
+      b.noiseT = now;
+      if (pri >= b.noisePri) {
+        b.noisePri = pri; b.noiseKind = kind; b.noiseSrc = src || 0;
+        b.noiseX = nx; b.noiseY = y; b.noiseZ = nz; b.noiseD = d; b.noiseTX = x; b.noiseTZ = z;
       }
+    } else if (now - b.noiseT > 2.5 || pri >= b.noisePri) {
+      b.noiseT = now; b.noisePri = pri; b.noiseKind = kind; b.noiseSrc = src || 0;
+      b.noiseX = nx; b.noiseY = y; b.noiseZ = nz; b.noiseD = d; b.noiseTX = x; b.noiseTZ = z;
+      b.noiseT0 = now;
+      b.noiseDelay = rnd(0.15, 0.45) * (1.4 - 0.6 * b.skill);
+      b.noiseDone = false;
+      // go and check (third-party a fight), or just look and hold?
+      const P = b.persona;
+      const fight = kind === 'shot' || kind === 'boom';
+      const healthy = this.hp + this.sh > 60;
+      b.noiseGo = d < 140 && Math.random() < (fight ? P.aggro * (healthy ? 1 : 0.3) : 0.25 + 0.6 * P.aggro);
     }
     if (a) {
       const r = this.recOf(a);
@@ -494,6 +526,7 @@ export class Bot extends Combatant {
   hurtBy(a, amt) {
     const b = this.brain, now = this.time;
     b.hurtT = now;
+    if (amt > 0) b.danceT = 0; // being shot ends the victory dance
     if (!a || a === this || !this.isEnemy(a)) return;
     const r = this.recOf(a);
     r.hurtT = now;
@@ -501,10 +534,14 @@ export class Bot extends Combatant {
     const err = 1.5 + d * 0.1 * (1.2 - 0.5 * b.skill);
     r.hx = a.pos.x + gauss() * err; r.hy = a.pos.y; r.hz = a.pos.z + gauss() * err; r.heardT = now;
     if (r.aw < 0.7) r.aw = 0.7;
-    if (b.noiseKind !== 'hit' || now - b.noiseT > 1) { b.noiseT0 = now; b.noiseDelay = rnd(0.1, 0.35) * (1.4 - 0.6 * b.skill); }
+    if (b.noiseKind !== 'hit' || now - b.noiseT > 1) {
+      // (a burst of hits is one event: one reaction, one decision to go for them or not)
+      b.noiseT0 = now; b.noiseDelay = rnd(0.1, 0.35) * (1.4 - 0.6 * b.skill);
+      b.noiseGo = Math.random() < b.persona.aggro;
+    }
     b.noiseT = now; b.noisePri = NOISE_PRI.hit + 1; b.noiseKind = 'hit'; b.noiseSrc = a.id;
     b.noiseX = r.hx; b.noiseY = r.hy; b.noiseZ = r.hz; b.noiseD = d; b.noiseDone = false;
-    b.noiseGo = Math.random() < b.persona.aggro;
+    b.noiseTX = a.pos.x; b.noiseTZ = a.pos.z;
     // throw up a wall (or a ramp to fight for height) between us and the shooter
     if (!b.wallReq && amt > 0 && Math.random() < 0.12 + 0.75 * b.persona.build * (0.4 + 0.6 * b.skill)) b.wallReq = true;
   }
@@ -611,7 +648,15 @@ export class Bot extends Combatant {
       const rg = b.wantSlot > 0 ? weaponRange(this.inv.slots[b.wantSlot].k) : null;
       // someone we let go by (too far to bother with) isn't worth hunting down either
       const far = !rg || (d > rg[1] * 2 * (0.5 + P.aggro) && now - r.hurtT > 6 && P.aggro < 0.7);
-      mode = urg === 2 || !gun ? 'travel' : healS > 0 && hpNow < 75 ? 'heal' : far ? 'travel' : 'search';
+      // running away: keep running while they're still on us (turning our back is what hides
+      // them), and only stop to heal once it has been quiet for a moment. Someone who ran and
+      // has nothing to heal with leaves instead of searching back toward them.
+      const running = b.lowPlan === 'flee' && hpNow < 50 && (now - b.hurtT < 4 || now - r.seenT < 2);
+      const safe = now - r.seenT > 1.5 && now - b.hurtT > 1.5;
+      mode = urg === 2 || !gun ? 'travel'
+        : running ? 'flee'
+        : healS > 0 && hpNow < 75 && safe ? 'heal'
+        : far || b.lowPlan === 'flee' ? 'travel' : 'search';
     } else if (b.danceT > 0) mode = 'emote';
     else if (urg === 2) mode = 'travel';
     else if (healS > 0 && now - b.hurtT > 1.5) mode = 'heal';
@@ -625,11 +670,13 @@ export class Bot extends Combatant {
 
   enterMode(mode) {
     const b = this.brain;
+    if (b.mode === 'hold') b.noProg = 0; // (hold borrows it to pickaxe toward its spot)
     b.mode = mode;
     b.modeT = this.time;
     this.dancing = mode === 'emote';
     if (mode === 'hold') b.holdSet = false;
     if (mode === 'flee') b.fleeSide = Math.random() < 0.5 ? -1 : 1;
+    if (mode === 'search') { b.peekT = 0; b.peekS = 0; b.peekK = 0; b.peekUp = false; }
     if (mode === 'travel') b.planT = 0;
   }
 
@@ -639,10 +686,10 @@ export class Bot extends Combatant {
     b.planT = rnd(0.6, 1);
     const urg = b.urgent;
     const gun = this.hasGun();
-    // loot worth the detour (more of a detour for goblins, none when the storm is on us)
-    let radius = urg === 2 ? 5 : urg ? 12 : !gun ? 50 : 15 + 25 * P.loot;
-    if (now - b.killT < 25) radius = Math.max(radius, Math.hypot(b.killX - this.pos.x, b.killZ - this.pos.z) + 4);
-    const it = this.bestLoot(radius);
+    // loot worth the detour (more of a detour for goblins, none when the storm is on us), plus
+    // whatever our last kill dropped
+    const radius = urg === 2 ? 5 : urg ? 12 : !gun ? 50 : 15 + 25 * P.loot;
+    const it = this.bestLoot(radius, now - b.killT < 25);
     if (it) {
       if (b.lootRef !== it) b.lootT = now;
       b.destKind = 'loot'; b.lootRef = it; b.dest.set(it.x, it.y, it.z);
@@ -672,14 +719,32 @@ export class Bot extends Combatant {
     b.destKind = 'goal'; b.dest.copy(b.goal);
   }
 
-  bestLoot(radius) {
-    const b = this.brain;
+  /**
+   * The floor item most worth walking to within radius (or, with kill set, in the pile our last
+   * kill dropped, wherever that is). With the storm on us, only what's on the way to safety.
+   */
+  bestLoot(radius, kill) {
+    const b = this.brain, st = this.game.storm.state, p = this.pos;
     const r2 = radius * radius;
+    // in (or about to be caught by) the storm: nothing farther from the next circle than we are
+    // now, and a kill's pile only if it's inside the current circle
+    let sx = 0, sz = 0, lim2 = Infinity, in2 = Infinity;
+    if (b.urgent === 2 && st) {
+      sx = st.ncx; sz = st.ncz;
+      lim2 = (Math.hypot(p.x - sx, p.z - sz) + 1) ** 2;
+      in2 = Math.max(0, st.r - 5) ** 2;
+    }
     let best = null, bestS = 0;
     for (const it of this.game.loot.items.values()) {
-      const dx = it.x - this.pos.x, dz = it.z - this.pos.z, dy = it.y - this.pos.y;
+      const dx = it.x - p.x, dz = it.z - p.z, dy = it.y - p.y;
       const d2 = dx * dx + dz * dz;
-      if (d2 > r2 || dy > 1.8 || dy < -1.8 || this.pendingPick.has(it.id) || b.badLoot.has(it.id)) continue;
+      if (dy > 1.8 || dy < -1.8 || this.pendingPick.has(it.id) || b.badLoot.has(it.id)) continue;
+      if (d2 > r2) {
+        // their stuff is scattered within a few metres of where they fell
+        if (!kill || (it.x - b.killX) ** 2 + (it.z - b.killZ) ** 2 > 36) continue;
+        if (in2 !== Infinity && (it.x - st.cx) ** 2 + (it.z - st.cz) ** 2 > in2) continue;
+      }
+      if (lim2 !== Infinity && (it.x - sx) ** 2 + (it.z - sz) ** 2 > lim2) continue;
       const v = this.lootValue(it.item);
       if (v <= 0) continue;
       const s = v / (1 + Math.sqrt(d2) / 10);
@@ -706,15 +771,17 @@ export class Bot extends Combatant {
     const b = this.brain, g = this.game, st = g.storm.state;
     let best = null, bestD = 70;
     for (const s of g.world.data.lootSpots) {
-      if (s.ground) continue;
+      if (s.ground || b.badHold.has(s)) continue;
       if (st && Math.hypot(s.x - st.ncx, s.z - st.ncz) > st.nr * 0.85) continue;
       const d = Math.hypot(s.x - this.pos.x, s.z - this.pos.z);
       if (d < bestD) { bestD = d; best = s; }
     }
+    b.holdSpot = best;
     b.holdX = best ? best.x : this.pos.x;
     b.holdZ = best ? best.z : this.pos.z;
     b.holdSet = true;
     b.holdUntil = this.time + rnd(35, 80);
+    b.holdChkT = 2.5; b.holdD = Infinity; b.holdStall = 0;
   }
 
   pickGoal() {
@@ -769,10 +836,13 @@ export class Bot extends Combatant {
       let town = false;
       for (const q of pois) if (Math.hypot(q.x - s.x, q.z - s.z) < 55) { town = true; break; }
       score += town ? (P.hot - 0.5) * 60 : (0.5 - P.hot) * 40;
-      // don't all land on the same roof
+      // don't all land on the same roof: even hot droppers pick their own spot in the busy town
       for (const o of g.bots.values()) {
         const l = o !== this && o.brain.landAt;
-        if (l && Math.hypot(l.x - s.x, l.z - s.z) < 15) score -= 25 * (1 - P.hot);
+        if (!l) continue;
+        const ld = Math.hypot(l.x - s.x, l.z - s.z);
+        if (ld < 10) score -= 100;
+        else if (ld < 15) score -= 25 * (1 - P.hot);
       }
       if (score > bestS) { bestS = score; best = s; }
     }
@@ -1248,8 +1318,45 @@ export class Bot extends Combatant {
     } else this.faceToward(_v.set(ex, r.y + 1.2, ez), dt, 5);
     const push = P.aggro > 0.5 || this.guessHp(t) < 50;
     if (push) this.goTo(ex, ez, dt, d > 30 && !this.ctl.ads);
-    else this.ctl.crouch = P.camp > 0.3;
+    else {
+      // hold the angle, low if patient, but only from where it can be seen
+      const k = this.peek(ex, r.y, ez, dt);
+      if (k === 2) {
+        const s = (b.peekK < 1.5 ? b.peekS : -b.peekS) * 0.6;
+        this.moveWorld(-(dz / d) * s, (dx / d) * s, dt);
+      }
+      this.ctl.crouch = k === 0 && P.camp > 0.3;
+    }
     if (!push && now - r.seenT > b.memory * 0.6) r.spotted = false; // passive players move on sooner
+  }
+
+  /**
+   * Holding an angle only works if we can see it: with a tree or a corner right in front of us
+   * (our cover, not theirs) stand up, or step out to one side (then the other) until the spot is
+   * in view. Our own builds are cover on purpose: stay behind those. Re-checked a few times a
+   * second. Returns 0 = in view, 1 = only standing, 2 = stepping.
+   */
+  peek(x, y, z, dt) {
+    const b = this.brain, p = this.pos;
+    if ((b.peekT -= dt) <= 0) {
+      b.peekT = 0.4;
+      const near = Math.min(5, Math.hypot(x - p.x, z - p.z) * 0.5);
+      const low = this.blockedNear(p.y + 1.1, x, y + 1.2, z, near);
+      const high = low && this.blockedNear(p.y + PLAYER.eye, x, y + 1.2, z, near);
+      b.peekUp = low;
+      if (!high) b.peekS = 0;
+      else if (!b.peekS && b.peekK < 4) b.peekS = Math.random() < 0.5 ? -1 : 1;
+    }
+    if (b.peekS && (b.peekK += dt) < 4) return 2;
+    return b.peekUp ? 1 : 0;
+  }
+
+  /** Scenery (not builds) within `near` metres of us on the line from our eye (at ey) to (tx, ty, tz)? */
+  blockedNear(ey, tx, ty, tz, near) {
+    const p = this.pos, dx = tx - p.x, dy = ty - ey, dz = tz - p.z, l = Math.hypot(dx, dy, dz);
+    if (l < 0.5) return false;
+    const h = this.game.physics.raycast(p.x, ey, p.z, dx / l, dy / l, dz / l, Math.min(near, l), RAY_SOLID);
+    return !!h && !(h.info && h.info.kind === 'build');
   }
 
   flee(dt) {
@@ -1279,9 +1386,10 @@ export class Bot extends Combatant {
     if (this.inv.sel !== s) this.select(s);
     this.ctl.fire = true;
     this.ctl.crouch = b.persona.camp > 0.3 || this.time - b.hurtT < 10;
-    // keep an eye on where the trouble was
+    // keep an eye on where the trouble was (unless we ran from it: then heal facing away, and
+    // don't turn back to look until it's done)
     const r = b.trec;
-    if (r) this.turnHuman(Math.atan2(-(r.x - this.pos.x), -(r.z - this.pos.z)), -0.05, dt, b.turnSpeed * 0.5, b.turnK * 0.4);
+    if (r && b.lowPlan !== 'flee') this.turnHuman(Math.atan2(-(r.x - this.pos.x), -(r.z - this.pos.z)), -0.05, dt, b.turnSpeed * 0.5, b.turnK * 0.4);
     else this.lookAround(this.yaw, -0.05, dt, false);
   }
 
@@ -1367,6 +1475,18 @@ export class Bot extends Combatant {
     const d = Math.hypot(dx, dz);
     if (now > b.holdUntil || b.urgent) { b.holdSet = false; b.campCool = now + rnd(20, 40); this.enterMode('travel'); return; }
     if (d > 1.5) {
+      // not getting any closer than we've been (sliding along a wall, the door round the other
+      // side): pickaxe through the scenery, and after ~10 s just hold here and forget that spot
+      if ((b.holdChkT -= dt) <= 0) {
+        b.holdChkT = 2.5;
+        if (d < b.holdD - 1) { b.holdD = d; b.holdStall = 0; b.noProg = 0; }
+        else if (++b.holdStall >= 4) {
+          if (b.holdSpot) { b.badHold.add(b.holdSpot); if (b.badHold.size > 16) b.badHold.clear(); }
+          b.holdX = this.pos.x; b.holdZ = this.pos.z;
+          b.holdStall = 0; b.noProg = 0;
+          return;
+        } else b.noProg = Math.max(b.noProg, 1);
+      }
       this.goTo(b.holdX, b.holdZ, dt, d > 30);
       this.lookAround(Math.atan2(-dx, -dz), -0.05, dt, true);
       return;
