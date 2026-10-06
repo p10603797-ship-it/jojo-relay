@@ -388,11 +388,13 @@ export class Room {
     const dh = Math.min(PLAYER.siphon, Math.max(0, PLAYER.maxHp - killer.hp));
     const ds = Math.min(PLAYER.siphon - dh, Math.max(0, PLAYER.maxShield - killer.sh));
     if (dh + ds <= 0) return;
+    const hp0 = Math.ceil(killer.hp), sh0 = Math.ceil(killer.sh);
     killer.hp = Math.min(PLAYER.maxHp, killer.hp + dh);
     killer.sh = Math.min(PLAYER.maxShield, killer.sh + ds);
-    // the killer's device shows it right away; snapshots carry the same values afterwards
-    const amt = Math.round(dh + ds), ah = Math.round(dh);
-    this.broadcast({ t: 'siphon', id: killer.id, amt, dh: ah, ds: amt - ah, hp: Math.ceil(killer.hp), sh: Math.ceil(killer.sh) });
+    // the killer's device shows it right away; snapshots carry the same values afterwards.
+    // dh/ds are what the (rounded-up) bars gain, so the "+N" popups always match the bars.
+    const hp = Math.ceil(killer.hp), sh = Math.ceil(killer.sh);
+    this.broadcast({ t: 'siphon', id: killer.id, amt: hp - hp0 + sh - sh0, dh: hp - hp0, ds: sh - sh0, hp, sh });
   }
 
   checkWin() {

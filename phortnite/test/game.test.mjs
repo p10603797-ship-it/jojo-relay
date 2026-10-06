@@ -234,7 +234,17 @@ test('siphon: nothing when already at 200, and fractional health stays capped', 
   snipe(room, 'a', c);
   assert.deepEqual([a.hp, a.sh], [100, 100]);
   const m = inbox.a.find((x) => x.t === 'siphon');
-  assert.ok(m && m.amt === 1 && m.dh + m.ds === m.amt && m.hp === 100 && m.sh === 100);
+  // the bars already read 100/100 (they round up), so there is nothing to pop
+  assert.deepEqual(m, { t: 'siphon', id: a.id, amt: 0, dh: 0, ds: 0, hp: 100, sh: 100 });
+});
+
+test('siphon: the "+N" popups add up to what the rounded-up bars gain', () => {
+  const { room, inbox, ps: [a, b] } = startedRoom(['Ann', 'Ben', 'Cat']);
+  a.hp = 74.2; a.sh = 0; // bars read 75 / 0
+  snipe(room, 'a', b);
+  assert.ok(Math.abs(a.hp - 100) < 1e-9 && Math.abs(a.sh - 24.2) < 1e-9);
+  const m = inbox.a.find((x) => x.t === 'siphon');
+  assert.deepEqual(m, { t: 'siphon', id: a.id, amt: 50, dh: 25, ds: 25, hp: 100, sh: 25 });
 });
 
 test('siphon: storm and fall deaths give nobody anything', () => {
