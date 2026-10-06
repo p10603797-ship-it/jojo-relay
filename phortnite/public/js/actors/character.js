@@ -111,7 +111,7 @@ const Q_BAR = [basisQuat([0, 0, -1], [0, -1, 0], [-1, 0, 0]), basisQuat([0, 0, 1
 const PALM = { L: new THREE.Vector3(-0.017, -0.074, 0.004), R: new THREE.Vector3(0.017, -0.074, 0.004) };
 
 // scratch objects (no per-frame allocations)
-const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4(), _m3 = new THREE.Matrix4();
+const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4();
 const _mA = new THREE.Matrix4(), _mB = new THREE.Matrix4();
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 const _S = new THREE.Vector3(), _T = new THREE.Vector3(), _E = new THREE.Vector3(), _P = new THREE.Vector3();
@@ -224,8 +224,8 @@ export class Character {
     this.adsK = 0;
     this.buildK = 0;
     this.healK = 0;
-    // pose-family crossfade (ground / skydive / glide / dance)
-    this.poseCls = 0;
+    // pose-family crossfade (ground / skydive / glide / dance); -1 = not posed yet
+    this.poseCls = -1;
     this.xfade = 0;
     this.snapQ = bones.map(() => new THREE.Quaternion());
     this.snapP = bones.map(() => new THREE.Vector3());
@@ -303,7 +303,11 @@ export class Character {
     this.time += dt;
     const anim = s.anim | 0;
     const cls = anim === ANIM.SKYDIVE ? 1 : anim === ANIM.GLIDE ? 2 : anim === ANIM.DANCE ? 3 : 0;
-    if (cls !== this.poseCls) { this.snapshot(); this.poseCls = cls; this.xfade = 1; }
+    if (cls !== this.poseCls) {
+      // first update after spawn / ragdoll: no blend from the bind pose
+      if (this.poseCls >= 0) { this.snapshot(); this.xfade = 1; }
+      this.poseCls = cls;
+    }
     this.swing = Math.max(0, this.swing - dt * 3.2);
     this.recoil = Math.max(0, this.recoil - dt * 9);
 
@@ -360,7 +364,7 @@ export class Character {
     this.runK = approach(this.runK, Math.min(1, speed / 6.2), 6, dt);
     this.sprintK = approach(this.sprintK, anim === ANIM.SPRINT ? 1 : 0, 6, dt);
     this.backK = approach(this.backK, back ? 1 : 0, 8, dt);
-    this.hipYaw = approach(this.hipYaw, moving ? clamp(ma, -0.75, 0.75) : 0, 10, dt);
+    this.hipYaw = approach(this.hipYaw, moving ? clamp(ma, -0.95, 0.95) : 0, 10, dt);
     this.gunK = approach(this.gunK, gun ? 1 : 0, 12, dt);
     this.adsK = approach(this.adsK, gun && s.ads ? 1 : 0, 12, dt);
     this.buildK = approach(this.buildK, s.building ? 1 : 0, 10, dt);
@@ -669,6 +673,7 @@ export class Character {
     const R = physics.R;
     const world = physics.world;
     this.glider.visible = false;
+    this.showWeapon(false);
     if (this.tag) this.tag.visible = false;
     // the torso chain between the hips and the head/arms is rigid while ragdolled: straighten it
     // first so the physics bodies line up with the bones they drive
@@ -771,7 +776,7 @@ export class Character {
       bones[i].position.copy(this.rest[i]);
       bones[i].quaternion.identity();
     }
-    this.poseCls = 0; // no crossfade out of the corpse pose
+    this.poseCls = -1; // no crossfade out of the corpse pose
     this.xfade = 0;
     if (this.tag) this.tag.visible = true;
   }

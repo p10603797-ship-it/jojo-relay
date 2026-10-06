@@ -543,7 +543,7 @@ function buildBody(skin, lod) {
   if (panel) breaks.push(FRONT - panel, FRONT + panel);
   const torsoAngles = uniformAngles(seg(18), breaks);
   const zipC = top === 'hoodie' ? accent : top === 'jacket' ? outfitDk : dark;
-  const ys = [0.8, 0.84, 0.9, 0.97, 1.05, 1.13, 1.22, 1.31, 1.38, 1.43, 1.47, 1.5, 1.525, 1.54];
+  const ys = [0.8, 0.85, 0.92, 1.0, 1.1, 1.2, 1.3, 1.38, 1.44, 1.49, 1.525, 1.54];
   const tset = new Set(ys);
   for (const t of tb) for (const e of [t[0], t[1]]) if (e > 0.81 && e < 1.535) { tset.add(+(e - 0.0015).toFixed(4)); tset.add(+(e + 0.0015).toFixed(4)); }
   const tys = [...tset].sort((p, q) => p - q);
@@ -633,7 +633,6 @@ function buildBody(skin, lod) {
       bands.push([-1, sleeveEnd - cuffW, outfit, sl === 'short' ? 0.005 : 0.005]);
       bands.push([sleeveEnd - cuffW, sleeveEnd, cuffC, sl === 'rolled' ? 0.011 : 0.008]);
       if (top === 'flight') bands.push([0.07, 0.1, accent, 0.006]); // shoulder stripe
-      if (top === 'hoodie') bands.push([Lu - 0.02, Lu + 0.01, outfitDk, 0.006]);
     }
     if (glove) bands.push([L - 0.03, L + 0.1, glove, 0.006]);
     if (look.bracers) bands.push([Lu + 0.08, L - 0.01, accent, 0.008], [L - 0.01, L + 0.1, outfit, 0.004]);
@@ -642,7 +641,7 @@ function buildBody(skin, lod) {
     const rings = bandRings([S, E, W], (sv) => {
       const d = prof(sv);
       return [d[0] * lb, d[1] * lb, d[2] * lb];
-    }, bs, { s0: -0.0, s1: L + 0.01, step: 0.07, keys: [Lu - 0.035, Lu, Lu + 0.035, L - 0.02], col: skinC });
+    }, bs, { s0: -0.0, s1: L + 0.01, step: 0.09, keys: [Lu - 0.035, Lu, Lu + 0.035, L - 0.02], col: skinC });
     parts.add(tube(rings, { seg: seg(9), ref: [0, 0, 1], cap0: 0.052 * lb, capSeg: 2, cap1: 0.01 }), 'arm');
 
     // hand: palm, four curled fingers, thumb (palm faces the thigh, thumb forward)
@@ -705,8 +704,8 @@ function buildBody(skin, lod) {
     else bands.push([L - 0.075, L - 0.04, pantsDk, 0.007]);
     if (look.knee) bands.push([Lt - 0.045, Lt + 0.045, mixC(accent, '#000000', 0.55), 0.012]);
     const rings = bandRings([H, K, A], (sv) => { const d = prof(sv); return [d[0] * flb, d[1] * flb, d[2] * flb]; }, bands,
-      { s0: 0, s1: L - 0.015, step: 0.075, keys: [Lt - 0.045, Lt, Lt + 0.045], col: pants });
-    parts.add(tube(rings, { seg: seg(11), ref: [0, 0, 1], cap0: 0.07, capSeg: 2, cap1: 0 }), 'leg');
+      { s0: 0, s1: L - 0.015, step: 0.09, keys: [Lt - 0.045, Lt, Lt + 0.045], col: pants });
+    parts.add(tube(rings, { seg: seg(10), ref: [0, 0, 1], cap0: 0.07, capSeg: 2, cap1: 0 }), 'leg');
     if (look.cargo && hi) parts.add(rbox(0.02, 0.1, 0.085, 0.01, 2, H[0] + k * 0.085, H[1] - 0.2, H[2] + 0.005, pantsDk, [0, 0, k * 0.08]), 'leg');
 
     // shoe (upper lofted heel -> toe) + sole slab
@@ -982,11 +981,12 @@ function buildHair(parts, look, sk, ctx) {
       [1.85, -0.02, 0.082, 0.074, 0.104],
       [1.875, -0.024, 0.056, 0.05, 0.075],
     ]);
-    const ys = [1.455, 1.48, 1.5, 1.53, 1.56, 1.59, 1.62, 1.65, 1.68, 1.71, 1.74, 1.77, 1.8, 1.83, 1.85, 1.875];
+    const ys = [1.455, 1.49, 1.53, 1.57, 1.6, 1.625, 1.66, 1.7, 1.74, 1.78, 1.81, 1.84, 1.875];
     const rings = ys.map((y) => { const d = prof(y); return { p: [0, y, d[0]], rx: d[1], rf: d[2], rb: d[3], nf: 2.3, y }; });
     const open = (y, f) => sstep(0.36, 0.52, f) * sstep(1.585, 1.612, y) * sstep(1.82, 1.795, y);
+    const hoodIn = mixC(outfit, '#000000', 0.55);
     parts.add(tube(rings, {
-      seg: seg(22), axis: [0, 1, 0], cap1: 0.024,
+      seg: seg(19), axis: [0, 1, 0], cap1: 0.024, capSeg: 2,
       warp: (p, a) => {
         if (a < 0) return;
         const f = Math.sin(a), m = open(p.y, f);
@@ -998,21 +998,21 @@ function buildHair(parts, look, sk, ctx) {
       },
       color: (x, y, z, a) => {
         if (a < 0) return outfit;
-        const f = Math.sin(a);
-        const e = sstep(0.24, 0.36, f) * sstep(1.6, 1.615, y) * sstep(1.84, 1.815, y);
-        return e > 0.5 ? accent : outfit;
+        // the opening slopes into the hood: shadowed lining, a thin accent trim on the lip
+        const m = open(y, Math.sin(a));
+        return m > 0.5 ? hoodIn : m > 0.02 ? accent : outfit;
       },
     }), 'hood');
     if (hi) for (const k of [1, -1]) parts.add(cord([[k * 0.042, 1.585, 0.085], [k * 0.046, 1.52, 0.1], [k * 0.044, 1.44, 0.122]], [0.004, 0.0035, 0.005], accent, 4), 'chest');
     return;
   }
   if (style === 'spiky') {
-    parts.add(shell(look, { fem, seg: seg(20), y0: 1.62, T: () => 0.013, mask: mk('short'), col: hair }), 'head');
+    parts.add(shell(look, { fem, seg: seg(18), y0: 1.62, T: () => 0.013, mask: mk('short'), col: hair }), 'head');
     const spikes = hi ? [
       [1.84, 1.9, 0.12, [0, 1, 0.45]], [1.83, 1.25, 0.1, [0.25, 1, 0.3]], [1.83, 2.55, 0.1, [-0.25, 1, 0.3]],
       [1.82, 0.5, 0.09, [0.6, 0.9, 0]], [1.82, 2.64, 0.09, [-0.6, 0.9, 0]], [1.84, 4.1, 0.1, [0.25, 1, -0.5]],
       [1.84, 5.3, 0.1, [-0.25, 1, -0.5]], [1.79, 3.9, 0.09, [0.3, 0.6, -1]], [1.79, 5.5, 0.09, [-0.3, 0.6, -1]],
-      [1.86, 4.7, 0.11, [0, 1, -0.2]], [1.81, 1.57, 0.085, [0, 0.8, 0.9]], [1.76, 0.2, 0.06, [1, 0.5, -0.1]], [1.76, 2.94, 0.06, [-1, 0.5, -0.1]],
+      [1.86, 4.7, 0.11, [0, 1, -0.2]], [1.81, 1.57, 0.085, [0, 0.8, 0.9]],
     ] : [[1.84, 1.9, 0.12, [0, 1, 0.45]], [1.83, 0.5, 0.09, [0.6, 0.9, 0]], [1.83, 2.64, 0.09, [-0.6, 0.9, 0]], [1.84, 4.7, 0.11, [0, 1, -0.4]]];
     for (const [y, a, len, dir] of spikes) {
       const p = scalpPoint(y, a, 0.0);
@@ -1021,7 +1021,7 @@ function buildHair(parts, look, sk, ctx) {
     return;
   }
   if (style === 'ponytail') {
-    parts.add(shell(look, { fem, seg: seg(20), y0: 1.64, T: () => 0.011, mask: mk('high'), col: hair }), 'head');
+    parts.add(shell(look, { fem, seg: seg(18), y0: 1.64, T: () => 0.011, mask: mk('high'), col: hair }), 'head');
     // side-swept strand over the forehead
     const path = [[0, 1.745, -0.09], [0, 1.745, -0.118], [0, 1.715, -0.152], [0, 1.655, -0.168], [0, 1.59, -0.165], [0, 1.53, -0.152], [0, 1.485, -0.14]];
     const rr = [0.024, 0.027, 0.032, 0.031, 0.026, 0.017, 0.006];
@@ -1044,7 +1044,7 @@ function buildHair(parts, look, sk, ctx) {
   }
   if (style === 'long' || style === 'bob') {
     const bob = style === 'bob';
-    parts.add(shell(look, { fem, seg: seg(20), y0: 1.63, T: (y) => 0.013 + 0.004 * sstep(1.76, 1.84, y), mask: mk('bangs'), col: hair }), 'head');
+    parts.add(shell(look, { fem, seg: seg(18), y0: 1.63, T: (y) => 0.013 + 0.004 * sstep(1.76, 1.84, y), mask: mk('bangs'), col: hair }), 'head');
     // side-swept bangs
     if (hi) {
       parts.add(cord([[0.07, 1.82, 0.06], [0.03, 1.79, 0.093], [-0.01, 1.772, 0.1], [-0.05, 1.77, 0.088], [-0.08, 1.76, 0.05]], [0.008, 0.014, 0.014, 0.011, 0.006], hair, 6), 'head');
@@ -1133,8 +1133,8 @@ function buildHair(parts, look, sk, ctx) {
     ], { seg: seg(20), axis: [0, 1, 0], col: gold }), 'head');
     if (hi) parts.add(cord([[0, by - 0.004, h.zc + h.rf + 0.024], [0, by + 0.02, h.zc + h.rf + 0.035], [0, by + 0.035, h.zc + h.rf + 0.03]], [0.008, 0.006, 0.004], blue, 5), 'head');
     for (const k of [1, -1]) {
-      const pts = [[k * 0.1, 1.7, 0.0], [k * 0.12, 1.6, 0.02], [k * 0.125, 1.5, 0.045], [k * 0.12, 1.4, 0.07]];
-      const rings = pts.map((p, i) => ({ p, rx: 0.03 + i * 0.006, rf: 0.009, rb: 0.009, n: 4, y: p[1] }));
+      const pts = [[k * 0.094, 1.7, 0.0], [k * 0.108, 1.6, 0.025], [k * 0.112, 1.5, 0.05], [k * 0.11, 1.41, 0.072]];
+      const rings = pts.map((p, i) => ({ p, rx: 0.024 + i * 0.006, rf: 0.008, rb: 0.008, n: 4, y: p[1] }));
       parts.add(tube(rings, { seg: 8, ref: [0.3 * k, 0, 1], cap1: 0.006, capSeg: 1, color: (x, y) => stripe(y) }), 'hair');
     }
     const back = [[0, 1.7, -0.115], [0, 1.6, -0.12], [0, 1.5, -0.13], [0, 1.44, -0.14]];
@@ -1142,7 +1142,7 @@ function buildHair(parts, look, sk, ctx) {
     return;
   }
   // default short hair
-  parts.add(shell(look, { fem, seg: seg(20), y0: 1.62, T: () => 0.013, mask: mk('short'), col: hair }), 'head');
+  parts.add(shell(look, { fem, seg: seg(18), y0: 1.62, T: () => 0.013, mask: mk('short'), col: hair }), 'head');
 }
 
 // ------------------------------------------------------------------ back bling
@@ -1172,7 +1172,7 @@ function buildPack(parts, look, sk, ctx) {
   }
   if (kind === 'wings') {
     for (const k of [1, -1]) {
-      const feathers = hi ? 4 : 2;
+      const feathers = hi ? 3 : 2;
       for (let i = 0; i < feathers; i++) {
         const t = i / Math.max(1, feathers - 1);
         const p0 = [k * 0.06, 1.38 - t * 0.06, zb - 0.03];
@@ -1249,4 +1249,3 @@ export function buildHumanGeometry(skin, lod = 0) {
   geo.computeBoundingSphere();
   return geo;
 }
-export const __debug = { buildBody };
