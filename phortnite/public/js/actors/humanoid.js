@@ -510,7 +510,6 @@ function buildBody(skin, lod) {
   if (top === 'flight') hemLip = 0.006;
   tb.push([0, 1.026, pants, 0.003]);
   tb.push([1.026, 1.07, leather, 0.008]); // belt
-  let jacketCol = outfit;
   if (top === 'crop') tb.push([1.07, hemY, accent, 0.0]);
   if (top === 'pharaoh') {
     tb.push([1.07, 1.36, outfit, 0.002]);
@@ -533,7 +532,7 @@ function buildBody(skin, lod) {
       tb.push([1.29, 1.345, accent, hemLip + 0.001]);
       tb.push([1.345, 1.6, outfit, hemLip]);
     } else {
-      tb.push([y0, 1.6, jacketCol, hemLip]);
+      tb.push([y0, 1.6, outfit, hemLip]);
     }
   }
   const zipBreak = top === 'hoodie' || top === 'flight' || top === 'parka' || top === 'jacket';
@@ -939,7 +938,6 @@ function shell(look, o) {
       if (m < 1 && d > 1e-5) k = lerp((d - r.T - 0.005) / d, 1, m);
       if (o.bump && m > 0 && d > 1e-5) k *= 1 + o.bump(p.y, a) * m / d;
       p.x = dx * k; p.z = r.p[2] + dz * k;
-      if (o.lift && L.off > 0) p.y += o.lift;
     },
     color: o.color || ((x, y, z, a) => (a < 0 ? o.col : mixC(o.col, '#000000', 0.12 + 0.12 * Math.sin(a * 17 + y * 30)))),
   });
