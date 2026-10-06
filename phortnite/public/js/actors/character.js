@@ -80,9 +80,9 @@ function updateView() {
 // inside LOD_IN[i] swaps back (hysteresis avoids flicker). At 10 m a character is ~125 px tall on
 // the reference canvas and the mid LOD looks the same; at 32 m (~40 px) so does the distant one.
 const LOD_OUT = [10, 32], LOD_IN = [9, 29];
-// pose rate: every frame within ANIM_NEAR (raw distance) or on screen, 1/2 past ANIM_HALF, 1/3 past
-// ANIM_THIRD (zoom adjusted), 1/4 off screen
-const ANIM_NEAR = 8, ANIM_HALF = 40, ANIM_THIRD = 80;
+// pose rate: every frame within ANIM_NEAR (raw distance); on screen every frame, 1/2 past ANIM_HALF
+// (~45 px tall), 1/3 past ANIM_THIRD (zoom adjusted); 1/4 off screen
+const ANIM_NEAR = 8, ANIM_HALF = 30, ANIM_THIRD = 60;
 // Frustum culling: a fixed sphere around the body in any pose (skinned bounds are never computed);
 // the on-screen test for LOD and pose rate adds a margin
 const BODY_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 1.9), VIEW_MARGIN = 1;
