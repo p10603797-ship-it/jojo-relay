@@ -1,6 +1,6 @@
 // Phortnite bootstrap: renderer, assets, world, menus, main loop, dynamic resolution.
 import * as THREE from 'three';
-import { SKINS, VERSION } from '../shared/constants.js';
+import { SKINS, VERSION, PROTOCOL } from '../shared/constants.js';
 import { getWorld } from '../shared/room.js';
 import { Physics } from './physics.js';
 import { buildTextures, spriteTextures } from './gfx/textures.js';
@@ -246,7 +246,7 @@ class App {
 
   // ------------------------------------------------------------------ sessions
   hello() {
-    return { name: this.settings.name || 'Player', skin: this.settings.skin };
+    return { name: this.settings.name || 'Player', skin: this.settings.skin, v: PROTOCOL };
   }
 
   async playSolo() {
@@ -314,6 +314,16 @@ class App {
       }
       return;
     }
+    // the host can turn us away before the welcome (party full, different game version)
+    const off = net.onMessage((m) => {
+      if (m.t === 'welcome') off();
+      if (m.t === 'err' && this.game && this.game.net === net && !this.game.me) {
+        off();
+        net.onClose = null;
+        this.leaveGame();
+        this.ui.alert(m.msg || 'Could not join that party.');
+      }
+    });
     net.onClose = () => {
       if (this.game && this.game.net === net) {
         this.leaveGame();
@@ -369,7 +379,7 @@ class App {
     requestAnimationFrame((t) => this.frame(t));
     const raw = (now - this.last) / 1000;
     this.last = now;
-    const dt = Math.min(raw, 0.05);
+    const dt = Math.max(0, Math.min(raw, 0.05)); // never negative (e.g. a timestamp from before a pause)
     let focus;
     if (this.game) {
       // debug/test hook: run extra simulation steps per rendered frame

@@ -2,7 +2,7 @@
 // remote players, loot, storm, bus, combat resolution and the third-person camera.
 import * as THREE from 'three';
 import {
-  WEAPONS, HEALS, PLAYER, ANIM, SEND_HZ, SKINS, BUILD, MAT_KEYS, weaponDamage, itemKind,
+  WEAPONS, HEALS, PLAYER, ANIM, SEND_HZ, SKINS, BUILD, MAT_KEYS, PROTOCOL, weaponDamage, itemKind,
 } from '../../shared/constants.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
 import { Bot } from '../actors/bot.js';
@@ -169,6 +169,12 @@ export class Game {
   }
 
   on_welcome(m) {
+    if (m.v !== PROTOCOL) {
+      // the host is on another build of the game: different rules, so don't mix
+      this.app.leaveGame();
+      this.app.ui.alert('Your friend\'s game is on a different version of Phortnite. Everyone should reload the page, then try again.');
+      return;
+    }
     this.myId = m.you;
     this.leader = m.leader;
     this.phase = m.phase;
@@ -314,6 +320,7 @@ export class Game {
         bot.brain.dropAt = len * (0.12 + Math.random() * 0.68);
       } else if (last) {
         bot.mover.teleport(last.x, last.y, last.z);
+        bot.brain.spread = true; // a bot taken over mid-air keeps its spot (no bus-drop fan-out)
         bot.mover.mode = last.a === ANIM.SKYDIVE ? 'skydive' : last.a === ANIM.GLIDE ? 'glide' : 'air';
         bot.hp = r.hp;
         bot.sh = r.sh;
@@ -415,7 +422,7 @@ export class Game {
     this.fx.muzzle(muzzle, _f, w.pellets > 1 || m.w === 'sniper' || m.w === 'rocket', false);
     this.sfx.shot(m.w, muzzle, false);
     this.noise(m.o[0], m.o[1], m.o[2], Bot.shotNoise(m.w), 'shot', m.id);
-    if (shooter) shooter.char.kick(w.kick ?? 0.6);
+    if (shooter) shooter.char.kick(w.kick ?? 0.6, Math.max(0.5, 1.2 / w.rate));
   }
 
   on_sw(m) {
@@ -444,6 +451,8 @@ export class Game {
     }
     if (t instanceof Bot) t.brain.lastHp = Math.max(t.brain.lastHp, 0);
     if (t instanceof Bot && m.c !== 'storm' && m.c !== 'fall') t.hurtBy(this.actorById(m.a), m.amt);
+    const att = this.bots.get(m.a);
+    if (att && att !== t && att.dealt && m.c !== 'storm' && m.c !== 'fall') att.dealt(t, m.amt | 0, m.sh);
   }
 
   // elimination siphon (Room.siphon): apply it now instead of on the next snapshot, and pop "+50"
@@ -452,7 +461,7 @@ export class Game {
     if (!a) return;
     a.hp = m.hp;
     a.sh = m.sh;
-    if (a === this.me) {
+    if (a === this.me && m.amt > 0) {
       this.hud.siphon(m.dh | 0, m.ds | 0);
       this.sfx.heal(!(m.dh > 0));
     }
@@ -808,7 +817,7 @@ export class Game {
     this.fx.muzzle(muzzle, _f, w.pellets > 1 || cur.k === 'sniper' || cur.k === 'rocket', a === this.me);
     this.sfx.shot(cur.k, muzzle, a === this.me);
     this.noise(origin.x, origin.y, origin.z, Bot.shotNoise(cur.k), 'shot', a.id);
-    a.char.kick(w.kick ?? 0.7);
+    a.char.kick(w.kick ?? 0.7, Math.max(0.5, 1.2 / w.rate));
     const r3 = (x) => Math.round(x * 1000) / 1000;
     this.send({
       t: 'sh', id: a.id, w: cur.k, r: cur.r | 0,
@@ -1128,7 +1137,10 @@ export class Game {
       this.hud.bus('');
     }
     if (me.alive && !me.inBus) {
+      const p0 = me.pitch, y0 = me.yaw;
       this.aimAssist(dt, s);
+      // aim assist's own turn counts as pulling against the recoil, so recovery won't drag the aim back past it
+      me.rc.look(me.pitch - p0, me.yaw - y0);
       me.control(dt, s);
       me.move(dt, s);
     } else if (!me.alive) {
@@ -1264,10 +1276,11 @@ export class Game {
     const A = this.aa || (this.aa = {
       prevAds: false, id: 0, yawT: 0, pitchT: 0, err: 0, slow: 1, snapId: 0, snapT: 0, rays: 0, vis: new Map(),
     });
-    const adsEdge = !!s.ads && !A.prevAds;
-    A.prevAds = !!s.ads;
-    A.slow = 1;
     const inp = this.input;
+    // a toggled/held ADS that carries through a menu is not a new press (input is blank while one is open)
+    const adsEdge = inp.enabled && !!s.ads && !A.prevAds;
+    if (inp.enabled) A.prevAds = !!s.ads;
+    A.slow = 1;
     const cur = me.current();
     const w = cur && Object.prototype.hasOwnProperty.call(WEAPONS, cur.k) ? WEAPONS[cur.k] : null;
     if (!this.settings.aimAssist || !inp.enabled || !(inp.touchMode || inp.lookDev === 'pad')

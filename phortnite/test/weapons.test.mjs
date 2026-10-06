@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
-import { WEAPONS, WEAPON_KEYS, WEAPON_WEIGHTS, AMMO, weaponDamage } from '../public/shared/constants.js';
+import { WEAPONS, WEAPON_KEYS, WEAPON_WEIGHTS, AMMO, weaponDamage, PROTOCOL } from '../public/shared/constants.js';
 import { Room } from '../public/shared/room.js';
 import { Recoil } from '../public/js/combat/recoil.js';
 
@@ -70,7 +70,7 @@ test('the room relays, scores and accepts the new guns', () => {
   let t = 1000;
   const room = new Room({ code: 'TEST', now: () => t });
   const inbox = {};
-  const join = (id, name) => { inbox[id] = []; room.join({ id, send: (m) => inbox[id].push(m) }, { name }); return [...room.players.values()].find((p) => p.name === name); };
+  const join = (id, name) => { inbox[id] = []; room.join({ id, send: (m) => inbox[id].push(m) }, { name, v: PROTOCOL }); return [...room.players.values()].find((p) => p.name === name); };
   const a = join('a', 'Ann');
   const b = join('b', 'Ben');
   room.message('a', { t: 'u', s: [1, 2, 3, 0, 0, 0, 0, 0, 1, 'burst:3', 0] });

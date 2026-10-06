@@ -8,17 +8,17 @@ const _v = new THREE.Vector3();
 // Elimination siphon "+50" beside the health / shield bars (kept here so the feature is self-contained).
 // Each popup spans its bar's row of #bars (2 bars + 6px gap), so it stays centred at any bar height.
 const SIPHON_CSS = `
-#bars .siphon { position: absolute; left: calc(100% + 10px); height: calc(50% - 3px); display: flex; align-items: center; font-family: var(--font-title); font-size: 24px; line-height: 1; text-shadow: 0 0 2px #000, 0 0 4px rgba(0, 0, 0, 0.8), 0 2px 0 rgba(0, 0, 0, 0.6); white-space: nowrap; pointer-events: none; opacity: 0; will-change: transform, opacity; }
+#bars .siphon { position: absolute; left: calc(100% + 10px); height: calc(50% - 3px); display: flex; align-items: center; font-family: var(--font-title); font-size: 24px; line-height: 1; text-shadow: 0 0 2px #000, 0 0 4px rgba(0, 0, 0, 0.8), 0 2px 0 rgba(0, 0, 0, 0.6); white-space: nowrap; pointer-events: none; opacity: 0; }
 #bars .siphon.sh { top: 0; color: #7fd6ff; }
 #bars .siphon.hp { bottom: 0; color: #6df06a; }
 #bars .siphon.show { animation: siphonpop 1.7s ease-out forwards; }
 #bars .bar.shield { --glow: rgba(127, 214, 255, 0.95); }
 #bars .bar.health { --glow: rgba(109, 240, 106, 0.95); }
-#bars .bar.glow { animation: siphonglow 0.8s ease-out; }
+#bars .bar.glow::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 12px 3px var(--glow); background: rgba(255, 255, 255, 0.35); pointer-events: none; animation: siphonglow 0.8s ease-out forwards; }
 /* phones: the centred hotbar starts right after the bars, so pop over the bar's end with a heavier outline */
 @media (max-width: 900px) { #bars .siphon { left: auto; right: 10px; font-size: 20px; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000, 0 1px 1px #000; } }
 @keyframes siphonpop { 0% { opacity: 0; transform: translateX(-10px) scale(1.6); } 12% { opacity: 1; transform: none; } 70% { opacity: 1; transform: translateY(-5px); } 100% { opacity: 0; transform: translateY(-14px); } }
-@keyframes siphonglow { 0% { filter: brightness(1.8); box-shadow: 0 0 16px 4px var(--glow); } 100% { filter: brightness(1); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4); } }
+@keyframes siphonglow { 0% { opacity: 1; } 100% { opacity: 0; } }
 `;
 
 const ICON = {
@@ -101,7 +101,11 @@ export class Hud {
 
   siphonPop(el, bar, n) {
     if (!(n > 0)) return;
-    el.textContent = `+${n}`;
+    // several kills in one go (a rocket, quick shots): add up while the popup is still showing
+    const now = performance.now();
+    el.sum = (now - (el.popT || -1e9) < 1700 ? el.sum || 0 : 0) + n;
+    el.popT = now;
+    el.textContent = `+${el.sum}`;
     el.classList.remove('show');
     bar.classList.remove('glow');
     void el.offsetWidth; // restart the animations (only on a kill, so the forced layout is fine)

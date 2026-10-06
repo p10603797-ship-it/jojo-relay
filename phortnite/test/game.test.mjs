@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { generateWorld } from '../public/shared/worldgen.js';
 import { BuildGrid, pieceKey, parseKey } from '../public/shared/buildgrid.js';
 import { Room } from '../public/shared/room.js';
-import { weaponDamage, MAP, PLAYER } from '../public/shared/constants.js';
+import { weaponDamage, MAP, PLAYER, PROTOCOL } from '../public/shared/constants.js';
 import { frameSender, frameReceiver } from '../public/js/net/p2p.js';
 
 test('world generation is deterministic', () => {
@@ -45,7 +45,7 @@ function makeRoom() {
   let t = 1000;
   const room = new Room({ code: 'TEST', now: () => t });
   const inbox = {};
-  const join = (id, name) => { inbox[id] = []; room.join({ id, send: (m) => inbox[id].push(m) }, { name }); return [...room.players.values()].find((p) => p.name === name); };
+  const join = (id, name) => { inbox[id] = []; room.join({ id, send: (m) => inbox[id].push(m) }, { name, v: PROTOCOL }); return [...room.players.values()].find((p) => p.name === name); };
   return { room, inbox, join, tick: (ms) => { t += ms; room.tick(); } };
 }
 
@@ -294,4 +294,15 @@ test('siphon: squad teammates never feed each other, the eliminator alone is hea
   assert.deepEqual([a.hp, a.sh], [90, 0]);
   assert.deepEqual([b.hp, b.sh], [40, 0], 'the teammate gets nothing');
   assert.equal(inbox.b.filter((m) => m.t === 'siphon').length, 1);
+});
+
+test('a friend on a different build of the game is turned away with a clear message', () => {
+  const room = new Room({ code: 'VERS', name: 'v', now: () => 0 });
+  const got = [];
+  const conn = { id: 'old', send: (m) => got.push(m) };
+  assert.equal(room.join(conn, { name: 'Old Page' }), false); // pages from before versions were sent
+  assert.equal(room.join(conn, { name: 'Future', v: PROTOCOL + 1 }), false);
+  assert.equal(room.players.size, 0);
+  assert.ok(got.length === 2 && got.every((m) => m.t === 'err' && m.ver && /different version/.test(m.msg)));
+  assert.ok(room.join({ id: 'new', send: () => {} }, { name: 'Current', v: PROTOCOL }));
 });
