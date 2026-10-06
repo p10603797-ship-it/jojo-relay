@@ -250,7 +250,7 @@ export class Game {
     me.char.endRagdoll();
     me.alive = true;
     me.hp = PLAYER.maxHp;
-    me.sh = 0;
+    me.sh = PLAYER.startShield;
     me.infinite = false;
     const mats = this.settingsState.mats | 0;
     me.resetInventory({ slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
@@ -339,6 +339,7 @@ export class Game {
     const me = this.me;
     me.inBus = false;
     me.respawn(sp.x, this.world.data.heightAt(sp.x, sp.z) + 0.3, sp.z);
+    me.sh = PLAYER.startShield; // the room's lobby value (respawn() clears it); saves a 0-shield flash
     me.mover.mode = 'ground';
     me.infinite = true;
     me.resetInventory(WARMUP);
@@ -416,6 +417,18 @@ export class Game {
       if (m.shd && m.sh === 0) this.sfx.shieldBreak(); else this.sfx.hurt();
     }
     if (t instanceof Bot) t.brain.lastHp = Math.max(t.brain.lastHp, 0);
+  }
+
+  // elimination siphon (Room.siphon): apply it now instead of on the next snapshot, and pop "+50"
+  on_siphon(m) {
+    const a = this.actorById(m.id);
+    if (!a) return;
+    a.hp = m.hp;
+    a.sh = m.sh;
+    if (a === this.me) {
+      this.hud.siphon(m.dh | 0, m.ds | 0);
+      this.sfx.heal(!(m.dh > 0));
+    }
   }
 
   on_elim(m) {
