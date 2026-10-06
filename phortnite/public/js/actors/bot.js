@@ -326,6 +326,11 @@ export class Bot extends Combatant {
     return g.phase !== 'lobby' && !g.friendly(a.id, this.id);
   }
 
+  /** Someone's health as a player would know it: from our own hit markers, else assume healthy. */
+  guessHp(a) {
+    return a === this.brain.target && this.time - this.lastShot < 4 ? a.hp + a.sh : 150;
+  }
+
   /** Still part of this session (remotes can leave mid-match)? */
   present(a) {
     const g = this.game;
@@ -514,7 +519,7 @@ export class Bot extends Combatant {
       let s = (r.vis ? 60 : 0) - d * 0.4 - (now - r.seenT) * 4;
       if (now - r.hurtT < 3) s += 35;
       if (r === b.trec) s += 20;
-      if (a.hp + a.sh < 50) s += 10;
+      if (this.guessHp(a) < 50) s += 10;
       if (s > bestS) { bestS = s; best = r; }
     }
     if (best !== b.trec) {
@@ -590,7 +595,7 @@ export class Bot extends Combatant {
       if (!gun) mode = d < 5 ? 'melee' : d < 25 || threat ? 'flee' : 'travel';
       else if (urg === 2 && d > 25 && !threat) mode = 'travel';
       else if (b.lowPlan === 'box' && b.boxStep < b.boxN) mode = 'box';
-      else if (b.lowPlan === 'flee' && hpNow < 50 && now - b.hurtT < 6) mode = 'flee';
+      else if (b.lowPlan === 'flee' && hpNow < 50 && now - b.hurtT < 6 && this.guessHp(t) > hpNow + 20) mode = 'flee';
       else if (threat || (d < reach && (P.aggro >= 0.4 || d < 35 + 60 * P.snipe))) mode = 'fight';
       else mode = P.aggro >= 0.4 ? 'fight' : 'watch'; // fight = close the distance
     } else if (t) {
@@ -1135,8 +1140,8 @@ export class Bot extends Combatant {
     const tx = (r.vis ? t.pos.x : r.x) - this.pos.x, tz = (r.vis ? t.pos.z : r.z) - this.pos.z;
     const hd = Math.hypot(tx, tz) || 1;
     const ux = tx / hd, uz = tz / hd;
-    // push someone who's weak, reloading or healing; otherwise keep this gun's range
-    const weak = t.hp + t.sh < 50 || ((t.flags | 0) & (FLAG.RELOAD | FLAG.HEAL)) !== 0;
+    // push someone who's weak (our hit markers say so), reloading or healing; otherwise keep this gun's range
+    const weak = this.guessHp(t) < 50 || (r.vis && ((t.flags | 0) & (FLAG.RELOAD | FLAG.HEAL)) !== 0);
     let want = rg[1];
     if (weak && P.aggro > 0.3 && b.skill > 0.3) want = Math.min(want, Math.max(rg[0], 6));
     else if (P.aggro > 0.85) want = Math.min(want, Math.max(rg[0], 8));
@@ -1221,7 +1226,7 @@ export class Bot extends Combatant {
       r.x = ox; r.z = oz;
       this.ctl.ads = d < 30 && d > 8 && (w.pellets || 1) === 1;
     } else this.faceToward(_v.set(ex, r.y + 1.2, ez), dt, 5);
-    const push = P.aggro > 0.5 || t.hp + t.sh < 50 || ((t.flags | 0) & FLAG.HEAL) !== 0;
+    const push = P.aggro > 0.5 || this.guessHp(t) < 50;
     if (push) this.goTo(ex, ez, dt, d > 30 && !this.ctl.ads);
     else this.ctl.crouch = P.camp > 0.3;
     if (!push && now - r.seenT > b.memory * 0.6) r.spotted = false; // passive players move on sooner
