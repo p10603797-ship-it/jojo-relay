@@ -5,6 +5,22 @@ import { WEAPONS, HEALS, RARITY, SKINS, MAT_KEYS, AMMO, itemName } from '../../s
 const $ = (s, r = document) => r.querySelector(s);
 const _v = new THREE.Vector3();
 
+// Elimination siphon "+50" beside the health / shield bars (kept here so the feature is self-contained).
+// Each popup spans its bar's row of #bars (2 bars + 6px gap), so it stays centred at any bar height.
+const SIPHON_CSS = `
+#bars .siphon { position: absolute; left: calc(100% + 10px); height: calc(50% - 3px); display: flex; align-items: center; font-family: var(--font-title); font-size: 24px; line-height: 1; text-shadow: 0 0 2px #000, 0 0 4px rgba(0, 0, 0, 0.8), 0 2px 0 rgba(0, 0, 0, 0.6); white-space: nowrap; pointer-events: none; opacity: 0; will-change: transform, opacity; }
+#bars .siphon.sh { top: 0; color: #7fd6ff; }
+#bars .siphon.hp { bottom: 0; color: #6df06a; }
+#bars .siphon.show { animation: siphonpop 1.7s ease-out forwards; }
+#bars .bar.shield { --glow: rgba(127, 214, 255, 0.95); }
+#bars .bar.health { --glow: rgba(109, 240, 106, 0.95); }
+#bars .bar.glow { animation: siphonglow 0.8s ease-out; }
+/* phones: the centred hotbar starts right after the bars, so pop over the bar's end with a heavier outline */
+@media (max-width: 900px) { #bars .siphon { left: auto; right: 10px; font-size: 20px; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000, 0 1px 1px #000; } }
+@keyframes siphonpop { 0% { opacity: 0; transform: translateX(-10px) scale(1.6); } 12% { opacity: 1; transform: none; } 70% { opacity: 1; transform: translateY(-5px); } 100% { opacity: 0; transform: translateY(-14px); } }
+@keyframes siphonglow { 0% { filter: brightness(1.8); box-shadow: 0 0 16px 4px var(--glow); } 100% { filter: brightness(1); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4); } }
+`;
+
 const ICON = {
   pickaxe: '⛏', ar: 'AR', smg: 'SMG', shotgun: 'PUMP', sniper: 'SNIPER', pistol: 'PISTOL', rocket: 'ROCKET',
   bandage: '🩹', medkit: '✚', shield_s: 'MINI', shield_b: 'BIG<br>SHIELD',
@@ -46,6 +62,7 @@ export class Hud {
     }
     this.noticeTimer = 0;
     this.mapT = 0;
+    this.initSiphon();
     this.el.map.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.toggleFullMap(); });
     this.el.fullmap.addEventListener('pointerdown', () => this.toggleFullMap(false));
   }
@@ -61,6 +78,35 @@ export class Hud {
   bars(hp, sh) {
     this.set('hp', Math.ceil(hp), (v) => { this.el.hpFill.style.width = `${v}%`; this.el.hpNum.textContent = v; });
     this.set('sh', Math.ceil(sh), (v) => { this.el.shFill.style.width = `${v}%`; this.el.shNum.textContent = v; });
+  }
+
+  initSiphon() {
+    if (!document.getElementById('siphon-css')) {
+      const st = document.createElement('style');
+      st.id = 'siphon-css';
+      st.textContent = SIPHON_CSS;
+      document.head.appendChild(st);
+    }
+    const bars = $('#bars');
+    const mk = (cls) => { const d = document.createElement('div'); d.className = `siphon ${cls}`; bars.appendChild(d); return d; };
+    this.el.sipSh = mk('sh');
+    this.el.sipHp = mk('hp');
+  }
+
+  /** Elimination siphon: a short "+N" beside each bar that grew (green health, blue shield). */
+  siphon(dh, ds) {
+    this.siphonPop(this.el.sipHp, this.el.hpFill.parentNode, dh);
+    this.siphonPop(this.el.sipSh, this.el.shFill.parentNode, ds);
+  }
+
+  siphonPop(el, bar, n) {
+    if (!(n > 0)) return;
+    el.textContent = `+${n}`;
+    el.classList.remove('show');
+    bar.classList.remove('glow');
+    void el.offsetWidth; // restart the animations (only on a kill, so the forced layout is fine)
+    el.classList.add('show');
+    bar.classList.add('glow');
   }
 
   inventory(p) {

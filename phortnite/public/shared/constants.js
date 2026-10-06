@@ -34,6 +34,8 @@ export const MAX_MATS = 999;
 export const PLAYER = {
   maxHp: 100,
   maxShield: 100,
+  startShield: 100,                   // everyone spawns with full shield: 200 effective hp, like the real thing
+  siphon: 50,                         // an elimination gives the killer this much back: health first, then shield
   radius: 0.38,
   halfHeight: 0.52,                   // capsule half height (total height = 2*(hh+r) = 1.8)
   eye: 1.55,

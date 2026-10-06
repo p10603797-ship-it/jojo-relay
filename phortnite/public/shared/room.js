@@ -163,7 +163,7 @@ export class Room {
 
   makePlayer(id, name, skin, bot) {
     return {
-      id, name, skin, bot, owner: 0, alive: false, spectator: false, hp: PLAYER.maxHp, sh: 0, kills: 0, team: id,
+      id, name, skin, bot, owner: 0, alive: false, spectator: false, hp: PLAYER.maxHp, sh: PLAYER.startShield, kills: 0, team: id,
       x: 0, y: 60, z: 0, vx: 0, vy: 0, vz: 0, yw: 0, pt: 0, a: ANIM.IDLE, w: 'pickaxe', f: 0,
       inBus: false, ip: '', lastSeen: this.now(),
     };
@@ -254,7 +254,7 @@ export class Room {
       p.alive = true;
       p.spectator = false;
       p.hp = PLAYER.maxHp;
-      p.sh = 0;
+      p.sh = PLAYER.startShield;
       p.kills = 0;
       p.inBus = true;
       p.a = ANIM.BUS;
@@ -374,7 +374,27 @@ export class Room {
       t: 'elim', v: victim.id, k: killer ? killer.id : 0, w: info.w || '', hs: !!info.hs, c: info.c || 'gun',
       place: left + 1, x: r2(victim.x), y: r2(victim.y), z: r2(victim.z),
     });
+    this.siphon(killer, victim);
     this.checkWin();
+  }
+
+  /**
+   * Elimination siphon: the killer instantly gets PLAYER.siphon back, health first (up to max)
+   * and the rest as shield. Storm / fall / left deaths have no killer and give nothing, and a
+   * killer who died first (a rocket still in flight) gets nothing either.
+   */
+  siphon(killer, victim) {
+    if (!killer || killer === victim || !killer.alive || this.sameTeam(killer, victim)) return;
+    const dh = Math.min(PLAYER.siphon, Math.max(0, PLAYER.maxHp - killer.hp));
+    const ds = Math.min(PLAYER.siphon - dh, Math.max(0, PLAYER.maxShield - killer.sh));
+    if (dh + ds <= 0) return;
+    const hp0 = Math.ceil(killer.hp), sh0 = Math.ceil(killer.sh);
+    killer.hp = Math.min(PLAYER.maxHp, killer.hp + dh);
+    killer.sh = Math.min(PLAYER.maxShield, killer.sh + ds);
+    // the killer's device shows it right away; snapshots carry the same values afterwards.
+    // dh/ds are what the (rounded-up) bars gain, so the "+N" popups always match the bars.
+    const hp = Math.ceil(killer.hp), sh = Math.ceil(killer.sh);
+    this.broadcast({ t: 'siphon', id: killer.id, amt: hp - hp0 + sh - sh0, dh: hp - hp0, ds: sh - sh0, hp, sh });
   }
 
   checkWin() {
@@ -409,7 +429,7 @@ export class Room {
       p.alive = true;
       p.spectator = false;
       p.hp = PLAYER.maxHp;
-      p.sh = 0;
+      p.sh = PLAYER.startShield;
       p.inBus = false;
       p.a = ANIM.IDLE;
       p.team = p.id;
