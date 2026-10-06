@@ -167,6 +167,16 @@ export class Sfx {
         this.tone(out, t, 0.35, 'sawtooth', 180, 30, 0.5);
         this.noiseBurst(out, t + 0.6, 0.09, 'bandpass', 3000, 6, 0.3);
         break;
+      case 'tactical': // tighter, higher bark than the pump and no rack (it's semi-auto)
+        this.noiseBurst(out, t, 0.3, 'lowpass', 2400, 0.7, 1.05);
+        this.tone(out, t, 0.18, 'sine', 150, 50, 0.75);
+        this.noiseBurst(out, t + 0.16, 0.05, 'bandpass', 3200, 5, 0.18);
+        break;
+      case 'burst': // crisp crack with a short metallic ring (fired three at a time)
+        this.noiseBurst(out, t, 0.14, 'bandpass', 2300, 1.1, 0.85);
+        this.tone(out, t, 0.07, 'triangle', 240, 80, 0.4);
+        this.tone(out, t, 0.05, 'square', 1500, 1100, 0.04);
+        break;
       case 'smg':
         this.noiseBurst(out, t, 0.12, 'bandpass', 2600, 0.9, 0.7);
         this.tone(out, t, 0.06, 'square', 300, 120, 0.15);

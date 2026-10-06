@@ -46,6 +46,9 @@ export class Combatant {
     this.inv = { slots: [{ k: 'pickaxe', r: 0 }, null, null, null, null, null], ammo: {}, mats: { wood: 0, stone: 0, metal: 0 }, sel: 0 };
     for (const k of Object.keys(AMMO)) this.inv.ammo[k] = 0;
     this.cool = 0;
+    this.burstLeft = 0; // rounds still to come in the current burst
+    this.burstT = 0;
+    this.burstItem = null;
     this.bloom = 0;
     this.reloadT = -1;
     this.healT = -1;
@@ -99,6 +102,7 @@ export class Combatant {
     if (this.inv.sel !== i) {
       this.reloadT = -1;
       this.healT = -1;
+      this.burstLeft = 0;
       this.cool = Math.max(this.cool, 0.12);
     }
     this.inv.sel = i;
@@ -288,15 +292,18 @@ export class Combatant {
    */
   act(dt, ctl, aim) {
     this.time += dt;
-    this.cool = Math.max(0, this.cool - dt);
+    // may dip one frame below zero: held fire then keeps the gun's exact cadence instead of
+    // rounding every shot up to a whole frame (11/s would really be 10/s at 60 fps)
+    this.cool = Math.max(-dt, this.cool - dt);
     this.buildCool = Math.max(0, this.buildCool - dt);
     const cur = this.current();
     const w = cur ? WEAPONS[cur.k] : null;
     if (w && !w.melee) this.bloom = Math.max(0, this.bloom - dt * (w.bloomMax ? w.bloomMax * 2.2 : 0.1));
     this.flags = 0;
-    if (!this.canAct()) { this.ads = false; this.reloadT = -1; this.healT = -1; return; }
+    if (!this.canAct()) { this.ads = false; this.reloadT = -1; this.healT = -1; this.burstLeft = 0; return; }
 
     if (this.buildMode) {
+      this.burstLeft = 0;
       this.ads = false;
       this.flags |= FLAG.BUILD;
       if (ctl.firePressed || (ctl.fire && this.buildCool <= 0)) {
@@ -358,13 +365,33 @@ export class Combatant {
       return;
     }
 
-    const want = w.auto ? ctl.fire : ctl.firePressed || (ctl.fire && this.isBot);
-    if (want && this.cool <= 0 && this.reloadT < 0) {
+    // a burst keeps going on its own once the trigger was pulled (players, bots and auto-shoot alike)
+    if (this.burstLeft > 0) {
+      if (cur !== this.burstItem || this.reloadT >= 0 || cur.m <= 0) this.burstLeft = 0;
+      else {
+        this.burstT -= dt;
+        if (this.burstT <= 0) {
+          this.burstLeft--;
+          this.burstT += w.burstGap || 0.07;
+          this.fire(cur, w, aim);
+        }
+      }
+    }
+    // a quick tap can start and end between two frames: count the press for automatics too
+    const want = w.auto ? ctl.fire || ctl.firePressed : ctl.firePressed || (ctl.fire && this.isBot);
+    if (want && this.cool <= 0 && this.reloadT < 0 && this.burstLeft <= 0) {
       if (cur.m <= 0) {
         if (this.freeAmmo() || this.inv.ammo[w.ammo] > 0) this.startReload();
         else this.game.onDryFire(this);
         this.cool = 0.25;
       } else {
+        // cool is at most one frame below zero: carrying that overshoot keeps held fire at w.rate
+        this.cool += 1 / w.rate;
+        if (w.burst > 1) {
+          this.burstLeft = Math.min(w.burst, cur.m) - 1;
+          this.burstT = w.burstGap || 0.07;
+          this.burstItem = cur;
+        }
         this.fire(cur, w, aim);
       }
     }
@@ -380,10 +407,10 @@ export class Combatant {
     this.game.onReload(this);
   }
 
+  /** One round (the trigger logic in act() handles cadence and bursts). */
   fire(cur, w, aim) {
     this.dancing = false; // shooting ends an emote (auto-shoot can fire mid-dance)
     cur.m--;
-    this.cool = 1 / w.rate;
     const spread = this.spread(w);
     this.bloom = Math.min(w.bloomMax || 0, this.bloom + (w.bloom || 0));
     this.lastShot = this.time;
@@ -479,6 +506,7 @@ export class Combatant {
   die(impulse) {
     this.alive = false;
     this.reloadT = -1;
+    this.burstLeft = 0;
     this.healT = -1;
     this.buildMode = false;
     this.mover.mode = 'dead';
