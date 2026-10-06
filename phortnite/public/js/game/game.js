@@ -13,14 +13,21 @@ import { LootView, StormView, BusView } from './views.js';
 import { RAY_SOLID } from '../physics.js';
 import { lootLabel } from '../ui/hud.js';
 
+// warm-up loadout: each spawn picks one gun of each pair so every gun gets tried out ([rarity, guns...])
+const WARMUP_PICKS = [[2, 'ar', 'burst'], [2, 'shotgun', 'tactical'], [2, 'smg', 'pistol'], [3, 'sniper'], [3, 'rocket']];
 const WARMUP = {
-  slots: [{ k: 'ar', r: 2, m: 30 }, { k: 'shotgun', r: 2, m: 5 }, { k: 'smg', r: 2, m: 30 }, { k: 'sniper', r: 3, m: 1 }, { k: 'rocket', r: 3, m: 1 }],
+  get slots() {
+    return WARMUP_PICKS.map(([r, ...ks]) => {
+      const k = ks[Math.floor(Math.random() * ks.length)];
+      return { k, r, m: WEAPONS[k].mag };
+    });
+  },
   ammo: {}, mats: { wood: 999, stone: 999, metal: 999 },
 };
 
 // Auto-shoot (a setting): farthest (m from the gun) an enemy may be for each gun to fire on its
 // own, so a shotgun doesn't waste shells on someone across the map. Bullet drop is checked too.
-const AUTO_RANGE = { ar: 220, smg: 90, pistol: 90, shotgun: 30, sniper: 250, rocket: 90 };
+const AUTO_RANGE = { ar: 220, burst: 200, smg: 90, pistol: 90, shotgun: 30, tactical: 25, sniper: 250, rocket: 90 };
 // closest: a point-blank rocket would level the player's own walls and floor
 const AUTO_MIN = { rocket: 12 };
 const AUTO_ACQUIRE = 0.06; // s the crosshair must rest on an enemy before firing (like a human reaction)
@@ -389,7 +396,7 @@ export class Game {
     _f.set(m.d[0], m.d[1], m.d[2]);
     this.fx.muzzle(muzzle, _f, m.w === 'shotgun' || m.w === 'sniper' || m.w === 'rocket', false);
     this.sfx.shot(m.w, muzzle, false);
-    if (shooter) shooter.char.kick(0.6);
+    if (shooter) shooter.char.kick(w.kick ?? 0.6);
   }
 
   on_sw(m) {
@@ -753,7 +760,7 @@ export class Game {
     _f.set(dirs[0], dirs[1], dirs[2]);
     this.fx.muzzle(muzzle, _f, cur.k === 'shotgun' || cur.k === 'sniper' || cur.k === 'rocket', a === this.me);
     this.sfx.shot(cur.k, muzzle, a === this.me);
-    a.char.kick(0.7);
+    a.char.kick(w.kick ?? 0.7);
     const r3 = (x) => Math.round(x * 1000) / 1000;
     this.send({
       t: 'sh', id: a.id, w: cur.k, r: cur.r | 0,

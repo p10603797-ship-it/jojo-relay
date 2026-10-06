@@ -37,6 +37,27 @@ const BUILDERS = {
       muzzle: [0, 0.02, 0.8],
     };
   },
+  // boxy rifle with a red-dot, skeleton stock and muzzle brake: reads apart from the AR at a glance
+  burst(acc) {
+    return {
+      parts: [
+        box(0.08, 0.13, 0.4, 0, 0.02, 0.1, MID),
+        box(0.05, 0.025, 0.42, 0, 0.1, 0.14, DARK),
+        box(0.075, 0.09, 0.26, 0, 0.0, 0.42, DARK),
+        box(0.079, 0.03, 0.26, 0, -0.02, 0.42, acc),
+        cyl(0.017, 0.16, 0, 0.02, 0.63, MID),
+        box(0.045, 0.045, 0.07, 0, 0.02, 0.73, DARK),
+        box(0.05, 0.15, 0.07, 0, -0.11, 0.2, DARK, 0.1),
+        box(0.04, 0.12, 0.05, 0, -0.09, 0.0, DARK, -0.25),
+        box(0.05, 0.03, 0.22, 0, 0.05, -0.2, DARK),
+        box(0.05, 0.03, 0.22, 0, -0.04, -0.2, DARK),
+        box(0.06, 0.13, 0.04, 0, 0.005, -0.31, acc),
+        box(0.04, 0.05, 0.07, 0, 0.14, 0.1, DARK),
+        box(0.03, 0.03, 0.01, 0, 0.145, 0.135, acc),
+      ],
+      muzzle: [0, 0.02, 0.77],
+    };
+  },
   smg(acc) {
     return {
       parts: [
@@ -63,6 +84,24 @@ const BUILDERS = {
         box(0.074, 0.025, 0.2, 0, 0.083, 0.05, acc),
       ],
       muzzle: [0, 0.045, 0.82],
+    };
+  },
+  // black polymer semi-auto: heat shield over the barrel, pistol grip, folding top stock (no wood)
+  tactical(acc) {
+    return {
+      parts: [
+        box(0.075, 0.12, 0.32, 0, 0.02, 0.04, DARK),
+        box(0.077, 0.025, 0.2, 0, 0.083, 0.03, acc),
+        cyl(0.024, 0.5, 0, 0.05, 0.45, MID),
+        box(0.06, 0.035, 0.42, 0, 0.082, 0.43, LIGHT),
+        cyl(0.02, 0.44, 0, -0.01, 0.4, DARK),
+        box(0.08, 0.075, 0.18, 0, -0.01, 0.34, DARK),
+        box(0.082, 0.02, 0.1, 0, -0.01, 0.34, acc),
+        box(0.045, 0.13, 0.055, 0, -0.1, -0.04, DARK, -0.3),
+        box(0.03, 0.03, 0.3, 0, 0.09, -0.24, MID),
+        box(0.05, 0.12, 0.04, 0, 0.04, -0.38, DARK),
+      ],
+      muzzle: [0, 0.05, 0.71],
     };
   },
   sniper(acc) {
