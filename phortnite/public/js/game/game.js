@@ -396,7 +396,7 @@ export class Game {
   on_sw(m) {
     const r = this.remotes.get(m.id);
     if (r) r.char.playSwing();
-    if (r) this.noise(r.pos.x, r.pos.y, r.pos.z, 25, 'harvest', r.id);
+    if (r) this.noise(r.pos.x, r.pos.y, r.pos.z, 30, 'harvest', r.id);
   }
 
   on_dmg(m) {
@@ -657,7 +657,7 @@ export class Game {
   onSwing(a) {
     this.send({ t: 'sw', id: a.id });
     if (a === this.me) this.sfx.whoosh(true);
-    this.noise(a.pos.x, a.pos.y, a.pos.z, 25, 'harvest', a.id);
+    this.noise(a.pos.x, a.pos.y, a.pos.z, 30, 'harvest', a.id);
   }
 
   onDryFire(a) { if (a === this.me) this.sfx.ui('error'); }

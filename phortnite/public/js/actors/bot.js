@@ -153,6 +153,7 @@ export class Bot extends Combatant {
       // movement
       strafe: 1, strafeT: 0, crouchOn: false, crouchT: 0, jumpT: 0, avoid: 0, avoidT: 0, probeT: 0, fleeSide: 1,
       stuckT: 0, stuckN: 0, lastPos: new THREE.Vector3(), moving: false, breakT: 0, breakX: 0, breakY: 0, breakZ: 0,
+      progT: 0, progD: 0, progX: 0, progZ: 0, noProg: 0, detourT: 0, detourX: 0, detourZ: 0,
       glance: 0, glanceT: 1,
       goal: null, goalT: 0, dest: new THREE.Vector3(), destKind: '', lootRef: null, lootT: 0, badLoot: new Set(),
       chestI: -1, harvest: null, treeT: 0,
@@ -383,6 +384,9 @@ export class Bot extends Combatant {
       const firing = (fl & FLAG.FIRING) !== 0, building = (fl & FLAG.BUILD) !== 0;
       const am = a.mode;
       const flying = am === 'skydive' || am === 'glide';
+      // players on other devices far from this device's camera aren't animated, so their steps
+      // never reach Game.onStep: hear them here instead
+      if (!a.mover && d < 18 && speed > 1 && !flying && this.game.isFar(ap)) this.hear(ap.x, ap.y, ap.z, crouch ? 4 : speed > 7 ? 18 : 12, 'step', a.id);
       // how far away this target stands out at all
       let range = b.sight;
       if (firing) range *= 1.5;
@@ -557,7 +561,7 @@ export class Bot extends Combatant {
       if (!t0.alive && now - this.lastShot < 2.5) {
         // (probably) our kill: celebrate, then go through their loot
         b.killT = now; b.killX = t0.pos.x; b.killY = t0.pos.y; b.killZ = t0.pos.z;
-        if (Math.random() < P.dance) b.danceT = rnd(1.5, 3.5);
+        if (Math.random() < P.dance * 0.5) b.danceT = rnd(1.5, 3);
       }
       b.recs.delete(t0.id);
       b.target = null; b.trec = null;
@@ -837,6 +841,7 @@ export class Bot extends Combatant {
         if (b.lootRef) { b.badLoot.add(b.lootRef.id); if (b.badLoot.size > 24) b.badLoot.clear(); }
         b.harvest = null;
         b.destKind = '';
+        b.safeKey = 0; // a different spot in the circle (maybe a different way around)
         this.pickGoal();
       }
     } else if (moved > 1.5) b.stuckN = 0;
@@ -879,8 +884,49 @@ export class Bot extends Combatant {
     const hd = Math.hypot(d.x - this.pos.x, d.z - this.pos.z);
     if (hd < 0.6) { this.lookAround(this.yaw, -0.05, dt, true); return; }
     const urgent = b.urgent === 2;
+    if (this.detour(d, hd, dt)) return;
     this.goTo(d.x, d.z, dt, urgent || hd > 25);
     this.lookAround(Math.atan2(-(d.x - this.pos.x), -(d.z - this.pos.z)), -0.05, dt, !urgent);
+  }
+
+  /**
+   * Not getting any closer to where we're going (pacing against a house, a cliff, a fence):
+   * walk around it via a point off to one side; after a few tries give up on that destination.
+   * Returns true while a detour is being walked.
+   */
+  detour(d, hd, dt) {
+    const b = this.brain;
+    if (b.detourT > 0) {
+      b.detourT -= dt;
+      const dx = b.detourX - this.pos.x, dz = b.detourZ - this.pos.z;
+      if (dx * dx + dz * dz > 1) {
+        this.goTo(b.detourX, b.detourZ, dt, true);
+        this.lookAround(Math.atan2(-dx, -dz), -0.05, dt, false);
+        return true;
+      }
+      b.detourT = 0;
+    }
+    if ((b.progT -= dt) > 0) return false;
+    b.progT = 2.5;
+    const same = Math.abs(d.x - b.progX) + Math.abs(d.z - b.progZ) < 3;
+    const stalled = same && hd > 4 && b.progD - hd < 1.5;
+    b.progX = d.x; b.progZ = d.z; b.progD = hd;
+    if (!stalled) { b.noProg = 0; return false; }
+    if (++b.noProg >= 4) {
+      b.noProg = 0;
+      if (b.lootRef) b.badLoot.add(b.lootRef.id);
+      b.harvest = null;
+      b.destKind = '';
+      b.safeKey = 0;
+      this.pickGoal();
+      return false;
+    }
+    const side = Math.random() < 0.5 ? -1 : 1, ux = (d.x - this.pos.x) / hd, uz = (d.z - this.pos.z) / hd;
+    const off = rnd(8, 16) * b.noProg;
+    b.detourX = this.pos.x - uz * side * off - ux * 3;
+    b.detourZ = this.pos.z + ux * side * off - uz * 3;
+    b.detourT = rnd(1.5, 3);
+    return false;
   }
 
   /** Walk toward (x, z) whichever way we are looking. */
@@ -907,8 +953,8 @@ export class Bot extends Combatant {
       b.probeT = 0.15;
       const h = this.game.physics.raycast(this.pos.x, this.pos.y + 0.8, this.pos.z, wx, 0, wz, 2.2, RAY_STATIC);
       if (h && h.ny < 0.5) {
-        if (h.info && h.info.kind === 'build' && h.dist < 1.6 && b.mode !== 'fight' && b.mode !== 'box') {
-          // a wall in the way (often our own box): pickaxe through it, like editing out
+        if (h.dist < 1.6 && b.mode !== 'fight' && b.mode !== 'box' && this.breakable(h.info, b.noProg > 0 || b.urgent === 2)) {
+          // a wall in the way (often our own box, or a house we can't find a way around): pickaxe through
           b.breakT = 1.8; b.breakX = h.x; b.breakY = h.y; b.breakZ = h.z;
         } else { b.avoid = Math.random() < 0.5 ? 1 : -1; b.avoidT = 0.8; }
       }
@@ -917,6 +963,15 @@ export class Bot extends Combatant {
     this.ctl.my = -(sy * wx + cy * wz) * m;
     this.ctl.mx = (cy * wx - sy * wz) * m;
     b.moving = true;
+  }
+
+  /** Builds can always be pickaxed out of the way; destructible scenery only when we're stuck. */
+  breakable(info, stuck) {
+    if (!info) return false;
+    if (info.kind === 'build') return true;
+    if (!stuck || info.kind !== 'obj') return false;
+    const o = this.game.world.data.objects[info.id];
+    return !!o && o.hp > 0 && this.game.world.isAlive(info.id);
   }
 
   breakThrough(dt) {
@@ -929,7 +984,7 @@ export class Bot extends Combatant {
     if (this.swingT < 0 && this.cool < 0.05) {
       const dx = b.breakX - this.pos.x, dz = b.breakZ - this.pos.z, l = Math.hypot(dx, dz) || 1;
       const h = this.game.physics.raycast(this.pos.x, this.pos.y + 0.8, this.pos.z, dx / l, 0, dz / l, 2.2, RAY_STATIC);
-      if (!h || !h.info || h.info.kind !== 'build') b.breakT = 0;
+      if (!h || !this.breakable(h.info, true)) b.breakT = 0;
     }
   }
 
@@ -992,7 +1047,7 @@ export class Bot extends Combatant {
       b.tgtAir = vy > 1;
     }
     // the error settles toward a floor: hand steadiness, own movement, distance
-    let floor = 0.008 + 0.03 * (1 - b.skill) + d * 0.00006;
+    let floor = 0.01 + 0.04 * (1 - b.skill) + d * 0.00006;
     if (!this.mover.grounded) floor *= 2.2;
     else if (this.speed > 4) floor *= 1.4;
     if (this.ads) floor *= 0.8;
@@ -1153,6 +1208,12 @@ export class Bot extends Combatant {
     const ex = r.x + r.vx * lost * 0.6, ez = r.z + r.vz * lost * 0.6;
     const dx = ex - this.pos.x, dz = ez - this.pos.z;
     const d = Math.hypot(dx, dz);
+    if (d < 4) {
+      // got there and they're gone: look around a little, then move on
+      this.lookAround(this.yaw, -0.05, dt, true);
+      if (now - r.seenT > 4) r.spotted = false;
+      return;
+    }
     if (w && !w.melee) {
       const ox = r.x, oz = r.z;
       r.x = ex; r.z = ez;
@@ -1161,7 +1222,7 @@ export class Bot extends Combatant {
       this.ctl.ads = d < 30 && d > 8 && (w.pellets || 1) === 1;
     } else this.faceToward(_v.set(ex, r.y + 1.2, ez), dt, 5);
     const push = P.aggro > 0.5 || t.hp + t.sh < 50 || ((t.flags | 0) & FLAG.HEAL) !== 0;
-    if (push && d > 3) this.goTo(ex, ez, dt, d > 30 && !this.ctl.ads);
+    if (push) this.goTo(ex, ez, dt, d > 30 && !this.ctl.ads);
     else this.ctl.crouch = P.camp > 0.3;
     if (!push && now - r.seenT > b.memory * 0.6) r.spotted = false; // passive players move on sooner
   }
