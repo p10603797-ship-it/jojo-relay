@@ -20,9 +20,10 @@ export class Recoil {
   /** One shot from gun w; mult scales it (ADS, crouch). */
   kick(w, mult, rnd = Math.random) {
     const v0 = (w.recoil || 0) * mult * (0.85 + 0.3 * rnd());
-    // the climb flattens out as the offset nears the gun's cap, so a long spray rises then
-    // levels instead of walking into the sky; pulling down against it restores the full kick
-    const v = v0 * Math.max(0.05, 1 - Math.max(0, this.p) / (w.recoilMax || 1));
+    // the climb flattens out as the offset nears the gun's cap (scaled like the kick, so ADS and
+    // crouch lower the whole climb), so a long spray rises then levels instead of walking into the
+    // sky; pulling down against it restores the full kick
+    const v = v0 * Math.max(0.05, 1 - Math.max(0, this.p) / ((w.recoilMax || 1) * mult));
     // sideways: random, pulled back toward where the spray started (an SMG jitters left/right
     // around the target instead of wandering off it)
     const h = (w.recoilSide || 0) * mult * (rnd() * 2 - 1) - this.y * (w.recoilCenter || 0);

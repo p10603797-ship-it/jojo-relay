@@ -189,6 +189,9 @@ test('AR spray climbs, levels off, and a slight pull-down keeps it on a body at 
   assert.ok(one.atRelease > 0.025 && one.atRelease < 0.06, `1 s climb ${one.atRelease}`);
   const full = spray('ar', 30 / 5.5);
   assert.ok(full.atRelease < WEAPONS.ar.recoilMax * 1.1, `a whole magazine levels off (${full.atRelease.toFixed(3)})`);
+  // ADS + crouch (0.75 * 0.8) lowers the climb in proportion
+  const steady = spray('ar', 1, { mult: 0.6 });
+  assert.ok(Math.abs(steady.atRelease / one.atRelease - 0.6) < 0.08, `ADS+crouch ${(steady.atRelease / one.atRelease).toFixed(2)}x`);
   // ADS, pulling down ~1.2 deg/s: aim stays within the body (0.7 m above / 1.2 m below the chest)
   const held = spray('ar', 30 / 5.5, { mult: 0.75, pull: 0.02 });
   const h = Math.tan(held.atRelease) * 20;
