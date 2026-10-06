@@ -631,32 +631,35 @@ export class Character {
   }
 
   poseDance(dt, s) {
-    // the floss: straight arms swing side to side, crossing in front / behind; hips counter-swing
+    // the floss: straight arms swing together side to side; the arm crossing the body passes in front,
+    // the other behind, while the hips swing the opposite way
     const b = this.bones;
     this.showWeapon(false);
     const t = this.time * 7.5;
     const sw = Math.sin(t);
-    const fb = Math.tanh(Math.cos(t) * 3); // which arm is in front
-    b.hips.position.x = -sw * 0.07;
-    b.hips.position.y -= 0.025 + Math.abs(sw) * 0.01;
-    b.hips.rotation.set(0, sw * 0.12, sw * 0.14);
-    b.spine.rotation.set(0.04, -sw * 0.1, -sw * 0.18);
-    b.chest.rotation.set(0.03, 0, -sw * 0.12);
-    b.neck.rotation.set(0, 0, sw * 0.12);
-    b.head.rotation.set(-0.05, sw * 0.1, sw * 0.16);
-    b.armL.rotation.set(fb * 0.5, 0, 0.3 + sw * 0.62);
-    b.armR.rotation.set(-fb * 0.5, 0, -0.3 + sw * 0.62);
-    b.foreL.rotation.set(-0.12, 0, 0);
-    b.foreR.rotation.set(-0.12, 0, 0);
-    b.fingL.rotation.set(0, 0, -0.4);
-    b.fingR.rotation.set(0, 0, 0.4);
+    const bounce = Math.abs(Math.cos(t));
+    b.hips.position.x = -sw * 0.085;
+    b.hips.position.y -= 0.03 + (1 - bounce) * 0.015;
+    b.hips.rotation.set(0, sw * 0.1, sw * 0.16);
+    b.spine.rotation.set(0.05, -sw * 0.08, -sw * 0.2);
+    b.chest.rotation.set(0.04, -sw * 0.06, -sw * 0.12);
+    b.neck.rotation.set(0, 0, sw * 0.14);
+    b.head.rotation.set(-0.05, sw * 0.12, sw * 0.16);
+    b.armL.rotation.set(sw * 0.55, 0, 0.22 + sw * 0.8);
+    b.armR.rotation.set(-sw * 0.55, 0, -0.22 + sw * 0.8);
+    b.foreL.rotation.set(-0.1, 0, 0);
+    b.foreR.rotation.set(-0.1, 0, 0);
+    b.handL.rotation.set(0, 0, 0.15);
+    b.handR.rotation.set(0, 0, -0.15);
+    b.fingL.rotation.set(0, 0, -0.5);
+    b.fingR.rotation.set(0, 0, 0.5);
     for (let i = 0; i < 2; i++) {
       const side = i ? -1 : 1;
       const thigh = i ? b.thighR : b.thighL, shin = i ? b.shinR : b.shinL, foot = i ? b.footR : b.footL;
-      const k = 0.18 + Math.max(0, side * sw) * 0.25;
-      thigh.rotation.set(-k * 0.6, 0, side * 0.08 - sw * 0.12);
+      const k = 0.2 + Math.max(0, side * sw) * 0.3 + (1 - bounce) * 0.08;
+      thigh.rotation.set(-k * 0.55, 0, side * 0.09 + sw * 0.13);
       shin.rotation.set(k, 0, 0);
-      foot.rotation.set(-k * 0.4, 0, sw * 0.12);
+      foot.rotation.set(-k * 0.45, 0, -sw * 0.13);
     }
   }
 
