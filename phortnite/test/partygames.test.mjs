@@ -412,5 +412,21 @@ test('mode HUD: every game\'s hud() drives ModeClient (score bar, top 3, ladder,
   r.mc.renderHud();
   assert.ok(r.calls.respawn[0] > 2.5 && r.calls.respawn[0] <= 3, `respawn ${r.calls.respawn[0]}`);
   assert.match(r.calls.line[0], /HIDING/, 'a partial ms keeps the game state');
+  // Hide & Seek: a seeker's head start blindfolds and blanks the controls, then lets go
+  const hs = run('hideseek', { ...PARTY_GAMES.hideseek.defaults, win: 'hideseek' });
+  const seeker = hs.ctx.players().find((p) => p.role === 'seeker');
+  hs.game.myId = seeker.id;
+  hs.game.me.alive = true;
+  hs.mc.renderHud();
+  assert.ok(hs.calls.blindfold[0] > 25, 'blindfolded with ~30 s to go');
+  const s = { mx: 1, my: -1, fire: true, jump: true, lookX: 0.2 };
+  hs.mc.filterInput(s);
+  assert.deepEqual(s, { mx: 0, my: 0, fire: false, jump: false, lookX: 0 });
+  hs.mc.setMs({ t: 'ms', g: { ...hs.ctx.hud(), hs: 0 } });
+  hs.mc.renderHud();
+  assert.equal(hs.calls.blindfold[0], -1);
+  const s2 = { mx: 1, fire: true };
+  hs.mc.filterInput(s2);
+  assert.deepEqual(s2, { mx: 1, fire: true });
   for (const k of Object.keys(PARTY_GAMES)) assert.ok(objective({ win: k, teams: 1, target: 0, timeLimit: 300 }).length > 10, k);
 });

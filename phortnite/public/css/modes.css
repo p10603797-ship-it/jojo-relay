@@ -336,3 +336,23 @@ body.respawning #elimscreen { display: none; }
 .mh-blind b { font-family: var(--font-title); font-weight: normal; font-size: 72px; color: var(--yellow); text-shadow: 0 4px 0 #6a3a00; }
 .mh-blind span { font-size: 18px; opacity: 0.9; }
 .mh-line.seeker { background: rgba(255, 140, 20, 0.8); }
+
+/* touch (iPad): the right column belongs to the touch controls, so the mode HUD is a compact
+   strip at the top centre, like Fortnite's scoreboard (at most two rows) */
+body.touch #modehud {
+  position: fixed; top: calc(8px + var(--sat)); left: 50%; transform: translateX(-50%);
+  width: min(560px, 56vw); flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: stretch; gap: 4px;
+}
+body.touch #modehud > ol.on { display: flex; }
+body.touch .mh-bar { width: min(320px, 100%); }
+body.touch .mh-top { width: auto; display: flex; gap: 10px; padding: 3px 8px; }
+body.touch .mh-top li { line-height: 20px; }
+body.touch .mh-top li span { max-width: 90px; }
+body.touch .mh-me { display: none !important; }
+body.touch .mh-ladder { width: auto; flex-wrap: nowrap; }
+body.touch .mh-ladder em { display: none; }
+body.touch #modehud > .mh-line.on { display: block; width: auto; max-width: 100%; text-align: center; }
+@media (max-height: 460px) {
+  body.touch #modehud { width: min(460px, 52vw); top: calc(4px + var(--sat)); }
+  body.touch .mh-top li span { max-width: 64px; }
+}
