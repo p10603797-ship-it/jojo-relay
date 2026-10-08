@@ -171,6 +171,7 @@ class App {
     this.lobby = new LobbyUi(this);
     this.invite = new Invite(this);
     this.hud.lobbyPanel.onBack = () => this.warmUp(false);
+    this.applyTouchVars();
     this.progress(0.93, 'Compiling shaders…');
     await new Promise((r) => setTimeout(r, 0));
     try { renderer.compile(this.scene, this.camera); } catch (e) { /* optional */ }
@@ -320,6 +321,7 @@ class App {
   /** The party's welcome (or 'resumed'): remember how to get back in. */
   onWelcome(g, m) {
     const net = g.net;
+    if (m.t === 'welcome' && m.leader === m.you && m.phase === 'lobby' && this.settings.botLevel && this.settings.botLevel !== 'normal') this.tweakBots();
     if (!net || net.kind === 'solo' || !m.resume) return;
     this.resumeInfo = { kind: net.kind, code: m.code, token: m.resume, name: m.name || '' };
     this.saveResume();
@@ -328,6 +330,19 @@ class App {
       net.rejoin = () => ({ t: 'join', code, hello: this.hello({ resume: token, keep: true }) });
     }
     if (this.rejoinState && this.rejoinState.code === m.code) this.rejoinState = null;
+  }
+
+  /** The default bot difficulty setting, for a party this page leads (the mode engine's 'tweak'). */
+  tweakBots() {
+    const g = this.game;
+    if (g && g.leader === g.myId && g.phase === 'lobby' && this.settings.botLevel) g.send({ t: 'tweak', botSkill: this.settings.botLevel });
+  }
+
+  /** Touch button size / opacity settings as CSS variables (the touch layout reads them). */
+  applyTouchVars() {
+    const r = document.documentElement.style;
+    r.setProperty('--tb-scale', String(this.settings.tbScale ?? 1));
+    r.setProperty('--tb-alpha', String(this.settings.tbAlpha ?? 1));
   }
 
   saveResume(clear = false) {
@@ -599,7 +614,10 @@ class App {
       // debug/test hook: run extra simulation steps per rendered frame
       for (let i = 1; i < (this.simSteps || 1); i++) g.update(1 / 60);
       g.update(this.simSteps ? 1 / 60 : dt);
-    } else this.input.update();
+    } else {
+      this.input.update();
+      this.hud.update(dt); // notices time out behind the stage too (no stale 'Sam joined' in the next match)
+    }
     if (stage) {
       if (sim) {
         const me = g.me;

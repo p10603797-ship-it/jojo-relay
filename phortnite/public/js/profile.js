@@ -14,7 +14,8 @@ export function matchXp(r) {
   const add = (n, label) => { n = Math.round(n); if (n > 0) { total += n; lines.push(`${label} +${n}`); } };
   add((r.elims | 0) * 50, `${r.elims | 0} elim${r.elims === 1 ? '' : 's'}`);
   if (r.won) add(300, 'Victory');
-  else if (r.place > 0 && r.place <= 10) add((11 - r.place) * 15, `Top ${r.place <= 5 ? 5 : 10}`);
+  // placement: better than most of the lobby (in a big match a top 10 counts)
+  else if (r.place > 0 && r.place <= 10 && (!r.players || r.place <= Math.ceil(r.players / 2))) add((11 - r.place) * 15, `Placed #${r.place}`);
   add((r.damage || 0) / 10, 'Damage');
   add(25, 'Played');
   return { total, lines };

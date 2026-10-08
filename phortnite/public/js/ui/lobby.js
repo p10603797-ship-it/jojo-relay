@@ -406,7 +406,7 @@ export class LobbyUi {
     if (!r) return;
     const tile = (n, l) => `<div class="rs-tile"><b>${esc(n)}</b><span>${esc(l)}</span></div>`;
     const mins = Math.floor(r.alive / 60), secs = String(Math.floor(r.alive % 60)).padStart(2, '0');
-    const top = r.top.slice(0, 8).map((x, i) => `<li class="${x.me ? 'me' : ''}"><b>#${x.place || i + 1}</b><span>${esc(x.name)}${x.bot ? ' <small>bot</small>' : ''}</span><em>${x.kills} ✖</em></li>`).join('');
+    const top = r.top.slice(0, 8).map((x) => `<li class="${x.me ? 'me' : ''}"><b>${x.place ? `#${x.place}` : '–'}</b><span>${esc(x.name)}${x.bot ? ' <small>bot</small>' : ''}</span><em>${x.kills} ✖</em></li>`).join('');
     const xpHtml = xp ? `<div class="rs-xp"><div class="rs-xpline"><span>+${xp.gained} XP</span><span class="rs-lvl">LEVEL ${xp.from.level}</span></div><div class="rs-bar"><i style="width:${Math.round(xp.from.frac * 100)}%"></i></div><div class="rs-xpwhy">${xp.lines.map((l) => esc(l)).join(' · ')}</div></div>` : '';
     this.el.results.innerHTML = `<div class="rs-card">
       <div class="rs-head"><span class="rs-mode">${esc(r.mode)}</span><button class="rs-x" aria-label="Close">✕</button></div>

@@ -118,18 +118,20 @@ export class MatchStats {
     const s = this.snapshot(game);
     const me = game.myId;
     const list = [...this.people.values()];
-    // unplaced people who were still alive at the end share the best place left
-    const placed = list.filter((p) => p.place > 0);
-    const best = placed.length ? Math.min(...placed.map((p) => p.place)) : 1;
-    for (const p of list) if (!p.place) p.place = this.ended ? Math.max(1, best - 1) : 0;
-    const top = list.slice().sort((a, b) => (a.place || 999) - (b.place || 999) || b.kills - a.kills).slice(0, 8)
+    // people still standing at the end (no place yet) outlived everyone placed: they come first
+    const top = list.slice().sort((a, b) => (a.place || 0) - (b.place || 0) || b.kills - a.kills).slice(0, 8)
       .map((p) => ({ name: p.name, bot: p.bot, kills: p.kills, place: p.place, me: p.id === me }));
     let mvp = this.mvpId ? this.people.get(this.mvpId) : null;
     if (!mvp) for (const p of list) if (p.kills > 0 && (!mvp || p.kills > mvp.kills)) mvp = p;
     const place = this.place || (this.ended ? 1 : 0);
-    const title = this.won ? 'PHICTORY ROYALE!' : place && place <= 10 ? `TOP ${place <= 5 ? 5 : 10}!` : 'GOOD GAME';
+    const n = list.length;
+    let title = 'GOOD GAME';
+    if (this.won) title = 'PHICTORY ROYALE!';
+    else if (place > 0 && place <= 3 && n > 3) title = 'TOP 3!';
+    else if (place > 0 && place <= 5 && n > 6) title = 'TOP 5!';
+    else if (place > 0 && place <= 10 && n > 12) title = 'TOP 10!';
     return {
-      ...s, mode: this.mode, place, won: this.won, title, top,
+      ...s, mode: this.mode, place, players: n, won: this.won, title, top,
       mvp: mvp ? { name: mvp.name, kills: mvp.kills, me: mvp.id === me } : null,
     };
   }

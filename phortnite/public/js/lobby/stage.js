@@ -368,9 +368,12 @@ export class LobbyStage {
       if (!m) continue;
       const celebrate = this.celebrating;
       const show = !celebrate || celebrate.has(id);
-      m.c.setVisible(show);
-      if (!show) { m.plate.style.display = 'none'; continue; }
-      m.plate.style.display = '';
+      if (show !== m.shown) {
+        m.shown = show;
+        m.c.setVisible(show);
+        m.plate.style.display = show ? '' : 'none';
+      }
+      if (!show) continue;
       m.x += (m.tx - m.x) * k * 2;
       m.z += (m.tz - m.z) * k * 2;
       let y = 0;

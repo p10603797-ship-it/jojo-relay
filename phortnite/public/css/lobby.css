@@ -39,9 +39,9 @@ body.ended #touch, body.ended #hotbar, body.endcard #touch, body.endcard #hotbar
 
 /* ------------------------------------------------------------------ left rail: party */
 .lb-rail { position: absolute; left: var(--pad-l); top: calc(86px + var(--sat)); width: 258px; display: flex; flex-direction: column; gap: 8px; max-height: calc(100% - 170px - var(--sat) - var(--sab)); }
-.lb-phead { display: flex; align-items: baseline; gap: 10px; padding: 0 4px; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6); }
+.lb-phead { display: flex; align-items: baseline; gap: 10px; padding: 0 4px; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6); white-space: nowrap; }
 .lb-ptitle { font-family: var(--font-title); font-size: 20px; letter-spacing: 1px; }
-.lb-code { font-size: 15px; color: var(--yellow); letter-spacing: 2px; }
+.lb-code { margin-left: auto; font-size: 15px; color: var(--yellow); letter-spacing: 2px; }
 .lb-cards { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; min-height: 0; }
 .lc {
   display: flex; align-items: center; gap: 10px; height: 56px; min-height: 56px; padding: 0 12px 0 8px; border: 0; border-radius: 10px; color: #fff; text-align: left;

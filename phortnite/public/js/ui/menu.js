@@ -170,16 +170,14 @@ export class Ui {
       bind('#s-touch', 'forceTouch', Boolean, () => { this.app.input.forceTouch = st.forceTouch; this.app.input.setTouchMode(st.forceTouch || this.app.isTouch); });
       bind('#s-tap', 'tapBuild', Boolean);
       const tb = () => {
-        // the touch layout reads these (build-feel: --tb-scale / --tb-alpha)
-        const r = document.documentElement.style;
-        r.setProperty('--tb-scale', String(st.tbScale));
-        r.setProperty('--tb-alpha', String(st.tbAlpha));
+        // the touch layout reads these (--tb-scale / --tb-alpha)
+        this.app.applyTouchVars();
         if (this.app.input.applySettings) this.app.input.applySettings(st);
       };
       bind('#s-tbs', 'tbScale', Number, tb);
       bind('#s-tba', 'tbAlpha', Number, tb);
       bind('#s-music', 'music', Number, () => this.app.music && this.app.music.setVolume(st.music));
-      bind('#s-bot', 'botLevel', String);
+      bind('#s-bot', 'botLevel', String, () => this.app.tweakBots());
     }, onClose);
   }
 
