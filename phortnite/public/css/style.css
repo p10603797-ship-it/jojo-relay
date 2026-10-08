@@ -433,6 +433,14 @@ body.touch #hotbar { right: auto; left: 50%; transform: translateX(-50%); bottom
 body.touch .slot { width: 58px; height: 58px; }
 body.touch #ammo { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(80px + var(--sab)); }
 body.touch #minimap { width: var(--mm); height: var(--mm); }
+body.touch #bars { bottom: calc(14px + var(--sab)); width: min(250px, 26vw); }
+/* the kill feed sits above the left fire button (4 lines at most) */
+body.touch #killfeed { top: 28%; }
+body.touch #killfeed .kf:nth-last-child(n+5) { display: none; }
+/* on touch the pick-up button names the item, so the text prompt would only repeat it */
+body.touch #prompt { display: none; }
+/* editing: the choices replace aiming, building and looting */
+body.ctx-editing .tb-interact, body.ctx-editing .tb-ads, body.ctx-editing .tb-reload, body.ctx-editing .tbtn.bonly { display: none; }
 body.touch #mats { bottom: auto; top: calc(var(--sat) + 10px + var(--mm) + var(--gap) + var(--pill) + var(--gap)); right: calc(10px + var(--sar)); flex-direction: row; gap: 4px; }
 body.touch .mat { min-width: 0; padding: 2px 8px 2px 4px; font-size: 15px; gap: 6px; }
 body.touch .mat i { width: 16px; height: 16px; }
@@ -447,9 +455,9 @@ body.touch.ingame.ctx-bus .tb-jump .jl, body.touch.ingame.inbus .tb-jump .jl { d
 body.touch.ingame.ctx-sky .tbtn { display: none; }
 body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
 
-/* small iPads in landscape and big phones */
-@media (max-height: 700px) {
-  #touch { --lay: 0.88; }
+/* small iPads in landscape (1024 x 768, 1133 x 744) and big phones */
+@media (max-height: 780px) {
+  #touch { --lay: 0.92; }
 }
 
 /* ------------------------------------------------------------------ short screens (phones in landscape) */
@@ -481,10 +489,11 @@ body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
   body.touch .pill { font-size: 12px; padding: 2px 7px; }
   body.touch .mat { font-size: 12px; padding: 1px 6px 1px 3px; }
   body.touch .mat i { width: 12px; height: 12px; }
-  body.touch #poi { font-size: 14px; }
+  body.touch #poi { display: none; } /* entering a place still shows its name */
   body.touch .slot { width: 46px; height: 46px; }
   body.touch #ammo { bottom: calc(60px + var(--sab)); }
-  #touch { --lay: 0.72; }
+  /* little room: bigger buttons (the size setting) grow at most 15% here */
+  #touch { --lay: 0.72; --k: calc(var(--lay) * (0.3 + 0.7 * min(var(--tb-scale), 1.15))); --s: calc(var(--lay) * min(var(--tb-scale), 1.15)); }
   .tb-fire { --x: 174px; --y: 153px; }
   .tb-jump { --x: 62px; --y: 83px; }
   .tb-crouch { --x: 56px; --y: 174px; }
@@ -492,17 +501,20 @@ body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
   .tb-edit { --x: 354px; --y: 268px; }
   .tb-ads { --x: 285px; --y: 210px; }
   .tb-reload { --x: 278px; --y: 125px; }
-  .tb-ramp { --x: 194px; --y: 274px; }
-  .tb-wall { --x: 260px; --y: 239px; }
-  .tb-floor { --x: 294px; --y: 174px; }
-  .tb-cone { --x: 285px; --y: 101px; }
-  .tb-mat { --x: 235px; --y: 47px; }
-  .tb-fire2 { --w: 60px; top: 46%; }
+  /* the arc round fire (radius 122, 34 degrees apart), starting low enough to stay under the mats */
+  .tb-ramp { --x: 206px; --y: 271px; }
+  .tb-wall { --x: 266px; --y: 232px; }
+  .tb-floor { --x: 295px; --y: 167px; }
+  .tb-cone { --x: 282px; --y: 96px; }
+  .tb-mat { --x: 231px; --y: 45px; }
+  .tb-fire2 { --w: 60px; top: 52%; }
+  body.touch #killfeed { font-size: 13px; gap: 3px; }
+  body.touch #killfeed .kf:nth-last-child(n+4) { display: none; }
   .tb-interact { right: calc(var(--sar) + 300px * var(--k)); bottom: calc(var(--sab) + 320px * var(--k)); }
   body.building .tb-interact { bottom: calc(var(--sab) + 330px * var(--k)); right: calc(var(--sar) + 340px * var(--k)); }
   body.touch.ingame.ctx-bus .tb-jump, body.touch.ingame.inbus .tb-jump { --x: 174px; --y: 153px; }
-  #editchips { top: calc(50% + 40px); }
-  #editchips .chip { height: 42px; min-width: 52px; font-size: 14px; }
+  #editchips { top: calc(50% + 26px); gap: 6px; }
+  #editchips .chip { height: 40px; min-width: 0; padding: 0 8px; font-size: 13px; }
   #elimbanner { top: 60%; }
   #elimbanner .eb-main { font-size: 22px; } #elimbanner .eb-streak { font-size: 28px; }
 }
