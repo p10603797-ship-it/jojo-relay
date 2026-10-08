@@ -254,7 +254,7 @@ function pageSetup() {
       cam.updateProjectionMatrix();
       cam.updateMatrixWorld(true);
     },
-    settle(v, frames = 45) {
+    settle(v, frames = 140) {
       const focus = new THREE.Vector3(v.x, world.data.heightAt(v.x, v.z), v.z);
       if (v.y - focus.y < 6) focus.copy(cam.position);
       for (let i = 0; i < frames; i++) {

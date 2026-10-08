@@ -203,7 +203,7 @@ export class MapView {
       ptrs.delete(e.pointerId);
       if (ptrs.size < 2) pinch = null;
       if (tap && ptrs.size === 0) {
-        if (tap.moved < 0.012 && performance.now() - tap.t < 600) this.tapAt(tap.x, tap.y);
+        if (tap.moved < 0.012 && performance.now() - tap.t < 1200) this.tapAt(tap.x, tap.y);
         tap = null;
       }
     };

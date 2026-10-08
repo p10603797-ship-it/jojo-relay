@@ -340,6 +340,7 @@ export class Terrain {
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', `#include <common>
 precision highp sampler2DArray;
+#define STRATA ${id('strata')}
 uniform sampler2DArray tSurf, tSurfN;
 uniform sampler2D tIdx, tMacro;
 uniform float uHalf, uCell, uN, uSea, uTime;
@@ -351,15 +352,25 @@ float tId(ivec2 p) {
   p = clamp(p, ivec2(0), ivec2(m));
   return floor(texelFetch(tIdx, p, 0).r * 255.0 + 0.5);
 }
-vec4 tAlb(float id) { return texture(tSurf, vec3(vTW.xz * uUV[int(id)], id)); }
-vec3 tNrm(float id) { return texture(tSurfN, vec3(vTW.xz * uUV[int(id)], id)).xyz * 2.0 - 1.0; }
+// layer uv: the ground plane, except banded rock (strata), which is always projected from the side
+vec2 tUv(float id) {
+  if (id == STRATA) { vec3 n = abs(vTN); return (n.x > n.z ? vTW.zy : vTW.xy) * uUV[int(id)]; }
+  return vTW.xz * uUV[int(id)];
+}
+vec4 tAlb(float id) { return texture(tSurf, vec3(tUv(id), id)); }
+vec3 tNrm(float id) { return texture(tSurfN, vec3(tUv(id), id)).xyz * 2.0 - 1.0; }
 `)
         .replace('#include <map_fragment>', `
 // ---- splat: the 4 nearest grid points' layers, merged when equal
 vec2 tg = (vTW.xz + uHalf) / uCell;
 vec4 tmz = texture(tMacro, vTW.xz * 0.031);
-tg += (tmz.rg - 0.5) * 1.1;
-vec2 ti = floor(tg), tf = smoothstep(0.15, 0.85, tg - ti);
+vec4 tmz2 = texture(tMacro, vTW.xz * 0.0087 + 0.31);
+tg += (tmz.rg - 0.5) * 1.0 + (tmz2.gr - 0.5) * 2.2;
+// borders are crisp up close and soften with distance (no stair-steps from the 4 m grid far away)
+float tDist = length(vTW - cameraPosition);
+float tSoft = smoothstep(25.0, 260.0, tDist);
+float tbw = mix(0.32, 0.5, tSoft);
+vec2 ti = floor(tg), tf = smoothstep(0.5 - tbw, 0.5 + tbw, tg - ti);
 ivec2 tp = ivec2(ti);
 float lA = tId(tp), lB = tId(tp + ivec2(1, 0)), lC = tId(tp + ivec2(0, 1)), lD = tId(tp + ivec2(1, 1));
 float wA = (1.0 - tf.x) * (1.0 - tf.y), wB = tf.x * (1.0 - tf.y), wC = (1.0 - tf.x) * tf.y, wD = tf.x * tf.y;
@@ -374,7 +385,7 @@ if (i3 >= 0.0) s3 = tAlb(i3);
 if (i4 >= 0.0) s4 = tAlb(i4);
 // height blend: the taller texture wins the border
 float h1 = v1 + s1.a * 0.45, h2 = i2 >= 0.0 ? v2 + s2.a * 0.45 : -9.0, h3 = i3 >= 0.0 ? v3 + s3.a * 0.45 : -9.0, h4 = i4 >= 0.0 ? v4 + s4.a * 0.45 : -9.0;
-float hm = max(max(h1, h2), max(h3, h4)) - 0.22;
+float hm = max(max(h1, h2), max(h3, h4)) - mix(0.22, 0.8, tSoft);
 v1 = max(h1 - hm, 0.0); v2 = max(h2 - hm, 0.0); v3 = max(h3 - hm, 0.0); v4 = max(h4 - hm, 0.0);
 float vs = max(v1 + v2 + v3 + v4, 1e-4);
 v1 /= vs; v2 /= vs; v3 /= vs; v4 /= vs;
@@ -515,18 +526,19 @@ if (tLava > 0.01) totalEmissiveRadiance += tcol * tLava * (2.2 + 0.8 * sin(uTime
     const roads = (d.roads || []).filter((r) => !r.bridge && r.kind !== 'dirt' && r.pts && r.pts.length > 1);
     if (!roads.length || !this.T.layers) return;
     const pos = [], uv = [], nor = [], idx = [];
-    const STEP = 3;
+    const STEP = 2;
     for (const r of roads) {
       const w = (r.w || 8) / 2;
       // resample the centreline every STEP metres
       const pts = [];
       for (let k = 0; k < r.pts.length - 1; k++) {
-        const [ax, az] = r.pts[k], [bx, bz] = r.pts[k + 1];
+        const [ax, az, ay] = r.pts[k], [bx, bz, by] = r.pts[k + 1];
         const L = Math.hypot(bx - ax, bz - az);
         const n = Math.max(1, Math.ceil(L / STEP));
-        for (let s = 0; s < n; s++) pts.push([ax + (bx - ax) * (s / n), az + (bz - az) * (s / n)]);
+        for (let s = 0; s < n; s++) pts.push([ax + (bx - ax) * (s / n), az + (bz - az) * (s / n), ay === undefined ? -1e9 : ay + ((by ?? ay) - ay) * (s / n)]);
       }
-      pts.push([r.pts[r.pts.length - 1][0], r.pts[r.pts.length - 1][1]]);
+      const last = r.pts[r.pts.length - 1];
+      pts.push([last[0], last[1], last[2] === undefined ? -1e9 : last[2]]);
       let along = 0;
       for (let k = 0; k < pts.length; k++) {
         const p = pts[k], a = pts[Math.max(0, k - 1)], b = pts[Math.min(pts.length - 1, k + 1)];
@@ -535,15 +547,17 @@ if (tLava > 0.01) totalEmissiveRadiance += tcol * tLava * (2.2 + 0.8 * sin(uTime
         tx /= tl; tz /= tl;
         if (k > 0) along += Math.hypot(p[0] - pts[k - 1][0], p[1] - pts[k - 1][1]);
         const base = pos.length / 3;
-        for (let s = -1; s <= 1; s++) {
-          const x = p[0] - tz * w * s, z = p[1] + tx * w * s;
-          pos.push(x, d.heightAt(x, z) + 0.06, z);
+        for (let s = -2; s <= 2; s++) {
+          const x = p[0] - tz * w * s / 2, z = p[1] + tx * w * s / 2;
+          // on the ground, or on the road's own (levelled) height where that is higher
+          const y = Math.max(d.heightAt(x, z), Math.max(d.heightAt(x + 1, z), d.heightAt(x - 1, z), d.heightAt(x, z + 1), d.heightAt(x, z - 1)) - 0.25, p[2]);
+          pos.push(x, y + 0.08, z);
           nor.push(0, 1, 0);
-          uv.push((s + 1) / 2, along / (r.w || 8));
+          uv.push((s + 2) / 4, along / (r.w || 8));
         }
         if (k > 0) {
-          const q = base - 3;
-          for (let s = 0; s < 2; s++) idx.push(q + s, base + s, q + s + 1, q + s + 1, base + s, base + s + 1);
+          const q = base - 5;
+          for (let s = 0; s < 4; s++) idx.push(q + s, base + s, q + s + 1, q + s + 1, base + s, base + s + 1);
         }
       }
     }
@@ -555,7 +569,7 @@ if (tLava > 0.01) totalEmissiveRadiance += tcol * tLava * (2.2 + 0.8 * sin(uTime
     geo.computeBoundingSphere();
     const L = this.T.layers;
     const layer = SURFACE_LAYERS.indexOf('asphaltLines');
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 });
     mat.onBeforeCompile = (sh) => {
       sh.uniforms.tSurf = { value: L.surfaces.albedo };
       sh.fragmentShader = sh.fragmentShader

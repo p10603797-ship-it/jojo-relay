@@ -1,1 +1,27 @@
 /* Minimap, full map and place names (js/ui/mapview.js, js/ui/mapclient.js). */
+
+/* the full map: pinch / wheel to zoom, drag to pan, tap to drop a marker */
+#fullmap canvas { touch-action: none; cursor: crosshair; }
+#fullmap .fm-x {
+  position: absolute; top: max(14px, env(safe-area-inset-top)); right: max(14px, env(safe-area-inset-right));
+  width: 56px; height: 56px; border-radius: 50%; border: 3px solid #fff; background: rgba(20, 16, 50, 0.8);
+  color: #fff; font: 700 26px/1 system-ui, sans-serif; cursor: pointer; pointer-events: auto; z-index: 2;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+#fullmap .fm-zoom {
+  position: absolute; right: max(14px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 10px; pointer-events: auto; z-index: 2;
+}
+#fullmap .fm-zoom button {
+  width: 56px; height: 56px; border-radius: 12px; border: 3px solid #fff; background: rgba(20, 16, 50, 0.8);
+  color: #fff; font: 700 30px/1 system-ui, sans-serif; cursor: pointer; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+#fullmap .fm-x:active, #fullmap .fm-zoom button:active { transform: scale(0.94); background: rgba(60, 50, 140, 0.9); }
+#fullmap .fm-close { font-size: 15px; color: #e8ecff; text-shadow: 0 1px 3px #000; }
+
+/* the minimap grows a little while you choose where to land */
+body.inbus #minimap { box-shadow: 0 0 0 3px rgba(255, 210, 63, 0.75), 0 4px 12px rgba(0, 0, 0, 0.5); }
+
+@media (max-height: 460px) {
+  #fullmap .fm-x, #fullmap .fm-zoom button { width: 46px; height: 46px; font-size: 22px; }
+}

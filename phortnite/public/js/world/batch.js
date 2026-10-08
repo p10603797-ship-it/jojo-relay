@@ -274,7 +274,7 @@ if (lL >= 0.0) {
     const H = d.houses;
     if (!H.length) return;
     // per house: bounds, top and average colours from its parts
-    const info = H.map(() => ({ x0: Infinity, z0: Infinity, x1: -Infinity, z1: -Infinity, y0: Infinity, y1: -Infinity, wall: [0, 0, 0, 0], roof: [0, 0, 0, 0] }));
+    const info = H.map(() => ({ x0: Infinity, z0: Infinity, x1: -Infinity, z1: -Infinity, y0: Infinity, y1: -Infinity, wall: [0, 0, 0, 0], roof: [0, 0, 0, 0], vol: 0 }));
     const avg = this.layers ? this.layers.looks.avg : null;
     for (const o of d.objects) {
       if (o.kind !== 'part' || o.house === undefined || !info[o.house] || o.look === 'glass') continue;
@@ -295,6 +295,7 @@ if (lL >= 0.0) {
       _c.setHex(partColor(o, H[o.house]));
       const a = avg ? avg[lookLayer(o.look)] : [0.6, 0.6, 0.6];
       const area = hx * hy + hz * hy + hx * hz;
+      I.vol += 8 * hx * hy * hz;
       const isRoof = o.look === 'roof' || o.look === 'shingle' || o.look === 'rooftile' || o.shape === 'prism' || !!o.ax;
       const t = isRoof ? I.roof : I.wall;
       t[0] += _c.r * a[0] * area; t[1] += _c.g * a[1] * area; t[2] += _c.b * a[2] * area; t[3] += area;
@@ -317,7 +318,12 @@ if (lL >= 0.0) {
       if (!(I.x1 > I.x0)) { I.x0 = I.x1 = H[h].x; I.z0 = I.z1 = H[h].z; I.y0 = I.y1 = H[h].y || 0; }
       const w = I.wall[3] ? [I.wall[0] / I.wall[3], I.wall[1] / I.wall[3], I.wall[2] / I.wall[3]] : [0.5, 0.48, 0.45];
       const r = I.roof[3] ? [I.roof[0] / I.roof[3], I.roof[1] / I.roof[3], I.roof[2] / I.roof[3]] : [w[0] * 0.8, w[1] * 0.8, w[2] * 0.8];
-      const X = [I.x0, I.x1], Y = [I.y0, I.y1], Z = [I.z0, I.z1];
+      // see-through structures (towers, masts, frames) get a thinner box, not a solid block
+      const boxVol = (I.x1 - I.x0) * (I.y1 - I.y0) * (I.z1 - I.z0);
+      const fill = boxVol > 0 ? I.vol / boxVol : 1;
+      const thin = fill < 0.18 ? Math.max(0.3, Math.sqrt(fill / 0.18)) : 1;
+      const mx = (I.x0 + I.x1) / 2, mz = (I.z0 + I.z1) / 2, hw = (I.x1 - I.x0) / 2 * thin, hd = (I.z1 - I.z0) / 2 * thin;
+      const X = [mx - hw, mx + hw], Y = [I.y0, I.y1], Z = [mz - hd, mz + hd];
       for (let f = 0; f < 5; f++) {
         const [nn, cs] = faces[f];
         const cc = f === 4 ? r : w;
