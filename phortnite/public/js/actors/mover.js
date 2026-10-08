@@ -35,6 +35,8 @@ export class Mover {
     // mode mutators (rules.speed / gravity / jump): multipliers on running speed, gravity and jump
     this.mods = { speed: 1, gravity: 1, jump: 1 };
     this.launched = false; // thrown into the air by launch() and not landed yet
+    this.glideAny = false; // glider redeploy whenever falling from high up (sky-spawn modes)
+    this.redeployT = 0;
     this._desired = { x: 0, y: 0, z: 0 };
     this.predicate = (c) => c.handle !== this.collider.handle;
   }
@@ -74,8 +76,20 @@ export class Mover {
     const mode = this.mode;
     if (mode === 'bus' || mode === 'dead') return ev;
 
+    // glider redeploy: falling from high up after a launch (pads) or in sky-spawn modes opens the
+    // glider again (checked a few times a second while falling)
+    if (mode === 'air' && (this.launched || this.glideAny) && v.y < -2) {
+      this.redeployT -= dt;
+      if (this.redeployT <= 0) {
+        this.redeployT = 0.15;
+        const h = this.physics.raycast(this.pos.x, this.pos.y, this.pos.z, 0, -1, 0, 600, RAY_STATIC);
+        this.heightAboveGround = h ? h.dist : Math.max(0, this.pos.y);
+        if (this.heightAboveGround > 15) this.mode = 'glide';
+      }
+    } else this.redeployT = 0;
+
     // height above the ground (for glider deploy)
-    if (mode === 'skydive' || mode === 'glide') {
+    if (this.mode === 'skydive' || this.mode === 'glide') {
       const h = this.physics.raycast(this.pos.x, this.pos.y, this.pos.z, 0, -1, 0, 600, RAY_STATIC);
       this.heightAboveGround = h ? h.dist : Math.max(0, this.pos.y);
       if (mode === 'skydive' && this.heightAboveGround < PLAYER.glideHeight) this.mode = 'glide';

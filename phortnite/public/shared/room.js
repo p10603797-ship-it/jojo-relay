@@ -796,8 +796,13 @@ export class Room {
       return;
     }
     if (this.elimDepth === 0) {
-      if (victim.respawnAt > 0) this.runtime.msNext = 0; // the respawn timer goes out right away
       this.checkWin();
+      // the respawn timer goes out right away
+      if (victim.respawnAt > 0 && (this.phase === 'match' || this.phase === 'bus')) {
+        this.runtime.msNext = 0;
+        const ms = this.runtime.modeState(this.now());
+        if (ms) this.broadcast(ms);
+      }
     }
   }
 

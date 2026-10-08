@@ -4,14 +4,20 @@
 
 const inGame = (p) => p.alive || p.respawnAt > 0;
 
-/** {team, reason} once at most one team is still in the game ({reason} alone if nobody is). */
+/**
+ * {team, reason} once at most one team is still in the game ({reason} alone if nobody is). A match
+ * that only ever had one team (Playground on your own, friends with no bots) never ends this way.
+ */
 export function lastTeamStanding(ctx, reason = 'last') {
-  let team = null;
+  let team = null, first = null, teams = 1;
   for (const p of ctx.players()) {
+    if (first === null) first = p.team;
+    else if (p.team !== first) teams = 2;
     if (!inGame(p)) continue;
     if (team === null) team = p.team;
     else if (p.team !== team) return null;
   }
+  if (teams < 2) return null;
   return team === null ? { reason } : { team, reason };
 }
 

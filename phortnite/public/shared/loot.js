@@ -198,7 +198,7 @@ export function cleanLoadout(lo) {
       out.slots.push({ k: s.k, r, m: Math.max(0, Math.min(WEAPONS[s.k].mag, s.m === undefined ? WEAPONS[s.k].mag : s.m | 0)) });
     } else if (own(HEALS, s.k)) {
       out.slots.push({ k: s.k, n: Math.max(1, Math.min(HEALS[s.k].stack, s.n | 0 || 1)) });
-    }
+    } else out.slots.push(null); // unknown item: an empty slot (the others keep their place)
   }
   while (out.slots.length && !out.slots[out.slots.length - 1]) out.slots.pop();
   if (lo.ammo && typeof lo.ammo === 'object') {

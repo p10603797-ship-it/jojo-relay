@@ -149,18 +149,23 @@ export function standable(world, x, z, destroyed = null) {
   return !world.solidNear(x, h + 0.9, z, destroyed, 0.45);
 }
 
+/** How many spawn spots to look for when spreading `teams` teams out. */
+const spotsFor = (teams) => Math.min(320, 48 + teams * 8);
+
 /**
  * Spots for spawning in an area: the world's spawnPoints inside it, plus sampled open land when
- * there are fewer than `want`. [{x, y, z}] with y = ground height.
+ * there are fewer than `want`. [{x, y, z}] with y = ground height. `base`: spots found before.
  */
-export function spawnCandidates(world, area, rng = Math.random, want = 48) {
-  const out = [];
+export function spawnCandidates(world, area, rng = Math.random, want = 48, base = null) {
+  const out = base ? base.slice() : [];
   const R = Math.max(10, area.r - SPAWN_MARGIN), R2 = R * R;
-  for (const s of world.spawnPoints || []) {
-    const dx = s.x - area.x, dz = s.z - area.z;
-    if (dx * dx + dz * dz <= R2 && s.y > 1.5) out.push({ x: s.x, y: s.y, z: s.z });
+  if (!base) {
+    for (const s of world.spawnPoints || []) {
+      const dx = s.x - area.x, dz = s.z - area.z;
+      if (dx * dx + dz * dz <= R2 && s.y > 1.5) out.push({ x: s.x, y: s.y, z: s.z });
+    }
   }
-  for (let t = 0; t < 600 && out.length < want; t++) {
+  for (let t = 0; t < want * 12 && out.length < want; t++) {
     const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * R;
     const x = area.x + Math.cos(a) * d, z = area.z + Math.sin(a) * d;
     if (Math.abs(x) > MAP.size / 2 - 4 || Math.abs(z) > MAP.size / 2 - 4) continue;
@@ -175,7 +180,6 @@ export function spawnCandidates(world, area, rng = Math.random, want = 48) {
  * 2 x MEMBER_RING of each other around it.
  */
 export function pickSpawns(world, area, players, rng = Math.random, cands = null) {
-  const C = cands || spawnCandidates(world, area, rng);
   const out = new Map();
   if (!players.length) return out;
   const byTeam = new Map();
@@ -185,6 +189,8 @@ export function pickSpawns(world, area, players, rng = Math.random, cands = null
     list.push(p);
   }
   const teams = [...byTeam.values()];
+  // more teams need more spots to spread them well
+  const C = cands && cands.length >= spotsFor(teams.length) ? cands : spawnCandidates(world, area, rng, spotsFor(teams.length), cands);
   if (!C.length) {
     // nowhere sensible: the area centre, spread out a little
     teams.forEach((list, ti) => list.forEach((p, i) => {
@@ -218,9 +224,14 @@ export function pickSpawns(world, area, players, rng = Math.random, cands = null
     list.forEach((p, i) => {
       let x = a.x, z = a.z;
       if (list.length > 1) {
-        const ang = turn + (i / list.length) * Math.PI * 2;
-        const tx = a.x + Math.cos(ang) * MEMBER_RING, tz = a.z + Math.sin(ang) * MEMBER_RING;
-        if (standable(world, tx, tz)) { x = tx; z = tz; } else { x = a.x + (i % 3 - 1) * 0.9; z = a.z + (Math.floor(i / 3) - 1) * 0.9; }
+        // around the team's spot; closer in (or another angle) when that is not open ground
+        found: for (const rad of [MEMBER_RING, 2.2, 1.2]) {
+          for (let k = 0; k < 4; k++) {
+            const ang = turn + ((i + k * 0.37) / list.length) * Math.PI * 2;
+            const tx = a.x + Math.cos(ang) * rad, tz = a.z + Math.sin(ang) * rad;
+            if (standable(world, tx, tz)) { x = tx; z = tz; break found; }
+          }
+        }
       }
       out.set(p.id, { x, y: world.heightAt(x, z), z });
     });
