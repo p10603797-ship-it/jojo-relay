@@ -1,9 +1,13 @@
 // Bot navigation (public/js/ai/nav.js): pure functions on a synthetic 1.6 km island with a river,
-// bridges and cliffs, and on today's world (whatever generateWorld builds).
+// bridges and cliffs, and on today's world (whatever generateWorld builds). At the end, the bot
+// brain's pure parts (js/ai/goals.js, farsim.js, buildfight.js) with small fakes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode } from '../public/js/ai/nav.js';
 import { generateWorld } from '../public/shared/worldgen.js';
+import * as goals from '../public/js/ai/goals.js';
+import { wantFar, FAR_IN, FAR_OUT } from '../public/js/ai/farsim.js';
+import { BuildFight, hasCone } from '../public/js/ai/buildfight.js';
 
 // ------------------------------------------------------------------ a synthetic island
 // 1600 m, 4 m cells: rolling land inside radius 700, a river from north to south carved to -2.5 m
@@ -334,4 +338,133 @@ test('nav: today\'s world builds within budget and connects its places', () => {
   assert.ok(steepRoutes <= pairs * 0.03, 'at most 3% take a steep step');
   assert.ok(R.length - down >= R.length * 0.9, 'nearly every place is on the same ground');
   assert.ok(wetDetour <= pairs * 0.01, 'at most 1% swim where a bridge exists');
+});
+
+// ------------------------------------------------------------------ the bot brain's pure parts
+// js/ai/goals.js (what the mode wants), js/ai/farsim.js (who gets the cheap simulation) and
+// js/ai/buildfight.js (piece pacing and the rules), with small fakes instead of a real Game.
+
+function fakeGame(rules = {}, extra = {}) {
+  const g = {
+    phase: 'match', time: 0, rules: { win: 'last', build: 'on', pvp: true, ...rules }, modeState: {}, roles: new Map(),
+    world: { data: { heightAt: () => 5, size: 640 } }, bots: new Map(), remotes: new Map(), me: null, area: null,
+    storm: { state: null }, spectateId: 0, camera: { position: { x: 0, y: 0, z: 0 } }, teams: new Map(),
+    friendly(a, b) { return a !== b && (this.teamOf(a) === this.teamOf(b)); },
+    teamOf(id) { const a = this.actorById(id); return a && a.team !== undefined ? a.team : id; },
+    roleOf(id) { return this.roles.get(id) ?? null; },
+    actorById(id) { if (this.me && this.me.id === id) return this.me; return this.bots.get(id) || this.remotes.get(id) || null; },
+    ...extra,
+  };
+  return g;
+}
+function fakeActor(g, id, x, z, o = {}) {
+  const a = {
+    id, game: g, pos: { x, y: 5, z }, alive: true, inBus: false, isBot: true, team: o.team, far: false, mode: 'ground', time: 0,
+    brain: { farChkT: 0, farWant: false, hurtNearT: -99, skill: 0.5, easy: false },
+    build: { busy: false }, nav: { ready: true },
+    isEnemy(b) { return b !== this && b.alive && !g.friendly(this.id, b.id); },
+    ...o,
+  };
+  return a;
+}
+
+test('bots: the mode decides the goal (hill, Juggernaut, zombies, survivors) and who is worth shooting', () => {
+  const out = {};
+  // King of the hill: onto the hill, and whoever stands on it is the target
+  let g = fakeGame({ win: 'koth' }, { modeState: { g: { hill: { x: 40, z: -20, r: 9 } } } });
+  let bot = fakeActor(g, 1, 0, 0);
+  g.bots.set(1, bot);
+  assert.equal(goals.modeGoal(bot, out), 'hill');
+  assert.ok(Math.hypot(out.x - 40, out.z + 20) < 9);
+  assert.equal(goals.targetBonus(bot, fakeActor(g, 2, 41, -21)) > 0, true);
+  assert.equal(goals.targetBonus(bot, fakeActor(g, 3, 80, 80)), 0);
+  // Juggernaut: everyone hunts the Juggernaut
+  g = fakeGame({ win: 'juggernaut' }, { modeState: { g: { j: 7 } } });
+  bot = fakeActor(g, 1, 0, 0);
+  const jugg = fakeActor(g, 7, 100, 50);
+  g.bots.set(1, bot); g.bots.set(7, jugg);
+  assert.equal(goals.modeGoal(bot, out), 'hunt');
+  assert.deepEqual([out.x, out.z], [100, 50]);
+  assert.equal(goals.targetBonus(bot, jugg), 45);
+  assert.equal(goals.modeGoal(jugg, out), '', 'the Juggernaut plays as usual');
+  // Infection: zombies chase the nearest survivor and never loot; survivors stick together
+  g = fakeGame({ win: 'infection' });
+  const z = fakeActor(g, 1, 0, 0, { team: 2 }), s1 = fakeActor(g, 2, 30, 0, { team: 1 }), s2 = fakeActor(g, 3, 90, 0, { team: 1 }), s3 = fakeActor(g, 4, 90, 40, { team: 1 });
+  for (const a of [z, s1, s2, s3]) g.bots.set(a.id, a);
+  g.roles.set(1, 'zombie');
+  assert.equal(goals.isHunter(z), true);
+  assert.equal(goals.wantsLoot(z), false);
+  assert.equal(goals.modeGoal(z, out), 'hunt');
+  assert.equal(out.x, 30, 'the nearest survivor');
+  assert.equal(goals.wantsLoot(s1), true);
+  assert.equal(goals.modeGoal(s1, out), 'group');
+  assert.ok(out.x > 60, 'toward the other survivors');
+  // Gun game: the ladder gives the guns; Playground: nobody is a target
+  assert.equal(goals.wantsLoot(fakeActor(fakeGame({ win: 'gungame' }), 1, 0, 0)), false);
+  assert.equal(goals.passive(fakeGame({ pvp: false })), true);
+  assert.equal(goals.passive(fakeGame()), false);
+  // the play area
+  g = fakeGame({}, { area: { x: 100, z: 0, r: 50 } });
+  assert.equal(goals.inArea(g, 120, 10), true);
+  assert.equal(goals.inArea(g, 0, 0), false);
+});
+
+test('bots: a human teammate within reach is followed when there is nothing else to do', () => {
+  const out = {};
+  const g = fakeGame({ teams: 2 });
+  const bot = fakeActor(g, 1, 0, 0, { team: 1 });
+  const me = fakeActor(g, 2, 40, 0, { team: 1, isBot: false });
+  g.bots.set(1, bot); g.me = me;
+  assert.equal(goals.modeGoal(bot, out), 'follow');
+  assert.ok(out.x > 25 && out.x < 40, 'just short of them');
+  me.team = 2;
+  assert.equal(goals.modeGoal(bot, out), '', 'not an enemy');
+});
+
+test('bots: far from every human (and the camera) a bot gets the cheap simulation', () => {
+  const g = fakeGame();
+  const me = fakeActor(g, 2, 0, 0, { isBot: false });
+  g.me = me;
+  const bot = fakeActor(g, 1, FAR_OUT + 20, 0);
+  g.bots.set(1, bot);
+  assert.equal(wantFar(bot, 0.016), true);
+  // coming back within FAR_OUT isn't enough to wake it, within FAR_IN is
+  bot.far = true;
+  bot.pos.x = (FAR_IN + FAR_OUT) / 2; bot.brain.farChkT = 0; g.time += 1;
+  assert.equal(wantFar(bot, 0.016), true, 'hysteresis');
+  bot.pos.x = FAR_IN - 5; bot.brain.farChkT = 0; g.time += 1;
+  assert.equal(wantFar(bot, 0.016), false);
+  // the camera counts as a human (spectating), and so does being shot by someone nearby
+  bot.far = false; bot.pos.x = 500; bot.brain.farChkT = 0; g.time += 1;
+  g.camera.position.x = 450;
+  assert.equal(wantFar(bot, 0.016), false, 'the camera is close');
+  g.camera.position.x = 0; bot.brain.farChkT = 0; g.time += 1; bot.time = 10; bot.brain.hurtNearT = 9;
+  assert.equal(wantFar(bot, 0.016), false, 'just shot by someone nearby');
+  bot.brain.hurtNearT = -99; bot.brain.farChkT = 0; g.time += 1;
+  g.spectateId = 1;
+  assert.equal(wantFar(bot, 0.016), false, 'spectated');
+  g.spectateId = 0; g.phase = 'bus'; bot.brain.farChkT = 0;
+  assert.equal(wantFar(bot, 0.016), false, 'only in the match');
+});
+
+test('bots: build fights place a piece every 0.1-0.3 s, box up with a roof, and obey the build rule', () => {
+  const placed = [];
+  const g = fakeGame();
+  const bot = fakeActor(g, 1, 0, 0, {
+    brain: { skill: 0.9, easy: false }, healT: -1, time: 0,
+    canAct: () => true, autoMat: () => true,
+    placeAt(type, yaw, pitch) { placed.push({ type, yaw, pitch, t: this.time }); return true; },
+  });
+  const B = new BuildFight(bot);
+  assert.equal(B.start('box', 0), true);
+  for (let i = 0; i < 300 && B.busy; i++) { bot.time += 1 / 60; B.update(1 / 60); }
+  assert.equal(placed.length, 5);
+  assert.deepEqual(placed.slice(0, 4).map((p) => p.type), ['w', 'w', 'w', 'w']);
+  assert.equal(placed[4].type, hasCone() ? 'c' : 'f', 'a cone roof when the game has cones');
+  assert.ok(placed[4].pitch > 0.55, 'the roof goes above our head');
+  for (let i = 1; i < placed.length; i++) assert.ok(placed[i].t - placed[i - 1].t >= 0.1 - 1e-9, 'never faster than one piece every 0.1 s');
+  assert.ok(placed[4].t - placed[0].t <= 4 * 0.3 + 0.05);
+  // a slow, easy bot builds more slowly; and nobody builds when the rules say no
+  g.rules.build = 'off';
+  assert.equal(B.start('wall', 0), false);
 });

@@ -50,6 +50,8 @@ const LOS_CHECKS = 3;     // candidates ray-tested per think (2 rays each at mos
 // health + shield: what everyone spawns with (all a player can assume about a stranger), and the most
 const HS_START = PLAYER.maxHp + PLAYER.startShield, HS_MAX = PLAYER.maxHp + PLAYER.maxShield;
 const SHOTGUN_NEAR = 10;  // m: inside this a shotgun is the gun
+const CALM_S = 60;        // s after landing spent looting rather than starting fights (rushers: RUSH_CALM_S)
+const RUSH_CALM_S = 15;
 
 // preferred engagement ranges [min, ideal, max] in m; guns not listed are derived from their stats
 const RANGES = { shotgun: [0, 7, 14], smg: [0, 12, 28], pistol: [0, 15, 35], ar: [8, 40, 120], sniper: [45, 110, 400], rocket: [12, 35, 80] };
@@ -223,7 +225,7 @@ export class Bot extends Combatant {
       stuckT: 0, stuckN: 0, lastPos: new THREE.Vector3(), moving: false, breakT: 0, breakX: 0, breakY: 0, breakZ: 0,
       progT: 0, progD: 0, progX: 0, progZ: 0, noProg: 0, detourT: 0, detourX: 0, detourZ: 0,
       glance: 0, glanceT: 1,
-      goal: null, goalT: 0, goalKind: '', dest: new THREE.Vector3(), destKind: '', lootRef: null, lootT: 0, badLoot: new Set(),
+      goal: null, goalT: 0, goalKind: '', dest: new THREE.Vector3(), destKind: '', lootRef: null, lootT: 0, badLoot: new Set(), badChest: new Set(),
       chestI: -1, harvest: null, treeT: 0,
       urgent: 0, safeKey: 0, safeX: 0, safeZ: 0,
       holdX: 0, holdZ: 0, holdSet: false, holdUntil: 0, campCool: 0, lookYaw: 0, lookT: 0,
@@ -232,7 +234,7 @@ export class Bot extends Combatant {
       // more of the same fight from something new)
       noiseT: -99, noiseT0: -99, noisePri: 0, noiseKind: '', noiseSrc: 0, noiseX: 0, noiseY: 0, noiseZ: 0, noiseD: 0,
       noiseTX: 0, noiseTZ: 0, noiseDelay: 0.3, noiseDone: true, noiseGo: false,
-      hurtT: -99, hurtNearT: -99, wallReq: false, buildT: 0, rampT: 0, ninetyT: 0, funT: rnd(10, 30), lowPlan: '',
+      hurtT: -99, hurtNearT: -99, wallReq: false, buildT: 0, rampT: 0, ninetyT: 0, funT: rnd(10, 30), lowPlan: '', boxT: -99,
       killT: -99, killX: 0, killY: 0, killZ: 0, danceT: 0,
       // set by the game while in the bus (dropAt: see below), the landing we picked
       landAt: null, landRegion: -1, dropPlan: null, skyT: -99, spread: false,
@@ -257,6 +259,9 @@ export class Bot extends Combatant {
   }
 
   static shotNoise(k) { return shotNoise(k); }
+
+  /** Preferred engagement range [min, ideal, max] (m) of a gun (weaponRange). */
+  rangeOf(k) { return weaponRange(k); }
 
   /** Set skill (0..1) and/or personality ('casual', 'rusher', 'camper', 'builder', 'goblin'). */
   configure(skill, personaKey) {
@@ -335,6 +340,31 @@ export class Bot extends Combatant {
       if (v > bestV) { bestV = v; best = i; }
     }
     return best;
+  }
+
+  /** A gun lying within r metres? */
+  gunNear(r) {
+    const p = this.pos, r2 = r * r;
+    for (const it of this.game.loot.items.values()) {
+      const dx = it.x - p.x, dz = it.z - p.z;
+      if (dx * dx + dz * dz < r2 && Math.abs(it.y - p.y) < 2 && has(WEAPONS, it.item.k) && !WEAPONS[it.item.k].melee) return true;
+    }
+    return false;
+  }
+
+  /**
+   * After a fight, the careful (and the builders) box up before they heal, like players do:
+   * starts the box and says so.
+   */
+  boxToHeal(r) {
+    const b = this.brain;
+    if (this.build.busy || this.time - b.boxT < 20 || (this.totalMats() < 50 && !this.infMats)) return false;
+    b.boxT = this.time; // (one try per fight)
+    if (Math.random() > (0.2 + 0.7 * Math.max(b.persona.build, b.persona.camp)) * b.buildK) return false;
+    const yaw = r ? Math.atan2(-(r.x - this.pos.x), -(r.z - this.pos.z)) : this.yaw;
+    if (!this.build.start('box', yaw)) return false;
+    b.lowPlan = 'box';
+    return true;
   }
 
   /** Healing worth stopping for: under 75 health or 50 shield, with something that helps. */
@@ -751,17 +781,21 @@ export class Bot extends Combatant {
         // losing a fight: box up and heal, run, or keep swinging
         const canBox = healS > 0 && this.build.can() && Math.random() < (0.25 + P.build * (0.4 + 0.5 * b.skill)) * b.buildK;
         b.lowPlan = canBox ? 'box' : P.aggro < 0.8 && Math.random() < 0.7 - P.aggro * 0.5 ? 'flee' : 'fight';
-        if (canBox) this.build.start('box', Math.atan2(-(r.x - this.pos.x), -(r.z - this.pos.z)));
+        if (canBox) { this.build.start('box', Math.atan2(-(r.x - this.pos.x), -(r.z - this.pos.z))); b.boxT = now; }
       }
       // the infected only have claws: run them down
       if (hunter) mode = d < 30 || threat ? 'melee' : 'travel';
       // no gun yet: swing at someone in our face, back off from someone close, else keep looting
-      else if (!gun) mode = d < 5 ? 'melee' : d < 25 || threat ? 'flee' : 'travel';
+      // no gun yet: grab one (there's usually one close by after landing); swing back only at
+      // someone hitting us when there's nothing to grab
+      else if (!gun) mode = d < 5 && threat && !this.gunNear(12) ? 'melee' : d < 25 && threat ? 'flee' : 'travel';
       else if (urg === 2 && d > 25 && !threat) mode = 'travel';
       else if (b.lowPlan === 'box' && this.build.busy) mode = 'box';
       else if (b.lowPlan === 'flee' && hpNow < 50 && now - b.hurtT < 6 && this.guessHp(t) > hpNow + 20) mode = 'flee';
       // barely kitted out and nobody's shooting at us: keep looting rather than take a long fight
-      else if (this.itemCount() < 2 && !threat && now - b.hurtT > 5 && d > 15) mode = 'travel';
+      else if (this.itemCount() < 3 && !threat && now - b.hurtT > 5 && d > 15) mode = 'travel';
+      // just landed: loot up first (watch them if patient), unless they're in our face
+      else if (this.calm(d, threat)) mode = P.camp >= 0.4 ? 'watch' : 'travel';
       else if (threat || d < reach) mode = 'fight';
       // out of range: the keen (or well kitted) close the distance, patient players keep an eye on
       // them, everyone else keeps looting and takes the fight if it comes to them
@@ -781,7 +815,7 @@ export class Bot extends Combatant {
       const settled = now - r.seenT > 3 && now - b.hurtT > 1.5;
       mode = urg === 2 || (!gun && !hunter) ? 'travel'
         : running ? 'flee'
-        : settled && this.wantsHeal() ? 'heal'
+        : settled && this.wantsHeal() ? this.boxToHeal(r) ? 'box' : 'heal'
         : healS > 0 && hpNow < 75 && now - r.seenT > 1.5 && now - b.hurtT > 1.5 ? 'heal'
         : far || b.lowPlan === 'flee' ? 'travel' : 'search';
     } else if (b.danceT > 0) mode = 'emote';
@@ -795,6 +829,15 @@ export class Bot extends Combatant {
     if (mode === 'travel' && (b.planT <= 0 || !b.destKind)) this.planTravel(false);
     this.idleBuild(mode);
     this.tidyInventory();
+  }
+
+  /**
+   * The first CALM_S after landing: loot first, like people do. Nobody starts a fight unless the
+   * target is right in front of us (or shooting at us); rushers don't care.
+   */
+  calm(d, threat) {
+    const b = this.brain;
+    return !threat && d > 10 && this.time - b.skyT < (b.persona.aggro < 0.9 ? CALM_S : RUSH_CALM_S) && modeKey(this.game) === 'br';
   }
 
   /** King of the hill: standing on it (nothing else going on: hold it). */
@@ -846,6 +889,20 @@ export class Bot extends Combatant {
     }
     // loot worth the detour (more of a detour for goblins, none when the storm is on us), plus
     // whatever our last kill dropped
+    // a gun in hand and no materials at all: a tree or two first (fights need walls)
+    if (!far && !urg && gun && b.harvest === null && this.totalMats() < 30 && now > b.treeT && buildRule(g) === 'on' && !this.infMats && !passive(g)) {
+      b.treeT = now + 4;
+      b.harvest = this.nearestTree(20);
+      if (b.harvest !== null) {
+        const o = g.world.objs[b.harvest];
+        if (o && o.alive) { b.destKind = 'tree'; b.dest.set(o.o.x, o.o.y, o.o.z); return; }
+        b.harvest = null;
+      }
+    }
+    if (b.harvest !== null && b.destKind === 'tree' && this.totalMats() < 60) {
+      const o = g.world.objs[b.harvest];
+      if (o && o.alive) return; // keep at it
+    }
     if (loot) {
       const radius = urg === 2 ? 5 : urg ? 12 : !gun ? 50 : 15 + 25 * P.loot;
       const it = this.bestLoot(radius, now - b.killT < 25);
@@ -858,7 +915,7 @@ export class Bot extends Combatant {
     b.lootRef = null;
     if (loot && urg < 2) {
       const c = g.nearestChest(this.pos, urg ? 10 : !gun ? 40 : 10 + 25 * P.loot);
-      if (c) { b.destKind = 'chest'; b.chestI = c.i; b.dest.set(c.x, c.y, c.z); return; }
+      if (c && !b.badChest.has(c.i)) { b.destKind = 'chest'; b.chestI = c.i; b.dest.set(c.x, c.y, c.z); return; }
     }
     // mats: builders keep a big stack, everyone else enough for a few fights
     const matsOk = (buildRule(g) !== 'on' || this.infMats || this.infinite) && !passive(g);
@@ -1081,6 +1138,7 @@ export class Bot extends Combatant {
         const ld2 = (l.x - s.x) ** 2 + (l.z - s.z) ** 2;
         if (ld2 < 100) score -= 100;
         if (ld2 < 625) near++;
+        else if (ld2 < 1600) score -= 25 * (1 - P.hot); // the careful keep their distance
       }
       if (near >= 2) score -= 80;
       if (score > bestS) { bestS = score; best = s; }
@@ -1288,7 +1346,7 @@ export class Bot extends Combatant {
       // there (or no way there): something else next time we think
       if (r < 0) {
         if (b.lootRef) b.badLoot.add(b.lootRef.id);
-        if (b.destKind === 'chest') b.chestI = -1;
+        if (b.destKind === 'chest') { b.badChest.add(b.chestI); if (b.badChest.size > 24) b.badChest.clear(); b.chestI = -1; }
         b.harvest = null;
         b.goalT = 0;
         b.safeKey = 0;

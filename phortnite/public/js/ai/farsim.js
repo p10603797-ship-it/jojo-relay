@@ -9,8 +9,8 @@
 //    storm, siphon and modes see nothing different
 // Waking up snaps the capsule to open ground (never inside a wall or a building).
 import { WEAPONS, HEALS, ANIM, PLAYER } from '../../shared/constants.js';
-import { weaponRange } from '../actors/bot.js';
-import { passive, buildRule } from './goals.js';
+import { passive, buildRule, isHunter, modeKey } from './goals.js';
+import { hasCone } from './buildfight.js';
 
 export const FAR_OUT = 180, FAR_IN = 160;
 const CHECK_S = 0.5;          // how often a bot asks whether it is far
@@ -21,14 +21,16 @@ const has = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.c
 
 // ------------------------------------------------------------------ who could see a bot
 const _hum = { g: null, t: -1, n: 0, xs: new Float32Array(64), zs: new Float32Array(64) };
+function addHuman(x, z) {
+  if (_hum.n < 64) { _hum.xs[_hum.n] = x; _hum.zs[_hum.n] = z; _hum.n++; }
+}
 /** Positions of every human in the session plus the camera (rebuilt once per game frame). */
 function humans(g) {
   if (_hum.g === g && _hum.t === g.time) return _hum;
   _hum.g = g; _hum.t = g.time; _hum.n = 0;
-  const add = (x, z) => { if (_hum.n < 64) { _hum.xs[_hum.n] = x; _hum.zs[_hum.n] = z; _hum.n++; } };
-  if (g.me && g.me.alive && !g.me.inBus) add(g.me.pos.x, g.me.pos.z);
-  for (const r of g.remotes.values()) if (!r.isBot && r.alive !== false) add(r.pos.x, r.pos.z);
-  if (g.camera) add(g.camera.position.x, g.camera.position.z);
+  if (g.me && g.me.alive && !g.me.inBus) addHuman(g.me.pos.x, g.me.pos.z);
+  for (const r of g.remotes.values()) if (!r.isBot && r.alive !== false && r.hasState !== false) addHuman(r.pos.x, r.pos.z);
+  if (g.camera) addHuman(g.camera.position.x, g.camera.position.z);
   return _hum;
 }
 
@@ -52,8 +54,9 @@ export function wantFar(bot, dt) {
   if ((b.farChkT -= dt) > 0) return b.farWant;
   b.farChkT = CHECK_S * (0.8 + Math.random() * 0.4);
   let want = false;
+  // (floor is lava: standing on what you build is the game, so always the real thing)
   if (g.phase === 'match' && bot.alive && !bot.inBus && g.spectateId !== bot.id && bot.nav && bot.nav.ready
-    && bot.time - b.hurtNearT > 4 && !bot.build.busy) {
+    && bot.time - b.hurtNearT > 4 && !bot.build.busy && modeKey(g) !== 'lava') {
     const m = bot.mode;
     const r = bot.far ? FAR_IN : FAR_OUT;
     if ((bot.far || m === 'ground' || m === 'swim') && humanDist2(g, bot.pos.x, bot.pos.z) > r * r) want = true;
@@ -75,6 +78,7 @@ export function enterFar(bot) {
   b.wallReq = false;
   bot.build.clear();
   bot.mover.vel.set(0, 0, 0);
+  bot.mover.groundInfo = null;
 }
 
 /** Back to the full simulation: the capsule on open ground under us. */
@@ -129,9 +133,16 @@ export function farUpdate(bot, dt) {
   }
   // standing still while fighting or healing, otherwise along the route
   let moving = false;
-  if (!b.farTarget && b.farHealT < 0 && b.destKind) {
+  // an item we can't get (no room for it, gone, somewhere we can't reach): forget it
+  if (b.destKind === 'loot' && b.lootRef && bot.time - b.lootT > 10) {
+    b.badLoot.add(b.lootRef.id); if (b.badLoot.size > 24) b.badLoot.clear();
+    b.destKind = ''; b.lootRef = null; b.planT = 0;
+  }
+  if ((!b.farTarget || isHunter(bot)) && b.farHealT < 0 && b.destKind) {
     bot.navGoal(b.dest);
-    const r = bot.follow.step(bot.pos.x, bot.pos.y, bot.pos.z, bot.time, dt);
+    // (sliding along the ground, a spot upstairs counts as reached when we're under it)
+    const under = Math.hypot(b.dest.x - bot.pos.x, b.dest.z - bot.pos.z) < 2;
+    const r = under ? 0 : bot.follow.step(bot.pos.x, bot.pos.y, bot.pos.z, bot.time, dt);
     if (r === 1) {
       const dx = bot.follow.tx - bot.pos.x, dz = bot.follow.tz - bot.pos.z, l = Math.hypot(dx, dz);
       if (l > 0.05) {
@@ -150,6 +161,7 @@ export function farUpdate(bot, dt) {
       }
     } else if (r === 0 || r === -1) {
       if (r === -1 && b.lootRef) b.badLoot.add(b.lootRef.id);
+      if (r === -1 && b.destKind === 'chest') b.badChest.add(b.chestI);
       b.destKind = ''; b.planT = 0;
       if (r === -1) b.goalT = 0;
     }
@@ -173,11 +185,11 @@ function farThink(bot) {
   if (b.farHealT < 0) {
     for (const it of g.loot.items.values()) {
       const dx = it.x - bot.pos.x, dz = it.z - bot.pos.z;
-      if (dx * dx + dz * dz > 9 || Math.abs(it.y - bot.pos.y) > 3 || bot.pendingPick.has(it.id)) continue;
+      if (dx * dx + dz * dz > 9 || Math.abs(it.y - bot.pos.y) > 6 || bot.pendingPick.has(it.id)) continue;
       if (bot.lootValue(it.item) > 0) bot.grab(it);
     }
-    const c = g.nearestChest(bot.pos, 5);
-    if (c) g.openChest(bot, c.i);
+    const c = g.nearestChest(bot.pos, 6);
+    if (c && Math.hypot(c.x - bot.pos.x, c.z - bot.pos.z) < 4.5) g.openChest(bot, c.i);
   }
   // heal up when nothing is going on
   if (b.farHealT < 0 && !b.farTarget && bot.time - b.hurtT > 4) {
@@ -207,30 +219,41 @@ function farThink(bot) {
 // time spent strafing, reloading and re-peeking (DUTY).
 const _fs = { g: null, t: -99 };
 const _far = [];
-const DUTY = 0.45;
+const DUTY = 0.3;            // share of a fight spent actually shooting
+const SIGHT = 0.4;            // chance a sight line is open (no house, tree or hill in the way)
 
 function noticeRange(b) { return 55 + 55 * b.skill; }
 
-/** Materials for pieces nobody sees go down (most plentiful material first). */
-function spend(a, n) {
-  if (a.infMats || a.infinite) return true;
-  const m = a.inv.mats;
-  const k = m.wood >= m.stone && m.wood >= m.metal ? 'wood' : m.stone >= m.metal ? 'stone' : 'metal';
-  if (m[k] < n) return false;
-  m[k] -= n;
-  return true;
+/**
+ * A real build piece from a far bot (networked and paid for like any other: someone walking by
+ * later finds the fight's walls). The rules decide whether bots build at all.
+ */
+function farPiece(a, type, yaw, pitch) {
+  if (buildRule(a.game) === 'off' || !a.autoMat()) return false;
+  return a.placeAt(type, yaw, pitch);
+}
+
+/** Box up: four walls and a roof (a cone when the game has it). True if it went up. */
+function farBox(a) {
+  if (buildRule(a.game) === 'off' || a.totalMats() < 50) return false;
+  let n = 0;
+  for (let i = 0; i < 4; i++) if (farPiece(a, 'w', a.yaw + i * Math.PI / 2, 0)) n++;
+  if (!(hasCone() && farPiece(a, 'c', a.yaw, 0.7))) farPiece(a, 'f', a.yaw, 0.7);
+  return n >= 3;
 }
 
 /** Would this far bot take a fight with o at distance d (the brain's decide(), roughly)? */
 function wantsFight(a, o, d, now) {
   const b = a.brain, P = b.persona;
+  if (isHunter(a)) return d < 30; // the infected run them down (their goal is the nearest survivor)
   if (!a.hasGun()) return false;
   const threat = now - b.hurtT < 4;
   if (b.urgent === 2 && d > 25 && !threat) return false;
   if (a.itemCount() < 2 && !threat && d > 15) return false;
+  if (a.calm(d, threat)) return false;
   const s = a.bestWeaponFor(d);
   if (s < 0) return false;
-  const rg = weaponRange(a.inv.slots[s].k);
+  const rg = a.rangeOf(a.inv.slots[s].k);
   const reach = Math.min(rg[2] * 1.2, rg[1] * 2 * (0.5 + P.aggro));
   return threat || d < reach || P.aggro >= 0.7 || (P.aggro >= 0.4 && a.gunCount() >= 2);
 }
@@ -263,7 +286,7 @@ export function farFights(g) {
       if (best) {
         const d = Math.sqrt(bd);
         // noticing takes a moment: about a second up close, several at the edge of sight
-        const pNotice = (0.15 + 0.6 * (1 - d / (R * 1.5))) * (best.time - best.lastShot < 1 ? 1.6 : 1) * dt;
+        const pNotice = (0.15 + 0.6 * (1 - d / (R * 1.5))) * (best.time - best.lastShot < 1 ? 1.6 : 1) * SIGHT * dt;
         if (Math.random() < pNotice && wantsFight(a, best, d, now)) t = best;
       }
     }
@@ -276,19 +299,27 @@ export function farFights(g) {
     if (a.hp + a.sh < 70 && ab.farHealT < 0 && now > ab.farCoverT) {
       const hs = a.healSlot();
       if (hs > 0 && Math.random() < 0.5 + 0.4 * ab.persona.build) {
-        if (spend(a, 40)) ab.farCoverT = now + HEALS[a.inv.slots[hs].k].time + 0.5;
+        if (farBox(a)) ab.farCoverT = now + HEALS[a.inv.slots[hs].k].time + 0.5;
         ab.farHealT = 0; ab.farHealSlot = hs;
         a.select(hs);
         continue;
       }
     }
     if (ab.farHealT >= 0) continue;
+    if (isHunter(a)) {
+      // claws: a swing now and then once they've caught up
+      if (d < 3.5 && Math.random() < WEAPONS.pickaxe.rate * dt * (0.4 + 0.3 * ab.skill)) {
+        if (a.inv.sel !== 0) a.select(0);
+        g.send({ t: 'hit', id: a.id, tg: t.id, w: 'pickaxe', r: 0, d: 1, n: 1, nh: 0 });
+      }
+      continue;
+    }
     const slot = a.bestWeaponFor(d);
     if (slot > 0 && slot !== a.inv.sel) a.select(slot);
     const cur = a.current();
     if (!cur || !has(WEAPONS, cur.k) || WEAPONS[cur.k].melee) continue;
     const w = WEAPONS[cur.k];
-    const rg = weaponRange(cur.k);
+    const rg = a.rangeOf(cur.k);
     if (d > rg[2] * 1.3) continue; // out of this gun's range: closing in
     // hit chance: skill, how well the gun suits the range; easy bots miss a lot more
     let p = (0.12 + 0.35 * ab.skill) * 0.75;
@@ -297,7 +328,10 @@ export function farFights(g) {
     if (ab.easy) p *= 0.55;
     // the target behind a wall it just put up takes nothing
     const covered = now < t.brain.farCoverT;
-    const shots = Math.max(1, Math.round(w.rate * dt * DUTY * (w.burst || 1) * (0.7 + Math.random() * 0.6)));
+    // shots this tick: the gun's rate over the time spent shooting (a bolt-action sniper gets one
+    // now and then, an SMG a handful)
+    const shots = Math.floor(w.rate * dt * DUTY * (w.burst || 1) * (0.7 + Math.random() * 0.6) + Math.random());
+    if (!shots) continue;
     const pellets = w.pellets || 1;
     let hit = false;
     for (let k = 0; k < shots && t.alive && !covered; k++) {
@@ -317,7 +351,8 @@ export function farFights(g) {
     if (!tb.farTarget) tb.farTarget = a;
     if (hit) {
       tb.hurtT = now;
-      if (now > tb.farCoverT + 1 && buildRule(g) !== 'off' && Math.random() < (0.3 + 0.6 * tb.persona.build * (0.5 + 0.5 * tb.skill)) * tb.buildK && spend(t, 10)) {
+      if (now > tb.farCoverT + 1 && Math.random() < (0.3 + 0.6 * tb.persona.build * (0.5 + 0.5 * tb.skill)) * tb.buildK
+        && farPiece(t, 'w', Math.atan2(t.pos.x - a.pos.x, t.pos.z - a.pos.z), 0)) {
         tb.farCoverT = now + 0.8 + Math.random();
       }
     }

@@ -14,8 +14,12 @@
 //   errors      page errors                                                      0
 //
 //   node tools/botmetrics.mjs [--runs 3] [--bots 19] [--minutes 6] [--steps 4] [--mode <id>]
-//        [--skill normal|easy|hard|mixed] [--perf 30] [--skills] [--park follow|center|sea]
+//        [--skill normal|easy|hard|mixed] [--perf 30] [--skills] [--cost] [--park follow|center|sea]
 //        [--overlay <public dir>] [--url <http://...>] [--out <file.json>] [--log]
+//
+// --cost repeats the audit's bot-cost measurement (scratchpad audit/tech/botcost.mjs): 0, 10 and
+// 30 bots dropped from the bus with the player, 40 s to land, then the mean Game.update +
+// World.update time over 600 frames (the 'today: 4.36 ms with 30 bots' number).
 //
 // The player is a ghost observer (bots ignore it and it can't be hurt): with --park follow (the
 // default) it hovers near a bot and switches to another every 25 s, like a spectator, so the bots
@@ -45,6 +49,7 @@ const MODE = opt('mode', null);
 const SKILL = opt('skill', null);
 const PERF = opt('perf', null);
 const SKILLS = !!opt('skills', false);
+const COST = !!opt('cost', false);
 const PARK = opt('park', 'follow');
 const OVERLAY = opt('overlay', null);
 const URL0 = opt('url', null);
@@ -208,7 +213,14 @@ function pageSetup(cfg) {
   };
   const oElim = g.on_elim;
   g.on_elim = function (m) {
-    M.elims.push({ t: +simT().toFixed(1), v: m.v, k: m.k, c: m.c, bv: isBot(m.v), far: !!(g.bots.get(m.v) || {}).far });
+    const V = g.bots.get(m.v), K = g.bots.get(m.k);
+    M.elims.push({
+      t: +simT().toFixed(1), v: m.v, k: m.k, c: m.c, bv: isBot(m.v), far: !!(V || {}).far, kfar: !!(K || {}).far,
+      d: V && K ? Math.round(Math.hypot(V.pos.x - K.pos.x, V.pos.z - K.pos.z)) : -1,
+      vItems: V && V.itemCount ? V.itemCount() : -1, kItems: K && K.itemCount ? K.itemCount() : -1,
+      since: M.landT[m.v] !== undefined ? +(simT() - M.landT[m.v]).toFixed(0) : -1,
+      w: K && K.current() ? K.current().k : '',
+    });
     return oElim.call(this, m);
   };
   const oBuild = g.tryPlaceBuild.bind(g);
@@ -287,13 +299,17 @@ function pageSetup(cfg) {
       alive60: M.alive60, alive60Pct: M.alive60 ? +(100 * M.alive60.alive / M.alive60.of).toFixed(1) : null,
       regions: [...new Set(Object.values(M.land))].filter((r) => r !== '(open)').length, landings: M.land,
       chests: M.chests, picks: M.picks, hits: M.hits, farHits: M.farHits, hitRate: +(M.hits / Math.max(1, M.shots)).toFixed(3),
-      elims: M.elims.length, elimTimes: M.elims.map((e) => e.t), byCause: M.elims.reduce((o, e) => { o[e.c || 'shot'] = (o[e.c || 'shot'] || 0) + 1; return o; }, {}),
+      elims: M.elims.length, elimTimes: M.elims.map((e) => e.t), elimList: M.elims, byCause: M.elims.reduce((o, e) => { o[e.c || 'shot'] = (o[e.c || 'shot'] || 0) + 1; return o; }, {}),
       farElims: M.elims.filter((e) => e.far).length,
       farPct: +(100 * M.farSamples / Math.max(1, M.botSamples)).toFixed(1),
       botMsPerFrame: +(M.botMs / Math.max(1, M.frames)).toFixed(3), botMaxMs: +M.botMax.toFixed(2), updMsPerFrame: +(M.updMs / Math.max(1, M.frames)).toFixed(2),
       frames: M.frames,
       modes: M.modeHist, stuckBy: M.stuckBy || {},
       mats: [...g.bots.values()].filter((b) => b.alive).map((b) => b.totalMats()),
+      survivors: [...g.bots.values()].filter((b) => b.alive).map((b) => ({
+        id: b.id, hp: Math.round(b.hp), sh: Math.round(b.sh), far: !!b.far, mode: b.brain.mode, heals: M.heals[b.id] || 0,
+        inv: b.inv.slots.slice(1).map((x) => (x ? `${x.k}${x.n ? `x${x.n}` : ''}` : '-')).join(' '),
+      })),
       nav: nav ? { buildMs: +nav.buildMs.toFixed(1), queries: nav.stats.queries, cacheHits: nav.stats.hits, avgMs: +(nav.stats.ms / Math.max(1, nav.stats.queries)).toFixed(3), maxMs: +nav.stats.maxMs.toFixed(2), fails: nav.stats.fails, flows: nav.stats.flows, flowMs: +nav.stats.flowMs.toFixed(1), padsOn: nav.padsOn, kb: Math.round(nav.bytes() / 1024) } : null,
       hitsBy: M.hitsBy, shotsBy: M.shotsBy, skillOf, ids, timeline: M.timeline,
     };
@@ -380,6 +396,46 @@ async function runMatch(browser, url, cfg) {
   return sum;
 }
 
+// ------------------------------------------------------------------ the audit's cost measurement
+async function runCost(browser, url) {
+  const page = await browser.newPage({ viewport: { width: 640, height: 400 } });
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
+  await page.addInitScript(() => {
+    try { localStorage.setItem('phortnite.settings', JSON.stringify({ name: 'Cost', skin: 1, quality: 'low', autoFire: false, music: 0 })); } catch (e) { /* private */ }
+  });
+  await page.goto(url);
+  await page.waitForFunction(() => window.__phortnite && window.__phortnite.world, null, { timeout: 180000 });
+  await page.evaluate(async () => {
+    const app = window.__phortnite, g = app.game;
+    if (!(g && g.me && g.phase === 'lobby') && typeof app.playSolo === 'function') await app.playSolo();
+  });
+  await page.waitForFunction(() => { const g = window.__phortnite.game; return g && g.me && g.phase === 'lobby'; }, null, { timeout: 120000 });
+  await page.evaluate(() => { window.__phortnite.renderer.render = () => {}; });
+  const out = {};
+  for (const n of [0, 10, 30]) {
+    await page.evaluate((nn) => { const g = window.__phortnite.game; g.send({ t: 'tweak', bots: nn }); g.startMatch(nn, 0); }, n);
+    await page.waitForFunction(() => window.__phortnite.game.phase === 'bus', null, { timeout: 60000 });
+    await page.evaluate(() => { const g = window.__phortnite.game; g.dropFromBus(g.me); for (const bt of g.bots.values()) g.dropFromBus(bt); });
+    await page.evaluate(() => { const g = window.__phortnite.game; for (let i = 0; i < 40 * 60; i++) g.update(1 / 60); });
+    const r = await page.evaluate(() => {
+      const g = window.__phortnite.game, a = window.__phortnite;
+      const t0 = performance.now();
+      for (let i = 0; i < 600; i++) { g.update(1 / 60); a.world.update(1 / 60, a.camera, g.me.pos, g); }
+      const ms = (performance.now() - t0) / 600;
+      const far = [...g.bots.values()].filter((x) => x.far).length;
+      return { msPerFrame: +ms.toFixed(2), bots: g.bots.size, alive: [...g.bots.values()].filter((x) => x.alive).length, far };
+    });
+    out[n] = r;
+    console.log(`  cost ${n} bots: ${JSON.stringify(r)}`);
+    await page.evaluate(() => { window.__phortnite.game.send({ t: 'end' }); });
+    await page.waitForFunction(() => window.__phortnite.game.phase === 'lobby', null, { timeout: 60000 });
+  }
+  out.errors = errors;
+  await page.close();
+  return out;
+}
+
 // ------------------------------------------------------------------ targets
 function verdict(runs, perf, skills, big) {
   const avg = (k) => runs.reduce((s, r) => s + (r[k] ?? 0), 0) / Math.max(1, runs.length);
@@ -403,14 +459,19 @@ function verdict(runs, perf, skills, big) {
   return out;
 }
 
+
 async function main() {
   const { chromium } = await loadPlaywright();
   let server = null, url = URL0;
   if (!url) { server = await startServer(); url = `http://127.0.0.1:${server.address().port}/`; }
   const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   const base = { bots: BOTS, minutes: MINUTES, steps: STEPS, mode: MODE, skill: SKILL, park: PARK, log: LOG, perf: false, timeoutMin: 60 };
-  const report = { url, overlay: OVERLAY, runs: [], perf: null, skills: null };
+  const report = { url, overlay: OVERLAY, runs: [], perf: null, skills: null, cost: null };
   try {
+    if (COST) {
+      console.log('cost: the audit\'s measurement (0 / 10 / 30 bots dropped with the player)');
+      report.cost = await runCost(browser, url);
+    }
     for (let i = 0; i < RUNS; i++) {
       console.log(`match ${i + 1}/${RUNS}: ${BOTS} bots, ${MINUTES} min${MODE ? `, mode ${MODE}` : ''}${SKILL ? `, ${SKILL} bots` : ''}, park ${PARK}`);
       const r = await runMatch(browser, url, base);
@@ -442,6 +503,7 @@ async function main() {
   }
   const big = report.runs.some((r) => r.size > 1000);
   report.verdict = verdict(report.runs, report.perf, report.skills, big);
+  if (report.cost && report.cost[30]) report.verdict.cost30 = [report.cost[30].msPerFrame, '<= 2.5 (desktop; audit before: 4.36)', report.cost[30].msPerFrame <= 2.5];
   console.log('VERDICT', JSON.stringify(report.verdict, null, 1));
   if (OUT) fs.writeFileSync(OUT, JSON.stringify(report, null, 1));
 }

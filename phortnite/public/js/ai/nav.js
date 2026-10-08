@@ -660,11 +660,14 @@ export class Nav {
     heap.push(s, h(s));
     const extra = this.padsOn && this.extra.size ? this.extra : null;
     const bl = blocked && blocked.size ? blocked : null;
+    // with links blocked the goal may be cut off: don't search the whole island to find out
+    let budget = bl ? 4000 : Infinity;
     let found = false;
     while (heap.size) {
       const u = heap.pop();
       if (closed[u] === stamp) continue;
       closed[u] = stamp;
+      if (--budget < 0) break;
       if (u === goal) { found = true; break; }
       const gu = G[u];
       for (let d = 0; d < 8; d++) {
@@ -939,6 +942,7 @@ export class PathFollower {
     this.pad = false;       // the current link is a launch pad throw
     this.replans = 0;
     this.flowKey = '';
+    this.flowGx = NaN; this.flowGz = NaN;
     this.flowOff = 0;
   }
 
@@ -964,7 +968,8 @@ export class PathFollower {
    * (x, y, z) inside it. After getting stuck on the way, routes are planned (A*) for a while.
    */
   useFlow(f, px, pz, x, y, z, t) {
-    if (this.flowKey === f.key && !this.plan) return;
+    if (this.flowKey === f.key && this.flowGx === x && this.flowGz === z) return;
+    this.flowKey = f.key; this.flowGx = x; this.flowGz = z;
     if (t < this.flowOff) { this.goal(x, y, z); return; }
     const nav = this.nav;
     const nodes = nav.flowPath(f, nav.nodeAt(px, pz, 3));
@@ -974,7 +979,6 @@ export class PathFollower {
     this.i = 1;
     this.plan = false; this.direct = false; this.stuckN = 0;
     this.bestD = Infinity; this.progT = 0;
-    this.flowKey = f.key;
   }
 
   /** Seconds without progress on the current link (0..STUCK_S). */
