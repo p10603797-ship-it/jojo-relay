@@ -850,17 +850,23 @@ export class Nav {
         if (g2 >= 0 && g2 !== g) nodes = this.path(s, g2, blocked, t);
       }
       if (!nodes) return null;
-      for (let k = 0; k < nodes.length; k++) {
-        const n = nodes[k];
-        if (k > 0) {
-          const via = this.viaOf(nodes[k - 1], n);
-          if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, -n - 2);
-        }
-        out.push(this.nodeX[n], NaN, this.nodeZ[n], n);
-      }
+      this.nodePts(nodes, out);
     }
     for (let k = 0; k < post.length; k++) out.push(post[k]);
     if (!rb) out.push(bx, by, bz, -1);
+    return out;
+  }
+
+  /** Waypoints [x, y, z, code, ...] along a node path (with the corners of links that bend). */
+  nodePts(nodes, out = []) {
+    for (let k = 0; k < nodes.length; k++) {
+      const n = nodes[k];
+      if (k > 0) {
+        const via = this.viaOf(nodes[k - 1], n);
+        if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, -n - 2);
+      }
+      out.push(this.nodeX[n], NaN, this.nodeZ[n], n);
+    }
     return out;
   }
 
@@ -932,11 +938,13 @@ export class PathFollower {
     this.tx = 0; this.ty = 0; this.tz = 0;
     this.pad = false;       // the current link is a launch pad throw
     this.replans = 0;
+    this.flowKey = '';
+    this.flowOff = 0;
   }
 
   reset() {
     this.pts = null; this.i = 0; this.gx = NaN; this.plan = true; this.direct = false; this.retryT = 0;
-    this.bestD = Infinity; this.progT = 0; this.stuckN = 0; this.pad = false;
+    this.bestD = Infinity; this.progT = 0; this.stuckN = 0; this.pad = false; this.flowKey = '';
   }
 
   /** Where to go. A goal that moved more than `slack` metres is planned again. */
@@ -944,12 +952,30 @@ export class PathFollower {
     const dx = x - this.gx, dz = z - this.gz;
     if (!(dx * dx + dz * dz <= slack * slack) || Math.abs(y - this.gy) > 3) {
       this.gx = x; this.gy = y; this.gz = z;
-      this.plan = true; this.stuckN = 0; this.retryT = 0;
+      this.plan = true; this.stuckN = 0; this.retryT = 0; this.flowKey = '';
     }
   }
 
   /** The route has been planned and is being walked (not just heading straight at the goal). */
   get routed() { return !!this.pts && !this.direct; }
+
+  /**
+   * Rotating into the storm's next circle: follow the shared flow field (no A* query) to the spot
+   * (x, y, z) inside it. After getting stuck on the way, routes are planned (A*) for a while.
+   */
+  useFlow(f, px, pz, x, y, z, t) {
+    if (this.flowKey === f.key && !this.plan) return;
+    if (t < this.flowOff) { this.goal(x, y, z); return; }
+    const nav = this.nav;
+    const nodes = nav.flowPath(f, nav.nodeAt(px, pz, 3));
+    if (!nodes || nodes.length < 2) { this.goal(x, y, z); return; }
+    this.gx = x; this.gy = y; this.gz = z;
+    this.pts = nav.nodePts(nodes);
+    this.i = 1;
+    this.plan = false; this.direct = false; this.stuckN = 0;
+    this.bestD = Infinity; this.progT = 0;
+    this.flowKey = f.key;
+  }
 
   /** Seconds without progress on the current link (0..STUCK_S). */
   get stalled() { return this.progT; }
@@ -1038,6 +1064,7 @@ export class PathFollower {
     this.stuckN++;
     this.plan = true;
     this.retryT = 0;
+    if (this.flowKey) { this.flowKey = ''; this.flowOff = t + 10; } // the flow field led us here: plan around it
     this.bestD = Infinity; this.progT = 0;
     for (const [k, until] of this.blocked) if (until <= t) this.blocked.delete(k);
   }
@@ -1047,7 +1074,8 @@ export class PathFollower {
     this.plan = false;
     this.i = 0;
     this.bestD = Infinity; this.progT = 0;
-    if (this.stuckN > 6) { this.pts = null; return -1; }
+    // stuck again and again (or right next to a goal we can't get at): give up on it
+    if (this.stuckN > 4 || (this.stuckN >= 2 && gd < 8)) { this.pts = null; return -1; }
     // close by in plain reach, or no graph yet: straight there
     if (!nav.ready || (gd < 32 && !this.stuckN && !nav.roomAt(px, pz) && !nav.roomAt(this.gx, this.gz) && nav.lineWalk(px, pz, this.gx, this.gz))) {
       this.pts = null; this.direct = true;
