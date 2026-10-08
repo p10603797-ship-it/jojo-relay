@@ -1,7 +1,7 @@
 // Projectile ballistics: every bullet is a real projectile with velocity and gravity,
 // integrated in sub-steps and swept against the physics world + player hitboxes.
 import * as THREE from 'three';
-import { RAY_SOLID } from '../physics.js';
+import { RAY_SHOT } from '../physics.js';
 
 /** Ray (normalised dir) vs sphere. Returns distance or -1. */
 export function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
@@ -117,7 +117,7 @@ export class Ballistics {
           let best = null;
           // streamed physics: make sure the world along this piece of the flight has colliders
           this.physics.ensureAlong?.(b.x, b.z, nx, nz);
-          const wh = this.physics.raycast(b.x, b.y, b.z, dx, dy, dz, len, RAY_SOLID);
+          const wh = this.physics.raycast(b.x, b.y, b.z, dx, dy, dz, len, RAY_SHOT);
           if (wh) best = { kind: 'world', dist: wh.dist, x: wh.x, y: wh.y, z: wh.z, nx: wh.nx, ny: wh.ny, nz: wh.nz, info: wh.info, collider: wh.collider };
           const targets = this.hooks.targets(b.owner);
           for (const t of targets) {

@@ -321,6 +321,13 @@ try {
     try { localStorage.setItem('phortnite.settings', JSON.stringify({ name: 'Perf', skin: 1, quality: q })); } catch (e) { /* ignore */ }
   }, QUALITY);
   page.on('pageerror', (e) => { result.errors.push(e.message); log('PAGEERROR', e.message); });
+  page.on('console', (m) => {
+    if (m.type() !== 'error' && m.type() !== 'warning') return;
+    const t = m.text();
+    if (/favicon|fonts\.g|net::ERR/.test(t)) return;
+    result.errors.push(`console.${m.type()}: ${t.slice(0, 400)}`);
+    log(`CONSOLE.${m.type().toUpperCase()}`, t.slice(0, 600));
+  });
   const t0 = Date.now();
   await page.goto(`${base}/${STRESS ? `tools/stress.html?quality=${QUALITY}` : ''}`);
   await page.waitForFunction(() => (window.__phortnite && window.__phortnite.world && window.__phortnite.renderer) || (window.__stress && window.__stress.ready), null, { timeout: 600000 });
@@ -332,8 +339,16 @@ try {
     try { app.BUS = (await import('/shared/constants.js')).BUS; } catch (e) { /* stress page */ }
     try { app.BIOMES = (await import('/shared/world/keys.js')).BIOMES; } catch (e) { /* none */ }
   });
+  // the texture arrays fill in the background: measure (and shoot) the finished look
+  const tTex = Date.now();
+  await page.waitForFunction(() => {
+    const app = window.__phortnite || window.__stress;
+    const L = app.T && app.T.layers;
+    return !L || (L.surfaces.complete && L.looks.complete && !L.busy);
+  }, null, { timeout: 300000, polling: 250 });
+  result.texturesMs = Date.now() - tTex + result.bootMs;
   result.world = await page.evaluate(pageSetup);
-  log('booted', result.bootMs, 'ms', JSON.stringify(result.world));
+  log('booted', result.bootMs, 'ms; textures done', result.texturesMs, 'ms', JSON.stringify(result.world));
   const all = await page.evaluate(() => window.__perf.views());
   const want = VIEWS === 'all' ? Object.keys(all) : String(VIEWS).split(',');
   for (const name of want) {
@@ -345,7 +360,7 @@ try {
     if (SHOTS) {
       fs.mkdirSync(SHOTS, { recursive: true });
       await page.addStyleTag({ content: 'body > *:not(#game) { visibility: hidden !important; }' });
-      await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${QUALITY}-${name}.png`) });
+      await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${QUALITY}-${name}.png`), timeout: 180000 });
     }
   }
   if (FIGHT && !STRESS) {
