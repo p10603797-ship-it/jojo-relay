@@ -767,7 +767,7 @@ export class Game {
     const mine = !!pend && pend.id === m.by;
     if (pend && !mine) {
       const a = this.actorById(pend.id);
-      if (a && a.inv && !a.infinite) a.addMats(pend.m, BUILD.cost);
+      if (a && a.inv && !a.infinite && !a.infMats) a.addMats(pend.m, BUILD.cost); // nothing was spent with infinite mats
     }
     const p = this.builds.add(m);
     this.pendingBuilds.delete(m.k);
@@ -800,7 +800,7 @@ export class Game {
     this.pendingBuilds.delete(m.k);
     this.builds.remove(m.k, false);
     const a = this.actorById(pend.id);
-    if (a && a.inv && !a.infinite) a.addMats(pend.m, BUILD.cost);
+    if (a && a.inv && !a.infinite && !a.infMats) a.addMats(pend.m, BUILD.cost); // nothing was spent with infinite mats
   }
 
   on_ox(m) {
