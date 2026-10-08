@@ -8,7 +8,7 @@
 //    range) but every hit is a real 'hit' message, so the room keeps authority and the kill feed,
 //    storm, siphon and modes see nothing different
 // Waking up snaps the capsule to open ground (never inside a wall or a building).
-import { WEAPONS, HEALS, ANIM, PLAYER } from '../../shared/constants.js';
+import { WEAPONS, HEALS, ANIM, PLAYER, ENV } from '../../shared/constants.js';
 import { passive, buildRule, isHunter, modeKey } from './goals.js';
 import { hasCone } from './buildfight.js';
 
@@ -74,6 +74,7 @@ export function enterFar(bot) {
   bot.dancing = false;
   b.farThinkT = Math.random() * THINK_S;
   b.farHealT = -1;
+  b.farHarv = -1;
   b.farTarget = null;
   b.wallReq = false;
   bot.build.clear();
@@ -87,6 +88,7 @@ export function exitFar(bot) {
   bot.far = false;
   b.farTarget = null;
   b.farHealT = -1;
+  b.farHarv = -1;
   let x = p.x, z = p.z;
   if (nav && nav.ready) {
     const o = nav.nearestOpen(x, z, 16, _o);
@@ -131,7 +133,21 @@ export function farUpdate(bot, dt) {
       bot.onInventory();
     }
   }
-  // standing still while fighting or healing, otherwise along the route
+  // harvesting the tree (or rock) we stopped at: real swings ('od', like the pickaxe sends), the
+  // same yield per swing as a player gets
+  if (b.farHarv >= 0) {
+    const id = b.farHarv;
+    if (b.farTarget || b.farHealT >= 0 || b.urgent || b.farHarvN >= 8 || !g.world.isAlive(id) || bot.totalMats() >= bot.brain.matsWant) b.farHarv = -1;
+    else if ((b.farHarvT -= dt) <= 0) {
+      const w = WEAPONS.pickaxe, o = g.world.data.objects[id];
+      b.farHarvT = 1 / w.rate;
+      b.farHarvN++;
+      g.send({ t: 'od', id: bot.id, o: id, d: w.dmg[0] * w.struct });
+      const rock = o && (o.kind === 'rock' || o.mat === 'stone');
+      if (!bot.infinite) bot.addMats(rock ? 'stone' : 'wood', rock ? ENV.harvest.stone : ENV.harvest.wood);
+    }
+  }
+  // standing still while fighting, healing or harvesting, otherwise along the route
   let moving = false;
   // closing in on someone out of our gun's range (straight at them: it's a short way)
   const ft = b.farTarget;
@@ -154,7 +170,7 @@ export function farUpdate(bot, dt) {
     b.badLoot.add(b.lootRef.id); if (b.badLoot.size > 24) b.badLoot.clear();
     b.destKind = ''; b.lootRef = null; b.planT = 0;
   }
-  if ((!b.farTarget || isHunter(bot)) && b.farHealT < 0 && b.destKind) {
+  if ((!b.farTarget || isHunter(bot)) && b.farHealT < 0 && b.farHarv < 0 && b.destKind) {
     bot.navGoal(b.dest);
     // (sliding along the ground, a spot upstairs counts as reached when we're under it)
     const under = Math.hypot(b.dest.x - bot.pos.x, b.dest.z - bot.pos.z) < 2;
@@ -195,6 +211,12 @@ export function farUpdate(bot, dt) {
   bot.animate(dt);
 }
 
+/** Low on materials and in a game where they matter? */
+function wantsMats(bot) {
+  const g = bot.game;
+  return buildRule(g) === 'on' && !bot.infMats && !bot.infinite && !passive(g) && bot.hasGun() && bot.totalMats() < bot.brain.matsWant * 0.6;
+}
+
 function farThink(bot) {
   const b = bot.brain, g = bot.game;
   b.urgent = bot.stormUrgency();
@@ -216,7 +238,13 @@ function farThink(bot) {
       bot.select(s);
     }
   }
-  if (b.farHealT < 0 && (!b.destKind || b.planT <= 0)) bot.planTravel(true);
+  // materials: players harvest on the way, so a far bot low on them stops at a tree or rock it
+  // passes (a few swings, real damage to it)
+  if (b.farHarv < 0 && b.farHealT < 0 && !b.farTarget && !b.urgent && wantsMats(bot)) {
+    const id = bot.nearestTree(5);
+    if (id !== null && id !== undefined) { b.farHarv = id; b.farHarvT = 0.3; b.farHarvN = 0; }
+  }
+  if (b.farHealT < 0 && b.farHarv < 0 && (!b.destKind || b.planT <= 0)) bot.planTravel(true);
   // the gun for the fight we're in
   if (b.farTarget) {
     const d = Math.hypot(b.farTarget.pos.x - bot.pos.x, b.farTarget.pos.z - bot.pos.z);
@@ -331,6 +359,15 @@ export function farFights(g) {
       }
       continue;
     }
+    // a gunfight is a build fight too: now and then a wall in front (cover for a moment), and the
+    // builders a ramp behind it for the height
+    if (d < 70 && !(now < ab.farBuildT) && Math.random() < (0.12 + 0.45 * ab.persona.build) * ab.buildK * dt) {
+      ab.farBuildT = now + 2 + Math.random() * 3;
+      if (farPiece(a, 'w', a.yaw, 0)) {
+        ab.farCoverT = Math.max(ab.farCoverT, now + 0.6 + Math.random() * 0.6);
+        if (Math.random() < ab.persona.build && farPiece(a, 'r', a.yaw, 0)) ab.farCoverT += 0.4;
+      }
+    }
     const slot = a.bestWeaponFor(d);
     if (slot > 0 && slot !== a.inv.sel) a.select(slot);
     const cur = a.current();
@@ -372,6 +409,8 @@ export function farFights(g) {
       if (now > tb.farCoverT + 1 && Math.random() < (0.3 + 0.6 * tb.persona.build * (0.5 + 0.5 * tb.skill)) * tb.buildK
         && farPiece(t, 'w', Math.atan2(t.pos.x - a.pos.x, t.pos.z - a.pos.z), 0)) {
         tb.farCoverT = now + 0.8 + Math.random();
+        // builders take the height too: a ramp behind the wall
+        if (Math.random() < 0.6 * tb.persona.build * tb.buildK && farPiece(t, 'r', Math.atan2(t.pos.x - a.pos.x, t.pos.z - a.pos.z), 0)) tb.farCoverT += 0.6;
       }
     }
   }

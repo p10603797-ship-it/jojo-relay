@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode } from '../public/js/ai/nav.js';
 import { generateWorld } from '../public/shared/worldgen.js';
 import * as goals from '../public/js/ai/goals.js';
-import { wantFar, FAR_IN, FAR_OUT } from '../public/js/ai/farsim.js';
+import { wantFar, farUpdate, FAR_IN, FAR_OUT } from '../public/js/ai/farsim.js';
+import { ENV, WEAPONS } from '../public/shared/constants.js';
 import { BuildFight, hasCone } from '../public/js/ai/buildfight.js';
 
 // ------------------------------------------------------------------ a synthetic island
@@ -459,6 +460,43 @@ test('bots: far from every human (and the camera) a bot gets the cheap simulatio
   assert.equal(wantFar(bot, 0.016), false, 'spectated');
   g.spectateId = 0; g.phase = 'bus'; bot.brain.farChkT = 0;
   assert.equal(wantFar(bot, 0.016), false, 'only in the match');
+});
+
+test('bots: a far bot low on materials stops at a tree it passes and harvests it with real swings', () => {
+  const sent = [];
+  let treeUp = true;
+  const g = fakeGame({}, { send: (m) => sent.push(m), loot: { items: new Map() }, nearestChest: () => null });
+  g.world.isAlive = () => treeUp;
+  g.world.data.objects = [];
+  g.world.data.objects[7] = { id: 7, kind: 'tree', x: 3, y: 5, z: 0 };
+  const mats = { wood: 0, stone: 0, metal: 0 };
+  let planned = 0;
+  const bot = fakeActor(g, 1, 0, 0, {
+    far: true, cool: 0, flags: 0, pitch: 0, yaw: 0, inv: { mats, slots: [] },
+    brain: { farThinkT: 0, farHarv: -1, farHealT: -1, farTarget: null, farCoverT: -99, hurtT: -99, planT: 5, goalT: 5, matsWant: 150, destKind: '', skill: 0.5, easy: false, persona: { build: 0.5 } },
+    stormUrgency: () => 0, healSlot: () => -1, hasGun: () => true, current: () => ({ k: 'ar' }),
+    totalMats: () => mats.wood + mats.stone + mats.metal, addMats(k, n) { mats[k] += n; },
+    nearestTree: (r) => (r >= 3 && treeUp ? 7 : null), planTravel() { planned++; },
+    mover: { vel: { set() {} }, pos: null }, nav: { ready: true, groundY: () => 5 }, animate() {},
+  });
+  bot.mover.pos = bot.pos;
+  g.bots.set(1, bot);
+  for (let i = 0; i < 3 * 60; i++) farUpdate(bot, 1 / 60);
+  const swings = sent.filter((m) => m.t === 'od' && m.o === 7 && m.id === 1);
+  // a pickaxe's rate (1.7 swings a second) after a moment to line up: 4 or 5 in 3 s
+  assert.ok(swings.length >= 4 && swings.length <= 5, `${swings.length} swings`);
+  assert.equal(swings[0].d, WEAPONS.pickaxe.dmg[0] * WEAPONS.pickaxe.struct, 'a pickaxe hit');
+  assert.equal(mats.wood, swings.length * ENV.harvest.wood, 'the yield a player gets');
+  assert.equal(planned, 0, 'stood still while harvesting');
+  // the tree falls: on our way again
+  treeUp = false;
+  for (let i = 0; i < 90; i++) farUpdate(bot, 1 / 60);
+  assert.equal(bot.brain.farHarv, -1);
+  assert.ok(planned > 0, 'planning the way on');
+  // with building off (or plenty of materials) nobody stops for trees
+  g.rules.build = 'off'; treeUp = true; sent.length = 0;
+  for (let i = 0; i < 3 * 60; i++) farUpdate(bot, 1 / 60);
+  assert.equal(sent.filter((m) => m.t === 'od').length, 0);
 });
 
 test('bots: build fights place a piece every 0.1-0.3 s, box up with a roof, and obey the build rule', () => {

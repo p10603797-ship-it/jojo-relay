@@ -235,13 +235,13 @@ export class Bot extends Combatant {
       // more of the same fight from something new)
       noiseT: -99, noiseT0: -99, noisePri: 0, noiseKind: '', noiseSrc: 0, noiseX: 0, noiseY: 0, noiseZ: 0, noiseD: 0,
       noiseTX: 0, noiseTZ: 0, noiseDelay: 0.3, noiseDone: true, noiseGo: false,
-      hurtT: -99, hurtNearT: -99, wallReq: false, buildT: 0, rampT: 0, ninetyT: 0, funT: rnd(10, 30), lowPlan: '', boxT: -99,
+      hurtT: -99, hurtNearT: -99, wallReq: false, relCov: false, buildT: 0, rampT: 0, ninetyT: 0, funT: rnd(10, 30), lowPlan: '', boxT: -99,
       killT: -99, killX: 0, killY: 0, killZ: 0, danceT: 0,
       // set by the game while in the bus (dropAt: see below), the landing we picked
       landAt: null, landRegion: -1, dropPlan: null, skyT: -99, spread: false,
       lastHp: 100,
       // far simulation (js/ai/farsim.js)
-      farChkT: Math.random() * 0.5, farWant: false, farThinkT: 0, farHealT: -1, farHealSlot: -1, farTarget: null, farChase: false, farCoverT: -99, wakeT: -99,
+      farChkT: Math.random() * 0.5, farWant: false, farThinkT: 0, farHealT: -1, farHealSlot: -1, farTarget: null, farChase: false, farCoverT: -99, farBuildT: 0, farHarv: -1, farHarvT: 0, farHarvN: 0, wakeT: -99,
     };
     // Game sets brain.dropAt (seconds into the bus ride) to a random moment when the bus leaves;
     // we read back our own: the moment the bus passes the place we want to land.
@@ -693,7 +693,7 @@ export class Bot extends Combatant {
     b.noiseX = r.hx; b.noiseY = r.hy; b.noiseZ = r.hz; b.noiseD = d; b.noiseDone = false;
     b.noiseTX = a.pos.x; b.noiseTZ = a.pos.z;
     // throw up a wall (or a ramp to fight for height) between us and the shooter, like players do
-    if (!b.wallReq && amt > 0 && Math.random() < (0.3 + 0.6 * b.persona.build * (0.5 + 0.5 * b.skill)) * b.buildK) b.wallReq = true;
+    if (!b.wallReq && amt > 0 && Math.random() < (0.4 + 0.5 * b.persona.build * (0.5 + 0.5 * b.skill)) * b.buildK) b.wallReq = true;
   }
 
   // ------------------------------------------------------------------ decisions (think rate)
@@ -1661,6 +1661,14 @@ export class Bot extends Combatant {
     }
     const on = this.aimAt(t, r, w, dt);
     this.trigger(cur, w, b.aimDist, on, r.vis && b.reaction <= 0, dt);
+    // reloading in a gunfight: a wall in front of us first (once per reload), like players do
+    if (this.reloadT < 0) b.relCov = false;
+    else if (!b.relCov) {
+      b.relCov = true;
+      if (dist > 6 && dist < 90 && this.time - r.seenT < 2 && !this.build.busy && Math.random() < (0.3 + 0.5 * b.persona.build) * b.buildK) {
+        this.build.start('wall', Math.atan2(-(px - this.pos.x), -(pz - this.pos.z)));
+      }
+    }
     if (this.build.busy) this.buildMove(dt);
     else this.fightMove(t, r, w, cur.k, dist, dt);
   }

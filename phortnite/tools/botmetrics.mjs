@@ -120,8 +120,8 @@ function pageSetup(cfg) {
   const app = window.__phortnite, g = app.game;
   app.renderer.render = () => {}; // CPU-only simulation
   const M = (window.__M = {
-    cfg, t0: -1, busT: -1, matchT: -1, elims: [], shots: 0, nearShots: 0, nearShotgun: 0, hits: 0, hitsBy: {}, shotsBy: {},
-    pieces: 0, piecesBy: {}, heals: {}, chests: 0, picks: 0, land: {}, landT: {}, samples: 0, stuckSamples: 0,
+    cfg, t0: -1, busT: -1, matchT: -1, elims: [], shots: 0, nearShots: 0, nearShotgun: 0, nearSec: 0, nearSgSec: 0, hits: 0, hitsBy: {}, shotsBy: {},
+    pieces: 0, piecesFar: 0, piecesBy: {}, heals: {}, chests: 0, picks: 0, land: {}, landT: {}, samples: 0, stuckSamples: 0,
     hist: {}, modeHist: {}, farSamples: 0, botSamples: 0, alive120: null, alive60: null, frames: 0, botMs: 0, botMax: 0,
     updMs: 0, perBot: 0, errors: 0, followId: 0, followT: 0, farHits: 0, skills: {}, regionsUsed: [], navStats: null,
     shotgunHeld: 0, timeline: [], nearBy: {},
@@ -200,7 +200,10 @@ function pageSetup(cfg) {
       const t = a.brain && a.brain.target;
       if (t && Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z) < 10) {
         M.nearShots++;
-        if ((w.pellets || 1) > 1) M.nearShotgun++;
+        // also weighted by trigger time (an SMG fires a dozen bullets in the time a pump fires one)
+        const sec = 1 / Math.max(0.1, (w.rate || 1) * (w.burst || 1));
+        M.nearSec += sec;
+        if ((w.pellets || 1) > 1) { M.nearShotgun++; M.nearSgSec += sec; }
         else M.nearBy[a.hasShotgun && a.hasShotgun() ? `${cur.k}+sg` : cur.k] = (M.nearBy[a.hasShotgun && a.hasShotgun() ? `${cur.k}+sg` : cur.k] || 0) + 1;
       }
     }
@@ -229,7 +232,7 @@ function pageSetup(cfg) {
     return oElim.call(this, m);
   };
   const oBuild = g.tryPlaceBuild.bind(g);
-  g.tryPlaceBuild = (a) => { const r = oBuild(a); if (r && isBot(a.id)) { M.pieces++; M.piecesBy[a.id] = (M.piecesBy[a.id] || 0) + 1; } return r; };
+  g.tryPlaceBuild = (a) => { const r = oBuild(a); if (r && isBot(a.id)) { M.pieces++; if (a.far) M.piecesFar++; M.piecesBy[a.id] = (M.piecesBy[a.id] || 0) + 1; } return r; };
   const oHeal = g.reportHeal.bind(g);
   g.reportHeal = (a, k) => { if (isBot(a.id)) M.heals[a.id] = (M.heals[a.id] || 0) + 1; return oHeal(a, k); };
   const oChest = g.openChest.bind(g);
@@ -312,8 +315,8 @@ function pageSetup(cfg) {
     return {
       size: g.world.data.size, bots: g.bots.size, simSeconds: +simT().toFixed(0), phase: g.phase, alive: [...g.bots.values()].filter((b) => b.alive).length,
       stuckPct: +(100 * M.stuckSamples / Math.max(1, M.samples)).toFixed(2),
-      pieces: M.pieces, piecesBots: Object.keys(M.piecesBy).length,
-      shots: M.shots, nearShots: M.nearShots, shotgunNearPct: +(100 * M.nearShotgun / Math.max(1, M.nearShots)).toFixed(1),
+      pieces: M.pieces, piecesFar: M.piecesFar, piecesBots: Object.keys(M.piecesBy).length,
+      shots: M.shots, nearShots: M.nearShots, nearShotgun: M.nearShotgun, nearSec: +M.nearSec.toFixed(2), nearSgSec: +M.nearSgSec.toFixed(2), shotgunNearPct: +(100 * M.nearShotgun / Math.max(1, M.nearShots)).toFixed(1), shotgunNearTimePct: +(100 * M.nearSgSec / Math.max(1e-6, M.nearSec)).toFixed(1),
       shotgunHeldPct: +(100 * M.shotgunHeld / Math.max(1, M.samples)).toFixed(1), nearBy: M.nearBy,
       heals: Object.values(M.heals).reduce((s, x) => s + x, 0),
       alive120: heals120.length, healsPerSurvivor: heals120.length ? +(heals120.reduce((s, x) => s + x, 0) / heals120.length).toFixed(2) : null,
@@ -470,7 +473,12 @@ function verdict(runs, perf, skills, big) {
   if (runs.length) {
     out.stuckPct = [+avg('stuckPct').toFixed(2), '< 2', avg('stuckPct') < 2];
     out.pieces = [+avg('pieces').toFixed(0), '>= 120', avg('pieces') >= 120];
-    out.shotgunNearPct = [+avg('shotgunNearPct').toFixed(1), '>= 30', avg('shotgunNearPct') >= 30];
+    // pooled over the runs (a run with a handful of close shots would swing an average)
+    const sum = (k) => runs.reduce((s, r) => s + (r[k] ?? 0), 0);
+    const pooled = (100 * sum('nearShotgun')) / Math.max(1, sum('nearShots'));
+    out.shotgunNearPct = [+pooled.toFixed(1), `>= 30 (bullets; ${sum('nearShots')} shots under 10 m)`, pooled >= 30];
+    const pt = (100 * sum('nearSgSec')) / Math.max(1e-6, sum('nearSec'));
+    out.shotgunNearTimePct = [+pt.toFixed(1), '>= 30 (trigger time)', pt >= 30];
     const h = runs.filter((r) => r.healsPerSurvivor !== null);
     const hv = h.reduce((s, r) => s + r.healsPerSurvivor, 0) / Math.max(1, h.length);
     out.healsPerSurvivor = [+hv.toFixed(2), '>= 1', hv >= 1];
@@ -503,7 +511,7 @@ async function main() {
       console.log(`match ${i + 1}/${RUNS}: ${BOTS} bots, ${MINUTES} min${MODE ? `, mode ${MODE}` : ''}${SKILL ? `, ${SKILL} bots` : ''}, park ${PARK}`);
       const r = await runMatch(browser, url, base);
       report.runs.push(r);
-      console.log(`  -> stuck ${r.stuckPct}%, pieces ${r.pieces}, shotgun<10m ${r.shotgunNearPct}%, heals/survivor ${r.healsPerSurvivor}, alive60 ${r.alive60Pct}%, regions ${r.regions}, far ${r.farPct}%, bot ${r.botMsPerFrame} ms/frame, errors ${r.errors}`);
+      console.log(`  -> stuck ${r.stuckPct}%, pieces ${r.pieces}, shotgun<10m ${r.shotgunNearPct}% (time ${r.shotgunNearTimePct}%), heals/survivor ${r.healsPerSurvivor}, alive60 ${r.alive60Pct}%, regions ${r.regions}, far ${r.farPct}%, bot ${r.botMsPerFrame} ms/frame, errors ${r.errors}`);
       if (r.errors) console.log(r.errorList.join('\n'));
     }
     if (PERF) {
