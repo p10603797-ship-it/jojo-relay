@@ -78,7 +78,14 @@ function line(pts, rgb, widthPx, alpha = 1) {
   }
 }
 const mpp = PX / w.size;
-for (const r of w.rivers || []) line(r.pts, [60, 150, 210], Math.max(2, r.w * 0.6 * mpp), 0.5);
+for (const r of w.rivers || []) {
+  // the river's centre line, drawn only where it runs through the island
+  for (let i = 0; i < r.pts.length - 1; i++) {
+    const [ax, az] = r.pts[i], [bx, bz] = r.pts[i + 1];
+    if (w.heightAt((ax + bx) / 2, (az + bz) / 2) < -3) continue;
+    line([r.pts[i], r.pts[i + 1]], [60, 150, 210], Math.max(2, r.w * 0.6 * mpp), 0.5);
+  }
+}
 for (const r of w.roads || []) {
   const pts = r.pts.map((p) => [p[0], p[1]]);
   const col = r.bridge ? [140, 90, 50] : r.kind === 'dirt' ? [170, 130, 90] : [60, 60, 66];
