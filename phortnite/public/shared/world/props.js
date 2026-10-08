@@ -170,12 +170,14 @@ export function placeProps(G, W, regions, plans, roads, barrels, rng) {
       for (const [x, z] of h.pumps) prop('pump', x, z, h.rot % 2 ? YAW[1] : 0);
     }
     // beach umbrellas and cones
-    if (p.piers && (g.recipe === 'beach' || g.recipe === 'cove')) {
-      for (let i = 0; i < 14; i++) {
+    if (g.recipe === 'beach' || g.recipe === 'cove' || g.recipe === 'pirate') {
+      // beach umbrellas (with a towel-coloured variant each) on the sand around the place
+      let n = 0;
+      for (let i = 0; i < 80 && n < 12; i++) {
         const [dx, dz] = DIRS16[Math.floor(rng() * 16)];
-        const x = g.x + dx * g.r * (0.6 + rng() * 0.8), z = g.z + dz * g.r * (0.6 + rng() * 0.8);
+        const x = g.x + dx * g.r * (0.5 + rng() * 1.3), z = g.z + dz * g.r * (0.5 + rng() * 1.3);
         const y = G.heightAt(x, z);
-        if (y > 0.5 && y < 4 && free(x, z, 1.2)) decor('umbrella', x, z, 1, rng() * 6.28);
+        if (y > 0.3 && y < 5 && G.slope(x, z) < 1.5 && free(x, z, 1.4)) { decor('umbrella', x, z, 1, rng() * 6.28); n++; }
       }
     }
     if (g.recipe === 'depot' || g.recipe === 'port' || g.recipe === 'mines') {

@@ -9,7 +9,7 @@ import { BIOMES, SURFACES, SPECIES, SPECIES_TYPE, LOOKS, LOOK_ALIASES, PADS, TIE
 import { ARCHETYPES } from '../public/shared/world/buildings.js';
 import { PROP_TYPES, DECOR_TYPES } from '../public/shared/world/props.js';
 
-const CHECKSUM = 338422541;   // pinned: the island everyone plays on (update deliberately with the map)
+const CHECKSUM = 341022309;   // pinned: the island everyone plays on (update deliberately with the map)
 
 const worlds = new Map();
 const world = (size = MAP.size) => {
@@ -71,6 +71,12 @@ function walkProblems(w, h, parts) {
     const run = Math.hypot(x1 - x0, z1 - z0);
     if (Math.abs(y1 - y0) > run + 1e-6) out.push(`stair steeper than 45 degrees (${(y1 - y0).toFixed(2)} over ${run.toFixed(2)})`);
     const ux = (x1 - x0) / run, uz = (z1 - z0) / run, nx = -uz, nz = ux;
+    // the ramp's walking surface really is there (just under the centreline, not above it)
+    for (const t of [0.2, 0.5, 0.8]) {
+      const sx = x0 + (x1 - x0) * t, sz = z0 + (z1 - z0) * t, sy = y0 + (y1 - y0) * t;
+      if (!blocked(sx, sy - 0.08, sz)) out.push(`no ramp under the stair at t=${t}`);
+      if (blocked(sx, sy + 0.12, sz)) out.push(`something on the stair surface at t=${t}`);
+    }
     for (let t = 0.12; t <= 0.9; t += 0.13) {
       const sx = x0 + (x1 - x0) * t, sz = z0 + (z1 - z0) * t, sy = y0 + (y1 - y0) * t;
       for (const off of wd > 1.2 ? [-(wd / 2 - 0.45), 0, wd / 2 - 0.45] : [0]) {

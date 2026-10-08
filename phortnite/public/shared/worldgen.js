@@ -36,8 +36,9 @@
 //   objects: [{ id, kind, x, y, z, mat, hp, … }]; hp 0 = indestructible; mat: wood | stone | metal
 //     kind 'part' (buildings): house, look (a LOOKS key, or a LOOK_ALIASES key), paint, shape 'box'
 //       (hx, hy, hz half sizes; ax / ang: tilted about the world x or z axis by ang radians) or
-//       'prism' (pts: 6 points = two triangles a b c / d e f); optional tint (0xRRGGBB colour to
-//       use instead of the look's default), sign (text on a panel), glow (1 = emissive: lamps)
+//       'prism' (pts: 6 points = two triangles a b c / d e f); tilted boxes also carry bb, their
+//       exact world bounds [x0, y0, z0, x1, y1, z1]; optional tint (0xRRGGBB colour to use instead
+//       of the look's default), sign (text on a panel), glow (1 = emissive: lantern, beacon)
 //     kind 'prop': type (props.js PROP_TYPES: car, container, crate, lamp, bench, fence, hay,
 //       stall, fountain, sign, pump, tent, hydrant, dumpster), hx, hy, hz (box collider half
 //       sizes, y = box centre), yaw (0 or a quarter turn), color?, text? (sign), wreck?
@@ -57,8 +58,11 @@
 //     warehouse, barn, silo, windmill, cabin, lodge, adobe, saloon, motel, lighthouse, ship, temple,
 //     castle, icecastle, watchtower, clocktower, pier, bridge, stadium, stilt, treehouse, lair,
 //     shed, mall, shack, mine, radio); region = a regions id or -1; y = floor-0 height;
-//     levels: storey floor heights; stairs: [[x0, z0, y0, x1, z1, y1, width]] ramp centrelines;
-//     doors: [[x, z, y, nx, nz, height, width]] ground doors (threshold, outward normal)
+//     levels: storey floor heights; stairs: [[x0, z0, y0, x1, z1, y1, width]] ramp centrelines
+//     (walking surface, at most 45 degrees); doors: [[x, z, y, nx, nz, height, width]] ground doors
+//     (threshold, outward normal, at least 2.35 m tall); top: highest point; bounds: [x0, z0, x1,
+//     z1] of its parts; open: true for structures without doors (towers, piers, bridges, ship,
+//     temple, stadium, stilt houses); pumps: [[x, z], ...] at gas stations
 // Loot
 //   chests: [{ x, y, z, yaw, tier }]; lootSpots: [{ x, y, z, ground?, tier }] (tier: a TIERS key:
 //     hot places have about one chest per building and floor loot on every storey)
