@@ -113,5 +113,70 @@
   },
   "boot": {
     "lowToLobbyMs": 4000
+  },
+  "measured": {
+    "_doc": "worst viewpoint per run after map-engine (1024x640, SwiftShader; ms are only comparable on one machine). today = the 640 m island, big = map-worldgen 26855e0 (1.6 km), stress = tools/stress.html, fight = big map at Medium, 23 bots, 60 s after they landed",
+    "todayMedium": {
+      "calls": 75,
+      "tris": 371053,
+      "colliders": 189,
+      "physMs": 0.2,
+      "updMs": 0,
+      "heapMB": 86.5,
+      "texMB": 69.1,
+      "city": {
+        "calls": 53,
+        "tris": 199951
+      },
+      "bus": {
+        "calls": 73,
+        "tris": 316963
+      }
+    },
+    "todayLow": {
+      "calls": 55,
+      "tris": 221581,
+      "colliders": 189,
+      "physMs": 0.2,
+      "updMs": 0.1,
+      "heapMB": 74,
+      "texMB": 23.8
+    },
+    "bigMedium": {
+      "calls": 102,
+      "tris": 579794,
+      "colliders": 465,
+      "physMs": 0.3,
+      "updMs": 0.1,
+      "heapMB": 143,
+      "texMB": 71.6
+    },
+    "bigLow": {
+      "calls": 77,
+      "tris": 321427,
+      "colliders": 465,
+      "physMs": 0.3,
+      "updMs": 0.1,
+      "heapMB": 138.1,
+      "texMB": 26.3
+    },
+    "stressMedium": {
+      "calls": 66,
+      "tris": 763206,
+      "colliders": 1257,
+      "physMs": 1.1,
+      "updMs": 0.1,
+      "heapMB": 120.4,
+      "texMB": 70.1
+    },
+    "fightMedium": {
+      "calls": 91,
+      "tris": 565413,
+      "colliders": 904,
+      "physMs": 0.8,
+      "updMs": 0.2,
+      "heapMB": 152,
+      "texMB": 77.2
+    }
   }
 }
