@@ -115,6 +115,8 @@ export class Ballistics {
         if (len > 1e-6) {
           const dx = ddx / len, dy = ddy / len, dz = ddz / len;
           let best = null;
+          // streamed physics: make sure the world along this piece of the flight has colliders
+          this.physics.ensureAlong?.(b.x, b.z, nx, nz);
           const wh = this.physics.raycast(b.x, b.y, b.z, dx, dy, dz, len, RAY_SOLID);
           if (wh) best = { kind: 'world', dist: wh.dist, x: wh.x, y: wh.y, z: wh.z, nx: wh.nx, ny: wh.ny, nz: wh.nz, info: wh.info, collider: wh.collider };
           const targets = this.hooks.targets(b.owner);

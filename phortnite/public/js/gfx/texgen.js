@@ -465,3 +465,57 @@ export function noiseTile(size = 256, seed = 13, P = 4, oct = 5) {
 export const GENERATORS = {
   grass, sand, rock, dirt, planks, brick, metal, siding, shingles, concrete, bark, foliage, noiseTile,
 };
+
+// ------------------------------------------------------------------ layers by name
+// One texture for every ground surface and building look (SURFACES and LOOKS in
+// shared/world/keys.js), e.g. for the renderer's texture arrays. A key without a generator of its
+// own uses the closest one (with its own seed or tint); unknown keys get concrete.
+const LAYERS = {
+  // surfaces (grass, dirt, sand and rock match the textures the game paints today)
+  grass: (s) => grass(s, 1),
+  dirt: (s) => dirt(s, 4),
+  sand: (s) => sand(s, 2),
+  rock: (s) => rock(s, 3),
+  snow: (s) => sand(s, 41),
+  ice: (s) => rock(s, 42),
+  redsand: (s) => sand(s, 43),
+  strata: (s) => rock(s, 44),
+  mud: (s) => dirt(s, 45),
+  junglefloor: (s) => grass(s, 46),
+  ash: (s) => dirt(s, 47),
+  lava: (s) => rock(s, 48),
+  asphalt: (s) => concrete(s, 49, { base: 0x55585c }),
+  cobble: (s) => brick(s, 50, { base: 0x8f8a82, rows: 16 }),
+  field: (s) => dirt(s, 51),
+  wheat: (s) => grass(s, 52),
+  // looks (siding, brick, metalwall, roof, floor, trim and foundation match today's materials)
+  siding: (s) => siding(s, 8),
+  brick: (s) => brick(s, 6),
+  metalwall: (s) => metal(s, 7),
+  roof: (s) => shingles(s, 9),
+  floor: (s) => planks(s, 5),
+  trim: (s) => concrete(s, 10),
+  foundation: (s) => concrete(s, 10),
+  glass: (s) => concrete(s, 61, { base: 0x9fc6e0 }),
+  stucco: (s) => concrete(s, 62, { base: 0xe8dcc6 }),
+  adobe: (s) => concrete(s, 63, { base: 0xc98f5e }),
+  logs: (s) => planks(s, 64, { base: 0x8a5a32, rows: 6 }),
+  planks: (s) => planks(s, 65),
+  corrugated: (s) => metal(s, 66, { ribs: 32 }),
+  rooftile: (s) => shingles(s, 67),
+  shingle: (s) => shingles(s, 68),
+  sandstone: (s) => brick(s, 69, { base: 0xd8b680, rows: 6 }),
+  concrete: (s) => concrete(s, 10),
+  panel: (s) => metal(s, 70, { base: 0xc9ced4, ribs: 4 }),
+  castle: (s) => brick(s, 72, { base: 0xa7a39c, rows: 8 }),
+};
+
+/**
+ * The texture image ({ size, color, height }, like every generator) for a SURFACES or LOOKS key.
+ * size: pixels at normal quality; low (the Low preset) halves it (512 -> 256).
+ */
+export function layerTexture(key, size = 512, low = false) {
+  const S = low ? size >> 1 : size;
+  const make = Object.prototype.hasOwnProperty.call(LAYERS, key) ? LAYERS[key] : LAYERS.concrete;
+  return make(S);
+}

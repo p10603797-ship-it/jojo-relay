@@ -141,9 +141,10 @@ export class RemotePlayer {
   hitbox() {
     const p = this.pos;
     const c = this.crouching;
+    const big = this.game.rules?.bigHead; // Big Head mode: heads 2.2x bigger and 0.15 m higher (as in Combatant)
     return {
       id: this.id,
-      head: [p.x, p.y + (c ? 1.27 : 1.7), p.z, 0.22],
+      head: [p.x, p.y + (c ? 1.27 : 1.7) + (big ? 0.15 : 0), p.z, big ? 0.22 * 2.2 : 0.22],
       body: [p.x, p.y + 0.35, p.z, p.x, p.y + (c ? 0.95 : 1.32), p.z, 0.37],
     };
   }

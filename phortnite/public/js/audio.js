@@ -8,6 +8,7 @@ export class Sfx {
     this.noise = null;
     this.windGain = null;
     this.stormGain = null;
+    this.musicBus = null; // GainNode for music (into master); exists once the first tap / key has unlocked audio
     const unlock = () => {
       this.init();
       if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
@@ -28,6 +29,9 @@ export class Sfx {
     comp.threshold.value = -14;
     comp.ratio.value = 4;
     this.master.connect(comp).connect(this.ctx.destination);
+    this.musicBus = this.ctx.createGain();
+    this.musicBus.gain.value = this.settings.music ?? 0.5;
+    this.musicBus.connect(this.master);
     const len = this.ctx.sampleRate * 2;
     this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
     const d = this.noise.getChannelData(0);

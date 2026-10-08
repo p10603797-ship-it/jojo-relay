@@ -214,9 +214,10 @@ export class Combatant {
   hitbox() {
     const p = this.pos;
     const c = this.mover.crouch;
+    const big = this.game.rules?.bigHead; // Big Head mode: heads 2.2x bigger and 0.15 m higher
     return {
       id: this.id,
-      head: [p.x, p.y + (c ? 1.27 : 1.7), p.z, 0.22],
+      head: [p.x, p.y + (c ? 1.27 : 1.7) + (big ? 0.15 : 0), p.z, big ? 0.22 * 2.2 : 0.22],
       body: [p.x, p.y + 0.35, p.z, p.x, p.y + (c ? 0.95 : 1.32), p.z, 0.37],
     };
   }
@@ -234,7 +235,7 @@ export class Combatant {
     const ev = m.step(dt, {
       wx, wz, sprint: ctl.sprint && ctl.my > 0.3 && !this.ads && !busy && this.reloadT < 0, crouch: ctl.crouch, jump: ctl.jump, ads: this.ads || busy, pitch: this.pitch,
     });
-    if (ev.landed > PLAYER.fallSafe && this.mode === 'ground') {
+    if (ev.landed > PLAYER.fallSafe && this.mode === 'ground' && this.game.rules?.fallDamage !== false) {
       const dmg = (ev.landed - PLAYER.fallSafe) * PLAYER.fallDmgPerMs;
       this.game.reportFall(this, dmg);
     }
@@ -449,12 +450,13 @@ export class Combatant {
     this.onInventory();
   }
 
+  // infMats: building costs nothing (a mode's infinite building; set by the mode engine)
   canBuild() {
-    return this.infinite || this.inv.mats[this.buildMat] >= BUILD.cost;
+    return this.infinite || this.infMats || this.inv.mats[this.buildMat] >= BUILD.cost;
   }
 
   spendBuild() {
-    if (!this.infinite) this.inv.mats[this.buildMat] -= BUILD.cost;
+    if (!(this.infinite || this.infMats)) this.inv.mats[this.buildMat] -= BUILD.cost;
     this.onInventory();
   }
 

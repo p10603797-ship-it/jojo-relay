@@ -1,6 +1,7 @@
 // Procedural 3D models (geometry only). Everything is built from primitives at load time.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { SPECIES_TYPE } from '../../shared/world/keys.js';
 
 const _c = new THREE.Color();
 
@@ -135,7 +136,15 @@ function sphereUV(g, scale) {
   return g;
 }
 
-export function treeGeometry(type) {
+/**
+ * Tree geometry { trunk, leaves } for a legacy type (0 pine, 1 oak, 2 palm) or a SPECIES key
+ * (shared/world/keys.js; species without a model of their own use the closest legacy tree).
+ * lod: 0 full detail, 1 and 2 simpler (today every lod is the full model).
+ */
+export function treeGeometry(typeOrSpecies, lod = 0) {
+  const type = typeof typeOrSpecies === 'string'
+    ? (Object.prototype.hasOwnProperty.call(SPECIES_TYPE, typeOrSpecies) ? SPECIES_TYPE[typeOrSpecies] : 1)
+    : typeOrSpecies;
   const trunk = [], leaves = [];
   if (type === 0) {
     const t = new THREE.CylinderGeometry(0.17, 0.32, 4.2, 8, 3);

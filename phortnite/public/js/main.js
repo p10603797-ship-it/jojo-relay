@@ -15,6 +15,7 @@ import { Character, prewarmCharacters } from './actors/character.js';
 import { Game } from './game/game.js';
 import { WsNet, LocalNet } from './net/net.js';
 import { P2PHost, P2PClient, qrDataUrl } from './net/p2p.js';
+import { applyGrade } from './gfx/grade.js';
 
 const TIPS = [
   'Tip: build a wall the moment someone starts shooting at you.',
@@ -37,6 +38,11 @@ const PRESETS = {
 const DEFAULTS = {
   name: '', skin: 0, quality: 'auto', sens: 1, touchSens: 1, invertY: false, fov: 80, volume: 0.8,
   showFps: false, shake: true, forceTouch: false, autoFire: true, aimAssist: true,
+  tapBuild: true, // touch: a tap on Wall / Floor / Ramp / Cone places the piece at once
+  tbScale: 1, // touch button size (0.8-1.3)
+  tbAlpha: 1, // touch button opacity (0.3-1)
+  music: 0.5, // music volume (0-1)
+  botLevel: 'normal', // default bot difficulty (a rules.botSkill option)
 };
 
 function loadSettings() {
@@ -94,6 +100,7 @@ class App {
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.shadowMap.enabled = q.shadows;
     renderer.shadowMap.type = THREE.PCFShadowMap;
+    applyGrade(renderer, q);
     this.renderer = renderer;
     this.applyPixelRatio();
     canvas.addEventListener('webglcontextlost', (e) => {
@@ -116,6 +123,7 @@ class App {
     this.progress(0.7, 'Planting trees & building houses…');
     await new Promise((r) => setTimeout(r, 0));
     this.world = new World({ scene: this.scene, physics: this.physics, T: this.T, data, quality: q, renderer });
+    this.applyFar();
     this.progress(0.86, 'Getting ready…');
     this.builds = new Builds(this.scene, this.physics, this.T, data, null);
     this.builds.grid.destroyedObjects = this.world.destroyedIds;
@@ -163,6 +171,10 @@ class App {
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
     window.__phortnite = this;
+    // ?bench: the benchmark (js/bench.js) takes over from here
+    if (new URLSearchParams(location.search).has('bench')) {
+      import('./bench.js').then((m) => m.runBench && m.runBench(this)).catch((e) => console.error('bench', e));
+    }
   }
 
   setupMenuScene(data) {
@@ -239,10 +251,21 @@ class App {
     if (prevShadows !== q.shadows) this.scene.traverse((o) => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { m.needsUpdate = true; }); });
     this.world.setGrass(q.grass);
     this.scene.fog.far = q.drawDist;
-    this.camera.far = q.drawDist + 400;
-    this.camera.updateProjectionMatrix();
+    this.applyFar(true);
     this.resScale = 1;
     this.applyPixelRatio();
+  }
+
+  /**
+   * Camera far plane: world.farFor(quality, camera) when the world has it (the view distance can
+   * change with the camera, e.g. fog that reaches further from high up), else draw distance + 400 m.
+   */
+  applyFar(force = false) {
+    const cam = this.camera;
+    const far = this.world.farFor ? this.world.farFor(this.q, cam) : this.q.drawDist + 400;
+    if (!force && Math.abs(far - cam.far) < 0.5) return;
+    cam.far = far;
+    cam.updateProjectionMatrix();
   }
 
   // ------------------------------------------------------------------ sessions
@@ -393,7 +416,8 @@ class App {
       this.updateMenu(dt);
       focus = this.menuPos;
     }
-    this.world.update(dt, this.camera, focus);
+    this.world.update(dt, this.camera, focus, this.game);
+    if (this.world.farFor) this.applyFar();
     this.fx.update(dt);
     this.renderer.render(this.scene, this.camera);
     this.perf(raw, dt);

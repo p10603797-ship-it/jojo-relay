@@ -1,9 +1,12 @@
 // A game session: one connection to a room (solo or LAN). Owns the local player, bots,
 // remote players, loot, storm, bus, combat resolution and the third-person camera.
+// Game plugins (js/game/plugins.js) hook into messages, input, the frame, the HUD and phases.
 import * as THREE from 'three';
 import {
   WEAPONS, HEALS, PLAYER, ANIM, SEND_HZ, SKINS, BUILD, MAT_KEYS, PROTOCOL, weaponDamage, itemKind,
 } from '../../shared/constants.js';
+import { rulesFromSettings } from '../../shared/modes/rules.js';
+import { GAME_PLUGINS } from './plugins.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
 import { Bot } from '../actors/bot.js';
 import { RemotePlayer } from '../actors/remote.js';
@@ -100,6 +103,15 @@ export class Game {
     this.specYaw = 0;
     this.specPitch = -0.2;
     this.settingsState = { bots: 8, mats: 0 };
+    // game mode: rules from the room settings (shared/modes/rules.js); the mode runtime's messages fill the rest
+    this.rules = rulesFromSettings(this.settingsState);
+    this.modeState = {};       // the latest mode state from the room ('ms': scores, goal, time left, game HUD, respawns)
+    this.roles = new Map();    // player id -> role ('zombie', 'jugg', …); see roleOf
+    this.area = null;          // the play area {x, z, r}, or null for the whole island
+    this.teams = new Map();    // team id -> {id, name, color}
+    // things features want on the minimap and full map, one entry per feature:
+    // mapExtras[key] = { dots: [{x, z, c}], rings: [{x, z, r, c}], pins: [{x, z, c, label}] } (js/ui/mapview.js)
+    this.mapExtras = {};
     this.kills = 0;
     this.aliveCount = 1;
     this.hurtK = 0;
@@ -115,6 +127,19 @@ export class Game {
     this.autoCtl = {};
     this.unsub = net.onMessage((m) => this.onMessage(m));
     this.disposed = false;
+    // game plugins (js/game/plugins.js), last so they can use everything above
+    this.plugins = [];
+    for (const P of GAME_PLUGINS) {
+      try { this.plugins.push(new P(this)); } catch (e) { console.error('game plugin', P.name, e); }
+    }
+  }
+
+  /** Call hook `name` on every game plugin that has it (an error is logged, the game carries on). */
+  plug(name, a, b) {
+    for (const pl of this.plugins) {
+      if (typeof pl[name] !== 'function') continue;
+      try { pl[name](a, b); } catch (e) { console.error('game plugin', name, e); }
+    }
   }
 
   // ------------------------------------------------------------------ helpers
@@ -154,6 +179,9 @@ export class Game {
   /** Teammates (squad mode) can't hurt each other and see each other's names. */
   friendly(a, b) { return a !== b && this.phase !== 'lobby' && this.teamOf(a) === this.teamOf(b); }
 
+  /** A player's mode role ('zombie', 'jugg', …) or null. */
+  roleOf(id) { return this.roles.get(id) ?? null; }
+
   send(msg) { this.net.send(msg); }
 
   shake(k) { this.shakeK = Math.min(1.2, this.shakeK + k); }
@@ -166,6 +194,7 @@ export class Game {
     if (h) {
       try { h.call(this, m); } catch (e) { console.error('message', m.t, e); }
     }
+    if (!this.disposed) this.plug('onMessage', m);
   }
 
   on_welcome(m) {
@@ -181,6 +210,7 @@ export class Game {
     this.code = m.code;
     this.solo = m.solo;
     this.settingsState = m.settings;
+    this.rules = rulesFromSettings(m.settings);
     if (m.checksum !== this.world.data.checksum) console.warn('World checksum mismatch — client and server versions differ');
     for (const p of m.players) this.roster.set(p.id, p);
     const info = this.roster.get(m.you) || { name: this.opts.name, skin: this.opts.skin };
@@ -205,6 +235,7 @@ export class Game {
     this.hud.show(true);
     this.updateLobby();
     this.input.enabled = true;
+    this.plug('onPhase', this.phase, m);
   }
 
   ensureRemote(p) {
@@ -240,6 +271,7 @@ export class Game {
 
   on_settings(m) {
     this.settingsState = m.settings;
+    this.rules = rulesFromSettings(m.settings);
     this.updateLobby();
   }
 
@@ -260,6 +292,7 @@ export class Game {
     this.phase = 'bus';
     this.leader = m.leader;
     this.settingsState = m.settings;
+    this.rules = rulesFromSettings(m.settings);
     this.resetWorld();
     this.loot.set(m.loot);
     for (const b of this.bots.values()) b.dispose();
@@ -299,6 +332,7 @@ export class Game {
     this.hud.big('THE BUS IS LEAVING!<small>Jump out when you\'re over a good spot</small>');
     this.sfx.ui('bus');
     document.body.classList.remove('dead');
+    this.plug('onPhase', this.phase, m);
   }
 
   on_bots(m) {
@@ -341,6 +375,7 @@ export class Game {
     this.phase = 'lobby';
     this.leader = m.leader;
     this.settingsState = m.settings;
+    this.rules = rulesFromSettings(m.settings);
     for (const b of this.bots.values()) b.dispose();
     this.bots.clear();
     this.roster.clear();
@@ -363,6 +398,7 @@ export class Game {
       this.autoRestart = false;
       this.send({ t: 'start', bots: this.settingsState.bots, mats: this.settingsState.mats, mode: this.settingsState.mode });
     }
+    this.plug('onPhase', this.phase, m);
   }
 
   spawnWarmup() {
@@ -381,7 +417,10 @@ export class Game {
   }
 
   on_s(m) {
-    if (m.phase !== this.phase && m.phase === 'match' && this.phase === 'bus') this.phase = 'match';
+    if (m.phase !== this.phase && m.phase === 'match' && this.phase === 'bus') {
+      this.phase = 'match';
+      this.plug('onPhase', this.phase, m);
+    }
     if (this.phase !== 'bus' && this.phase !== 'lobby') this.bus.stop();
     const now = performance.now();
     for (const row of m.p) {
@@ -530,6 +569,7 @@ export class Game {
     };
     this.hud.elim(this.lastElim);
     this.input.exitLock();
+    this.plug('onMyDeath', m);
   }
 
   /** Should losing the mouse pointer open the pause menu? */
@@ -660,6 +700,7 @@ export class Game {
     } else {
       this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: 'Returning to the island…', again: this.solo, leave: true });
     }
+    this.plug('onPhase', this.phase, m);
   }
 
   on_forcedrop(m) {
@@ -722,9 +763,10 @@ export class Game {
 
   onLanded(a, speed) {
     if (speed > 8) this.fx.dust(a.pos.x, a.pos.y, a.pos.z, Math.min(2, speed / 12), [0.75, 0.7, 0.6]);
+    this.plug('onLanded', a, speed);
   }
 
-  onJump() {}
+  onJump(a) { this.plug('onJump', a); }
 
   /**
    * Something audible happened (shot, footstep, build, chest, explosion): bots in earshot get a
@@ -1111,6 +1153,7 @@ export class Game {
     if (!this.me) return;
     this.time += dt;
     const s = this.input.update();
+    this.plug('filterInput', s);
     const me = this.me;
     if (s.map) this.hud.toggleFullMap();
 
@@ -1195,6 +1238,7 @@ export class Game {
     this.interactions(s);
     this.network(dt);
     this.updateHud(dt);
+    this.plug('update', dt);
   }
 
   /**
@@ -1510,7 +1554,7 @@ export class Game {
     const lowHp = me.alive && me.hp < 30 ? 0.25 + Math.sin(this.time * 4) * 0.1 : 0;
     hud.hurt(Math.max(this.hurtK, lowHp));
     // map
-    const extras = {};
+    const extras = { layers: this.mapExtras };
     if (this.phase === 'bus' && this.bus.path) { extras.bus = this.bus.path; extras.busPos = this.bus.pos; }
     if (this.phase !== 'lobby') {
       const dots = [];
@@ -1519,10 +1563,15 @@ export class Game {
     }
     const mp = me.inBus ? this.bus.pos : me.alive ? me.pos : (this.actorById(this.spectateId) || me).pos;
     hud.minimap(dt, { x: mp.x, z: mp.z, yaw: me.alive || me.inBus ? me.yaw : this.specYaw }, st && { ...st, ...this.storm.vis }, extras);
-    // location name
+    // location name: the world's regionAt(x, z) when it has one (every named place), else the POI list
     let poi = '';
-    for (const p of this.world.data.pois) {
-      if (Math.hypot(p.x - mp.x, p.z - mp.z) < 55) { poi = p.name; break; }
+    if (this.world.regionAt) {
+      const reg = this.world.regionAt(mp.x, mp.z);
+      if (reg) poi = reg.name;
+    } else {
+      for (const p of this.world.data.pois) {
+        if (Math.hypot(p.x - mp.x, p.z - mp.z) < 55) { poi = p.name; break; }
+      }
     }
     hud.poi(poi);
     if (poi && poi !== this.lastPoi && me.alive && !me.inBus && this.phase !== 'lobby') hud.notice(poi.toUpperCase(), false, 2.5);
@@ -1531,6 +1580,7 @@ export class Game {
     hud.update(dt);
     if (!this.solo) hud.net(this.net.rtt ? `${Math.round(this.net.rtt)} ms` : '');
     if (this.phase === 'lobby') this.updateLobby(true);
+    this.plug('hud', dt);
   }
 
   updateLobby(throttle = false) {
@@ -1558,6 +1608,7 @@ export class Game {
   dispose() {
     this.disposed = true;
     this.unsub();
+    this.plug('dispose');
     this.net.close();
     if (this.me) this.me.dispose();
     for (const b of this.bots.values()) b.dispose();

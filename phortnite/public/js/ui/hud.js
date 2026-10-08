@@ -1,6 +1,11 @@
 // DOM heads-up display. Writes only when values change to keep layout work tiny.
+// The warm-up panel, the end screen and the maps live in their own modules (lobbyPanel.js,
+// endscreen.js, mapview.js); Hud.lobby / elim / drawMap / minimap / toggleFullMap forward to them.
 import * as THREE from 'three';
-import { WEAPONS, HEALS, RARITY, SKINS, MAT_KEYS, AMMO, itemName } from '../../shared/constants.js';
+import { WEAPONS, HEALS, RARITY, MAT_KEYS, AMMO, itemName } from '../../shared/constants.js';
+import { LobbyPanel } from './lobbyPanel.js';
+import { EndScreen } from './endscreen.js';
+import { MapView } from './mapview.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const _v = new THREE.Vector3();
@@ -41,7 +46,6 @@ export class Hud {
       bus: $('#busprompt'), fps: $('#fps'), net: $('#netinfo'), poi: $('#poi'), buildbar: $('#buildbar'),
       lobby: $('#lobbypanel'), elim: $('#elimscreen'), fullmap: $('#fullmap'),
     };
-    this.mapCtx = this.el.map.getContext('2d');
     this.cache = {};
     this.slots = [];
     for (let i = 0; i < 6; i++) {
@@ -61,10 +65,10 @@ export class Hud {
       this.nums.push({ el: d, t: 0, life: 0, pos: new THREE.Vector3(), active: false, dx: 0 });
     }
     this.noticeTimer = 0;
-    this.mapT = 0;
     this.initSiphon();
-    this.el.map.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.toggleFullMap(); });
-    this.el.fullmap.addEventListener('pointerdown', () => this.toggleFullMap(false));
+    this.mapView = new MapView(this, world);
+    this.lobbyPanel = new LobbyPanel(this);
+    this.endscreen = new EndScreen(this);
   }
 
   set(key, value, fn) {
@@ -281,149 +285,17 @@ export class Hud {
     }
   }
 
-  // ------------------------------------------------------------------ maps
-  drawMap(ctx, size, cx, cz, span, me, storm, extras) {
-    const world = this.world;
-    const d = world.data;
-    const src = world.mapCanvas;
-    const k = src.width / d.size;          // map px per metre
-    const s = size / span;                 // screen px per metre
-    ctx.save();
-    ctx.fillStyle = '#2a6f9f';
-    ctx.fillRect(0, 0, size, size);
-    const sx = (cx - span / 2 + d.half) * k, sy = (cz - span / 2 + d.half) * k;
-    ctx.drawImage(src, sx, sy, span * k, span * k, 0, 0, size, size);
-    const toX = (x) => (x - cx) * s + size / 2, toY = (z) => (z - cz) * s + size / 2;
-    if (storm) {
-      ctx.fillStyle = 'rgba(120, 40, 220, 0.4)';
-      ctx.beginPath();
-      ctx.rect(0, 0, size, size);
-      ctx.arc(toX(storm.cx), toY(storm.cz), storm.r * s, 0, Math.PI * 2, true);
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.arc(toX(storm.ncx), toY(storm.ncz), storm.nr * s, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    if (extras.bus) {
-      const b = extras.bus;
-      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-      ctx.lineWidth = 3;
-      ctx.setLineDash([10, 6]);
-      ctx.beginPath();
-      ctx.moveTo(toX(b.ax), toY(b.az));
-      ctx.lineTo(toX(b.bx), toY(b.bz));
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (extras.busPos) {
-        ctx.fillStyle = '#2f8cff';
-        ctx.beginPath();
-        ctx.arc(toX(extras.busPos.x), toY(extras.busPos.z), 6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    if (extras.names) {
-      ctx.font = `${Math.max(11, size / 50)}px "Luckiest Guy", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.fillStyle = '#fff';
-      for (const p of d.pois) {
-        ctx.strokeText(p.name.toUpperCase(), toX(p.x), toY(p.z));
-        ctx.fillText(p.name.toUpperCase(), toX(p.x), toY(p.z));
-      }
-    }
-    if (extras.dots) {
-      for (const dot of extras.dots) {
-        ctx.fillStyle = dot.c;
-        ctx.beginPath();
-        ctx.arc(toX(dot.x), toY(dot.z), 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    if (me) {
-      ctx.translate(toX(me.x), toY(me.z));
-      ctx.rotate(-me.yaw);
-      ctx.fillStyle = '#ffd23f';
-      ctx.strokeStyle = '#000';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(0, -9);
-      ctx.lineTo(6, 7);
-      ctx.lineTo(0, 3);
-      ctx.lineTo(-6, 7);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
+  // ------------------------------------------------------------------ maps (js/ui/mapview.js)
+  drawMap(ctx, size, cx, cz, span, me, storm, extras) { this.mapView.drawMap(ctx, size, cx, cz, span, me, storm, extras); }
 
-  minimap(dt, me, storm, extras) {
-    this.mapT -= dt;
-    if (this.mapT > 0) return;
-    this.mapT = 1 / 15;
-    const c = this.el.map;
-    this.drawMap(this.mapCtx, c.width, me.x, me.z, 230, me, storm, extras);
-    if (!this.el.fullmap.classList.contains('hidden')) {
-      const fc = this.el.fullmap.querySelector('canvas');
-      this.drawMap(fc.getContext('2d'), fc.width, 0, 0, this.world.data.size, me, storm, { ...extras, names: true });
-    }
-  }
+  minimap(dt, me, storm, extras) { this.mapView.minimap(dt, me, storm, extras); }
 
-  toggleFullMap(on) {
-    const fm = this.el.fullmap;
-    const show = on ?? fm.classList.contains('hidden');
-    fm.classList.toggle('hidden', !show);
-  }
+  toggleFullMap(on) { this.mapView.toggleFullMap(on); }
 
-  // ------------------------------------------------------------------ lobby + end screens
-  lobby(state) {
-    const L = this.el.lobby;
-    if (!state) { L.classList.remove('show'); return; }
-    L.classList.add('show');
-    $('.lp-code', L).textContent = state.solo ? 'SOLO' : state.code;
-    $('.lp-title', L).textContent = state.solo ? 'WARM-UP' : 'PARTY';
-    $('.lp-hint', L).textContent = state.solo
-      ? 'Practice on the island with unlimited ammo & materials. Start the match when ready!'
-      : 'Warm up on the island (no damage) while friends join with the party code from Play with Friends.';
-    const ul = $('.lp-players', L);
-    ul.innerHTML = '';
-    for (const p of state.players) {
-      if (p.bot) continue;
-      const li = document.createElement('li');
-      const skin = SKINS[p.skin] || SKINS[0];
-      li.innerHTML = `<i style="background:${skin.outfit}"></i><span></span>${p.id === state.leader ? '<span class="crown">♛ LEADER</span>' : ''}`;
-      li.children[1].textContent = p.name + (p.id === state.you ? ' (you)' : '');
-      ul.appendChild(li);
-    }
-    const isLeader = state.leader === state.you;
-    $('.lp-leader', L).style.display = isLeader ? 'block' : 'none';
-    $('.lp-wait', L).style.display = isLeader ? 'none' : 'block';
-    const bots = $('.lp-bots', L), botsv = $('.lp-botsv', L), mats = $('.lp-mats', L), mode = $('.lp-mode', L);
-    if (document.activeElement !== mode) mode.value = state.settings.mode || 'ffa';
-    mode.closest('label').style.display = state.solo ? 'none' : '';
-    if (document.activeElement !== bots) { bots.value = state.settings.bots; botsv.textContent = state.settings.bots; }
-    if (document.activeElement !== mats) mats.value = String(state.settings.mats);
-    $('.lp-share', L).innerHTML = state.share || '';
-  }
+  // ------------------------------------------------------------------ lobby + end screens (lobbyPanel.js, endscreen.js)
+  lobby(state) { this.lobbyPanel.show(state); }
 
-  elim(opts) {
-    const E = this.el.elim;
-    if (!opts) { E.classList.add('hidden'); return; }
-    E.classList.remove('hidden', 'win', 'spectating');
-    if (opts.win) E.classList.add('win');
-    if (opts.spectating) E.classList.add('spectating');
-    $('.es-place', E).textContent = opts.place ? `#${opts.place}` : '';
-    $('.es-title', E).textContent = opts.title || '';
-    $('.es-sub', E).textContent = opts.sub || '';
-    $('.es-again', E).style.display = opts.again ? '' : 'none';
-    $('.es-spec', E).style.display = opts.spectate ? '' : 'none';
-    $('.es-leave', E).style.display = opts.leave ? '' : 'none';
-  }
+  elim(opts) { this.endscreen.show(opts); }
 }
 
 export function lootLabel(item) {

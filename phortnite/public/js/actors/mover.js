@@ -32,6 +32,9 @@ export class Mover {
     this.crouch = false;
     this.lastGroundY = 0;
     this.airTime = 0;
+    // mode mutators (rules.speed / gravity / jump): multipliers on running speed, gravity and jump
+    this.mods = { speed: 1, gravity: 1, jump: 1 };
+    this.launched = false; // thrown into the air by launch() and not landed yet
     this._desired = { x: 0, y: 0, z: 0 };
     this.predicate = (c) => c.handle !== this.collider.handle;
   }
@@ -49,6 +52,16 @@ export class Mover {
   remove() {
     this.physics.removeCollider(this.collider);
     this.physics.world.removeCharacterController(this.cc);
+  }
+
+  /** Throw the character (launch pads, geysers): this velocity, in the air. */
+  launch(vx, vy, vz) {
+    if (this.mode === 'bus' || this.mode === 'dead') return;
+    this.vel.set(vx, vy, vz);
+    this.mode = 'air';
+    this.grounded = false;
+    this.airTime = 0;
+    this.launched = true;
   }
 
   /**
@@ -91,7 +104,7 @@ export class Mover {
     } else if (this.mode === 'swim') {
       const target = WATER_FEET;
       v.y += ((target - this.pos.y) * 4 - v.y) * Math.min(1, dt * 5);
-      const sp = 3.6;
+      const sp = 3.6 * this.mods.speed;
       v.x += (ctl.wx * sp - v.x) * Math.min(1, dt * 4);
       v.z += (ctl.wz * sp - v.z) * Math.min(1, dt * 4);
       if (ctl.jump && this.pos.y > WATER_FEET - 0.3) { v.y = 5; }
@@ -101,6 +114,7 @@ export class Mover {
       if (this.crouch) speed = PLAYER.crouch;
       else if (ctl.ads) speed = PLAYER.ads;
       else if (ctl.sprint) speed = PLAYER.sprint;
+      speed *= this.mods.speed;
       const tx = ctl.wx * speed, tz = ctl.wz * speed;
       const accel = this.grounded ? 70 : 14;
       const dx = tx - v.x, dz = tz - v.z;
@@ -108,12 +122,12 @@ export class Mover {
       const maxDv = accel * dt;
       if (dl > maxDv) { v.x += (dx / dl) * maxDv; v.z += (dz / dl) * maxDv; } else { v.x = tx; v.z = tz; }
       if (ctl.jump && this.grounded) {
-        v.y = PLAYER.jump;
+        v.y = PLAYER.jump * this.mods.jump;
         this.grounded = false;
         this.mode = 'air';
         ev.jumped = true;
       }
-      v.y -= PLAYER.gravity * dt;
+      v.y -= PLAYER.gravity * this.mods.gravity * dt;
       if (v.y < -60) v.y = -60;
     }
 
@@ -143,7 +157,7 @@ export class Mover {
           this.mode = 'ground';
         }
       }
-      if (this.mode === 'ground') v.y = -2;
+      if (this.mode === 'ground') { v.y = -2; this.launched = false; }
       this.airTime = 0;
       this.lastGroundY = this.pos.y;
     } else if (this.mode === 'ground') {
