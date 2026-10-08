@@ -82,30 +82,56 @@ export function decimate(geo, cell) {
   return g;
 }
 
-/** Two crossed silhouette cards (8 triangles, both sides) in the model's average colour. */
-export function cards(geo) {
-  geo.computeBoundingBox();
-  const b = geo.boundingBox;
-  const col = geo.attributes.color;
-  let r = 0, g = 0, bl = 0;
-  for (let i = 0; i < col.count; i++) { r += col.getX(i); g += col.getY(i); bl += col.getZ(i); }
-  r /= col.count; g /= col.count; bl /= col.count;
-  const w = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) / 2, y0 = Math.max(0, b.min.y), y1 = b.max.y, ym = y0 + (y1 - y0) * 0.45;
-  const outline = [[-w * 0.15, y0], [-w, ym], [0, y1], [w, ym], [w * 0.15, y0]];
+/**
+ * Two crossed silhouette cards in the model's colours: the outline follows the crown's profile
+ * (its widest point at a few heights), with a thin trunk; drawn double-sided (the card material).
+ */
+export function cards(leaves, trunk) {
+  leaves.computeBoundingBox();
+  const b = leaves.boundingBox;
+  const pos = leaves.attributes.position, col = leaves.attributes.color;
+  const y0 = Math.max(0, b.min.y), y1 = b.max.y;
+  // the crown's half-width at 6 heights
+  const K = 4, prof = new Float32Array(K + 1), cr = [0, 0, 0], cb = [0, 0, 0];
+  let nr = 0, nb = 0;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i), r = Math.hypot(pos.getX(i), pos.getZ(i));
+    const k = Math.max(0, Math.min(K, Math.round(((y - y0) / Math.max(0.1, y1 - y0)) * K)));
+    if (r > prof[k]) prof[k] = r;
+    if (col) {
+      if (k >= K / 2) { cr[0] += col.getX(i); cr[1] += col.getY(i); cr[2] += col.getZ(i); nr++; } else { cb[0] += col.getX(i); cb[1] += col.getY(i); cb[2] += col.getZ(i); nb++; }
+    }
+  }
+  const top = nr ? cr.map((v) => v / nr) : [0.3, 0.6, 0.25], bot = nb ? cb.map((v) => v / nb) : top.map((v) => v * 0.7);
+  for (let k = 1; k < K; k++) prof[k] = Math.max(prof[k], (prof[k - 1] + prof[k + 1]) * 0.35);
+  prof[K] = Math.min(prof[K], 0.15);
+  // outline: up the left side, down the right side; triangles fan from the crown's centre
   const P = [], N = [], C = [], U = [];
+  const ym = (y0 + y1) / 2;
+  const pt = [];
+  for (let k = 0; k <= K; k++) pt.push([-prof[k], y0 + ((y1 - y0) * k) / K]);
+  for (let k = K; k >= 0; k--) pt.push([prof[k], y0 + ((y1 - y0) * k) / K]);
+  const colorAt = (y) => { const t = Math.max(0, Math.min(1, (y - y0) / Math.max(0.1, y1 - y0))); return [bot[0] + (top[0] - bot[0]) * t, bot[1] + (top[1] - bot[1]) * t, bot[2] + (top[2] - bot[2]) * t]; };
+  const push = (x, y, rot) => {
+    P.push(x * Math.cos(rot), y, x * Math.sin(rot));
+    N.push(0, 1, 0);
+    C.push(...colorAt(y));
+    U.push(x / 2.5, y / 2.5);
+  };
   for (const rot of [0, Math.PI / 2]) {
-    const cs = Math.cos(rot), sn = Math.sin(rot);
-    for (let i = 1; i < outline.length - 1; i++) {
-      const tri = [outline[0], outline[i], outline[i + 1]];
-      for (const order of [[0, 1, 2], [0, 2, 1]]) {
-        for (const k of order) {
-          const [x, y] = tri[k];
-          P.push(x * cs, y, x * sn);
-          N.push(0, 1, 0);
-          const shade = 0.75 + 0.35 * ((y - y0) / Math.max(0.1, y1 - y0));
-          C.push(r * shade, g * shade, bl * shade);
-          U.push(x / 2.5, y / 2.5);
-        }
+    for (let i = 0; i < pt.length - 1; i++) {
+      const a = pt[i], c = pt[i + 1];
+      push(0, ym, rot); push(a[0], a[1], rot); push(c[0], c[1], rot);
+    }
+  }
+  // a trunk strip below the crown
+  if (trunk && y0 > 0.4) {
+    trunk.computeBoundingBox();
+    const w = Math.max(0.12, Math.min(0.4, (trunk.boundingBox.max.x - trunk.boundingBox.min.x) / 3));
+    for (const rot of [0, Math.PI / 2]) {
+      const q = [[-w, 0], [w, 0], [w, y0 + 0.3], [-w, y0 + 0.3]];
+      for (const [i, j, k] of [[0, 1, 2], [0, 2, 3]]) {
+        for (const v of [q[i], q[j], q[k]]) { P.push(v[0] * Math.cos(rot), v[1], v[0] * Math.sin(rot)); N.push(0, 1, 0); C.push(0.32, 0.24, 0.16); U.push(0, 0); }
       }
     }
   }
@@ -123,7 +149,7 @@ function treeLods(species) {
   const l1 = M.treeGeometry(species, 1), l2 = M.treeGeometry(species, 2);
   const real = tris(l1.leaves) + tris(l1.trunk) < 0.8 * (tris(l0.leaves) + tris(l0.trunk));
   if (real) return [l0, l1, l2];
-  return [l0, { trunk: decimate(l0.trunk, 0.5), leaves: decimate(l0.leaves, 1.1) }, { trunk: null, leaves: cards(l0.leaves) }];
+  return [l0, { trunk: decimate(l0.trunk, 0.5), leaves: decimate(l0.leaves, 1.1) }, { trunk: null, leaves: cards(l0.leaves, l0.trunk), fallback: true }];
 }
 
 // ------------------------------------------------------------------ materials
@@ -204,6 +230,7 @@ export class Vegetation {
       bark, leaves, palm,
       leavesSway: swayMaterial(leaves, 1), palmSway: swayMaterial(palm, 1.6),
       card: std({ vertexColors: true, roughness: 0.95 }),
+      cardDouble: std({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide }),
       rock: arrayMaterial(T.layers, rockLayer, { vertexColors: true, roughness: 0.9 }),
       decor: std({ vertexColors: true, roughness: 0.8 }),
     };
@@ -234,7 +261,7 @@ export class Vegetation {
         const doubleSided = sp === 'palm' || (M.SPECIES_INFO && M.SPECIES_INFO[sp] && M.SPECIES_INFO[sp].doubleSided);
         m = add(key, 'tree', [
           { lods: [L[0].trunk, L[1].trunk, L[2].trunk], mats: [this.mats.bark, this.mats.bark, this.mats.bark] },
-          { lods: [L[0].leaves, L[1].leaves, L[2].leaves], mats: [doubleSided ? this.mats.palmSway : this.mats.leavesSway, doubleSided ? this.mats.palm : this.mats.leaves, this.mats.card] },
+          { lods: [L[0].leaves, L[1].leaves, L[2].leaves], mats: [doubleSided ? this.mats.palmSway : this.mats.leavesSway, doubleSided ? this.mats.palm : this.mats.leaves, L[2].fallback ? this.mats.cardDouble : this.mats.card] },
         ], 2);
         m.species = sp;
         m.lod0 = L[0];

@@ -163,14 +163,14 @@ function arrayTexture(data, size, depth, srgb) {
 }
 
 /**
- * One texture array pair (albedo + height in alpha, and normals at half size) for a list of
- * layer keys. Layers start as their average colour; paint(layer, rgba, nrm) fills one in.
+ * One texture array pair (albedo + height in alpha, and normals at half or a quarter of the size)
+ * for a list of layer keys. Layers start as their average colour; paint(layer, rgba, nrm) fills one in.
  */
 class LayerArray {
-  constructor(keys, size, gens) {
+  constructor(keys, size, gens, normalShift = 1) {
     this.keys = keys;
     this.size = size;
-    this.nsize = Math.max(16, size >> 1);
+    this.nsize = Math.max(16, size >> normalShift);
     this.gens = gens;
     const n = keys.length;
     this.albedo = arrayTexture(new Uint8Array(size * size * 4 * n), size, n, true);
@@ -222,10 +222,12 @@ class LayerArray {
  *   layers.request(kind, keys): paint these layers first (the ones the world uses)
  */
 export class TextureLayers {
-  constructor(lowMem) {
+  constructor(lowMem, renderer = null) {
+    this.renderer = renderer;
     const S = lowMem ? 256 : 512;
     this.surfaces = new LayerArray(SURFACE_LAYERS, S, SURFACE_LAYERS.map((k) => SURFACE_GEN[k] || k));
-    this.looks = new LayerArray(LOOK_LAYERS, S, LOOK_LAYERS);
+    // building normals at a quarter of the size: walls are seen close up, but the bumps are broad
+    this.looks = new LayerArray(LOOK_LAYERS, S, LOOK_LAYERS, 2);
     this.queue = [];
     this.busy = 0;
     this.worker = null;
@@ -297,7 +299,10 @@ export class TextureLayers {
     this.busy--;
     if (d.rgba) job.A.paint(job.l, d.rgba instanceof Uint8Array ? d.rgba : new Uint8Array(d.rgba), d.nrm instanceof Uint8Array ? d.nrm : new Uint8Array(d.nrm));
     this.pump();
-    if (!this.queue.length && !this.busy) this.flush(true);
+    // upload on our own clock (the world may not be drawn while the lobby is up)
+    const last = !this.queue.length && !this.busy;
+    if (last) this.flush(true);
+    else if (!this.flushTimer) this.flushTimer = setTimeout(() => { this.flushTimer = 0; this.flush(true); }, 400);
   }
 
   /** Upload what has been painted (throttled to 4 times a second unless forced). */
@@ -306,6 +311,13 @@ export class TextureLayers {
     if (!force && now - this.lastFlush < 250) return;
     this.lastFlush = now;
     const a = this.surfaces.flush(), b = this.looks.flush();
+    // upload now rather than at the next frame that happens to draw the island
+    if (this.renderer && this.renderer.initTexture) {
+      try {
+        if (a) { this.renderer.initTexture(this.surfaces.albedo); this.renderer.initTexture(this.surfaces.normal); }
+        if (b) { this.renderer.initTexture(this.looks.albedo); this.renderer.initTexture(this.looks.normal); }
+      } catch (e) { /* the next render uploads them */ }
+    }
     if (a || b) for (const fn of this.listeners) fn();
   }
 
@@ -337,7 +349,7 @@ export async function buildTextures(renderer, onProgress = () => {}, lowMem = fa
     onProgress((i + 1) / (jobs.length + 1));
     await nextFrame();
   }
-  T.layers = new TextureLayers(lowMem);
+  T.layers = new TextureLayers(lowMem, renderer);
   onProgress(1);
   return T;
 }

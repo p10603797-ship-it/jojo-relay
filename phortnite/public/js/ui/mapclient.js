@@ -26,7 +26,7 @@ export class MapClient {
   constructor(game) {
     this.game = game;
     this.marks = new Map();   // player id -> { x, z }
-    this.cool = new Map();    // actor -> time of its last launch
+    this.cool = new WeakMap(); // actor -> time of its last launch
     this.time = 0;
     this.ready = false;
     this.labelK = 0;          // label opacity (eased)

@@ -373,24 +373,34 @@ try {
       return { ok: true };
     });
     if (r.ok) {
-      // run the real loop fast until everyone has landed
+      // fast-forward without rendering until most bots have landed (the frame loop stays frozen)
       await page.evaluate(() => {
         const app = window.__phortnite;
-        app.__frozen = false;
-        delete app.frame; // back to the prototype's loop
-        requestAnimationFrame((t) => app.frame(t));
-        app.simSteps = 6;
         const g = app.game;
-        setTimeout(() => g.startMatch(23, undefined, undefined), 500);
+        g.startMatch(23);
+        app.__ff = { t: 0, done: false };
+        const tick = () => {
+          if (app.__ff.done) return;
+          for (let i = 0; i < 30; i++) g.update(1 / 60);
+          app.__ff.t += 0.5;
+          const me = g.me;
+          const focus = me && me.alive && !me.inBus ? me.pos : app.camera.position;
+          app.world.update(0.5, app.camera, focus, g);
+          setTimeout(tick, 0);
+        };
+        setTimeout(tick, 200);
       });
       await page.waitForFunction(() => {
-        const g = window.__phortnite.game;
+        const app = window.__phortnite, g = app.game;
         if (!g || g.phase !== 'match') return false;
         let up = 0;
         for (const a of g.actors()) if (a.alive && !a.inBus && a.mover && a.mover.mode === 'ground') up++;
-        return up >= 12;
-      }, null, { timeout: 600000, polling: 1000 });
-      await page.waitForTimeout(4000);
+        // and a minute of the match after the landings
+        if (up >= 12 && !app.__ff.landed) app.__ff.landed = app.__ff.t;
+        return app.__ff.landed && app.__ff.t - app.__ff.landed >= 60;
+      }, null, { timeout: 1200000, polling: 2000 });
+      await page.evaluate(() => { const app = window.__phortnite; app.__ff.done = true; });
+      await page.waitForTimeout(500);
       await page.evaluate(pageSetup);
       const res = await page.evaluate(() => {
         const app = window.__phortnite;
@@ -407,6 +417,8 @@ try {
         const m = window.__perf.measure(v);
         m.nearby = bn;
         m.actors = acts.length;
+        m.simSeconds = app.__ff.t;
+        m.bots = g.bots.size;
         return m;
       });
       result.views.fight24 = res;
