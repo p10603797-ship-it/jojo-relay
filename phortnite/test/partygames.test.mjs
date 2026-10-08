@@ -356,3 +356,61 @@ test('party games: deterministic for a seed (same picks on every device)', () =>
   assert.equal(run(42), run(42));
   assert.notEqual(run(42), run(43));
 });
+
+// ------------------------------------------------------------------ the client side of hud()
+test('mode HUD: every game\'s hud() drives ModeClient (score bar, top 3, ladder, lines, respawn)', async () => {
+  const { ModeClient, objective } = await import('../public/js/game/modeClient.js');
+  const view = () => {
+    const v = { calls: {} };
+    for (const k of ['show', 'clockText', 'bar', 'top', 'ladder', 'line', 'teammates', 'respawn', 'blindfold', 'pointTo']) v[k] = (...a) => { v.calls[k] = a; };
+    return v;
+  };
+  const run = (key, rules, prep) => {
+    const ctx = new FakeCtx({ game: PARTY_GAMES[key], rules, players: 8, seed: 3 });
+    ctx.start();
+    if (prep) prep(ctx);
+    const ps = ctx.players();
+    const roster = new Map(ps.map((p) => [p.id, { id: p.id, name: p.name, team: p.team, alive: p.alive, bot: p.bot }]));
+    const game = {
+      // (win: key, because hideseek is not a win option yet)
+      rules: { ...ctx.rules, win: key }, myId: 1, phase: 'match', roster, teams: new Map(ctx.teams().map((t) => [t.id, t])),
+      me: { alive: ps[0].alive, pos: { x: ps[0].x, y: ps[0].y, z: ps[0].z } },
+      roleOf: (id) => ps.find((p) => p.id === id)?.role ?? null, teamOf: (id) => roster.get(id)?.team ?? id,
+      nameOf: (id) => roster.get(id)?.name ?? '?', actorById: () => null, actors: () => [], mapExtras: {},
+    };
+    const mc = new ModeClient(game);
+    mc.active = true;
+    mc.view = view();
+    mc.setMs({ t: 'ms', sc: ctx.scores(), goal: ctx.rules.target, tl: 123, g: ctx.hud(), rs: {} });
+    mc.renderHud();
+    return { calls: mc.view.calls, ctx, mc, game };
+  };
+  // King of the Hill: blue holds the hill -> a two-team bar and the hill line
+  let r = run('koth', modeRules('koth'), (ctx) => { const h = ctx.state.hill; for (const p of ctx.players()) { p.x = p.team === 1 ? h.x : h.x + 60; p.z = h.z; } ctx.advance(5000); });
+  assert.equal(r.calls.bar[0].score, 5);
+  assert.equal(r.calls.bar[0].name, 'Blue');
+  assert.match(r.calls.line[0], /HILL: BLUE holds it/);
+  assert.equal(r.calls.clockText[0], '2:03');
+  assert.equal(r.calls.show[0], true);
+  // Gun Game: my rung on the ladder, the top 3
+  r = run('gungame', modeRules('gun-game'), (ctx) => { const [me, b] = ctx.players(); ctx.eliminate(b, me, { w: 'rocket' }); ctx.advance(2000); ctx.eliminate(b, me, { w: 'sniper' }); });
+  assert.equal(r.calls.ladder[1], 2);
+  assert.equal(r.calls.top[0][0].name, 'You');
+  assert.equal(r.calls.top[0][0].score, 2);
+  // Infection, Juggernaut, Floor is Lava, Hide & Seek: their lines
+  r = run('infection', modeRules('infection'));
+  assert.match(r.calls.line[0], /SURVIVORS/);
+  r = run('juggernaut', modeRules('juggernaut'));
+  assert.match(r.calls.line[0], /Juggernaut/);
+  r = run('lava', modeRules('floor-is-lava'));
+  assert.match(r.calls.line[0], /LAVA <b>-2\.0 m<\/b>/);
+  r = run('hideseek', { ...PARTY_GAMES.hideseek.defaults, win: 'hideseek' });
+  assert.match(r.calls.line[0], /HIDING/);
+  // a respawn countdown from ms.rs while I'm down
+  r.game.me.alive = false;
+  r.mc.setMs({ t: 'ms', rs: { 1: 3 } });
+  r.mc.renderHud();
+  assert.ok(r.calls.respawn[0] > 2.5 && r.calls.respawn[0] <= 3, `respawn ${r.calls.respawn[0]}`);
+  assert.match(r.calls.line[0], /HIDING/, 'a partial ms keeps the game state');
+  for (const k of Object.keys(PARTY_GAMES)) assert.ok(objective({ win: k, teams: 1, target: 0, timeLimit: 300 }).length > 10, k);
+});
