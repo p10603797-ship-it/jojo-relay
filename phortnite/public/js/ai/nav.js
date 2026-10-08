@@ -42,8 +42,13 @@ const WALL = F_BLOCK | F_HOUSE | F_CLIFF;
 const DX = [1, 1, 0, -1, -1, -1, 0, 1];
 const DZ = [0, 1, 1, 1, 0, -1, -1, -1];
 const DIR = [5, 6, 7, 4, -1, 0, 3, 2, 1]; // DIR[(dz + 1) * 3 + dx + 1] = d
-/** Graph node of a waypoint code: >= 0 a node, <= -2 a corner on the way into node -code - 2, -1 none. */
-export const wpNode = (code) => (code >= 0 ? code : code <= -2 ? -code - 2 : -1);
+/**
+ * Waypoint codes: >= 0 a graph node; <= VIA a corner on the way into node VIA - code; ROOM a door
+ * or room point (no graph node); STAIR a point of a flight of stairs (walked exactly).
+ */
+export const ROOM = -1, STAIR = -2, VIA = -10;
+/** Graph node of a waypoint code (-1: not a graph point). */
+export const wpNode = (code) => (code >= 0 ? code : code <= VIA ? VIA - code : -1);
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 const _navs = new WeakMap();
@@ -822,20 +827,20 @@ export class Nav {
     let sx = ax, sz = az, ex = bx, ez = bz;
     if (ra && ra === rb) {
       // same building: stairs between the two floors only
-      this.roomLeg(ra, ay, by, bx, by, bz, pre, false);
-      pre.push(bx, by, bz, -1);
+      this.roomLeg(ra, ay, by, bx, by, bz, pre);
+      pre.push(bx, by, bz, ROOM);
       return pre;
     }
     if (ra) {
       const dr = nearestDoor(ra, ax, az);
-      this.roomLeg(ra, ay, dr.y, dr.ix, dr.y, dr.iz, pre, true);
-      pre.push(dr.ix, dr.y, dr.iz, -1, dr.ox, dr.y, dr.oz, -1);
+      this.roomLeg(ra, ay, dr.y, dr.ix, dr.y, dr.iz, pre);
+      pre.push(dr.ix, dr.y, dr.iz, ROOM, dr.ox, dr.y, dr.oz, ROOM);
       sx = dr.ox; sz = dr.oz;
     }
     if (rb) {
       const dr = nearestDoor(rb, bx, bz);
-      post.push(dr.ox, dr.y, dr.oz, -1, dr.ix, dr.y, dr.iz, -1);
-      this.roomLeg(rb, dr.y, by, bx, by, bz, post, false);
+      post.push(dr.ox, dr.y, dr.oz, ROOM, dr.ix, dr.y, dr.iz, ROOM);
+      this.roomLeg(rb, dr.y, by, bx, by, bz, post);
       ex = dr.ox; ez = dr.oz;
     }
     const out = pre;
@@ -856,7 +861,7 @@ export class Nav {
       this.nodePts(nodes, out);
     }
     for (let k = 0; k < post.length; k++) out.push(post[k]);
-    if (!rb) out.push(bx, by, bz, -1);
+    if (!rb) out.push(bx, by, bz, ROOM);
     return out;
   }
 
@@ -866,7 +871,7 @@ export class Nav {
       const n = nodes[k];
       if (k > 0) {
         const via = this.viaOf(nodes[k - 1], n);
-        if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, -n - 2);
+        if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, VIA - n);
       }
       out.push(this.nodeX[n], NaN, this.nodeZ[n], n);
     }
@@ -879,7 +884,7 @@ export class Nav {
    * Stairs inside a building between the floors at heights y0 and y1 (toward the point tx, tz on
    * y1): pushes [x, y, z, -1] for each flight's foot and head.
    */
-  roomLeg(r, y0, y1, tx, ty, tz, out, down) {
+  roomLeg(r, y0, y1, tx, ty, tz, out) {
     const lv = r.levels;
     if (!lv || lv.length < 2 || !r.stairs.length) return;
     const level = (y) => { let k = 0; for (let i = 0; i < lv.length; i++) if (y >= lv[i] - 1.2) k = i; return k; };
@@ -897,10 +902,33 @@ export class Nav {
         if (d < bestD) { bestD = d; best = s; }
       }
       if (!best) return;
-      flights.push(step > 0 ? [best[0], best[2], best[1], best[3], best[5], best[4]] : [best[3], best[5], best[4], best[0], best[2], best[1]]);
+      flights.push(step > 0 ? [best[0], best[2], best[1], best[3], best[5], best[4], best[6]] : [best[3], best[5], best[4], best[0], best[2], best[1], best[6]]);
     }
-    for (const f of flights) out.push(f[0], f[1], f[2], -1, f[3], f[4], f[5], -1);
-    void down;
+    // each flight: line up a step before its start, walk it end to end, then a step on. A flight
+    // whose end is against a wall (stairs start 0.2 m from the back wall) is stepped on / off from
+    // its open side instead (toward the middle of the building), half a metre along: the edge is
+    // ~0.3 m high there, which the mover's autostep climbs.
+    const [bx0, bz0, bx1, bz1] = r.bounds;
+    const cx = (bx0 + bx1) / 2, cz = (bz0 + bz1) / 2;
+    const inside = (x, z) => x > bx0 + 0.75 && x < bx1 - 0.75 && z > bz0 + 0.75 && z < bz1 - 0.75;
+    for (const f of flights) {
+      const ux = f[3] - f[0], uz = f[5] - f[2], ul = Math.hypot(ux, uz) || 1;
+      const nx = ux / ul, nz = uz / ul, k = (f[4] - f[1]) / ul;
+      const hw = (f[6] || 1.7) / 2 + 0.9;
+      // the open side: the perpendicular that points toward the building's middle
+      let px = -nz, pz = nx;
+      if ((cx - f[0]) * px + (cz - f[2]) * pz < 0) { px = -px; pz = -pz; }
+      if (inside(f[0] - nx * 1.3, f[2] - nz * 1.3)) out.push(f[0] - nx * 1.3, f[1], f[2] - nz * 1.3, ROOM, f[0], f[1], f[2], STAIR);
+      else {
+        const sx = f[0] + nx * 0.5, sz = f[2] + nz * 0.5;
+        out.push(sx + px * hw, f[1], sz + pz * hw, ROOM, sx, f[1] + k * 0.5, sz, STAIR);
+      }
+      if (inside(f[3] + nx * 1.2, f[5] + nz * 1.2)) out.push(f[3], f[4], f[5], STAIR, f[3] + nx * 1.2, f[4], f[5] + nz * 1.2, ROOM);
+      else {
+        const sx = f[3] - nx * 0.5, sz = f[5] - nz * 0.5;
+        out.push(sx, f[4] - k * 0.5, sz, STAIR, sx + px * hw, f[4], sz + pz * hw, ROOM);
+      }
+    }
   }
 }
 
@@ -984,6 +1012,13 @@ export class PathFollower {
   /** Seconds without progress on the current link (0..STUCK_S). */
   get stalled() { return this.progT; }
 
+  /** Heading for a door or a flight of stairs (walk it exactly: no swerving round obstacles). */
+  get precise() {
+    if (!this.pts || this.i >= this.pts.length >> 2) return false;
+    const c = this.pts[this.i * 4 + 3];
+    return c === STAIR || (c === ROOM && this.i < (this.pts.length >> 2) - 1);
+  }
+
   step(px, py, pz, t, dt) {
     const nav = this.nav;
     if (t - this.lastT > 0.5) { this.bestD = Infinity; this.progT = 0; }
@@ -1009,8 +1044,8 @@ export class PathFollower {
       const wx = P[j] - px, wz = P[j + 2] - pz, wy = P[j + 1];
       const d2 = wx * wx + wz * wz;
       const code = P[j + 3];
-      const near = code >= 0 ? 2.6 : code <= -2 ? 1.6 : 1.4;
-      if (d2 < near * near && (!(wy === wy) || Math.abs(wy - py) < 2.4)) { this.next(); continue; }
+      const near = code >= 0 ? 2.6 : code <= VIA ? 1.6 : code === STAIR ? 0.7 : 1.4;
+      if (d2 < near * near && (!(wy === wy) || Math.abs(wy - py) < (code === STAIR ? 1.2 : 2.4))) { this.next(); continue; }
       break;
     }
     // walk straight past waypoints that are in plain reach (graph points outside buildings)

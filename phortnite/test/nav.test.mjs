@@ -261,7 +261,7 @@ test('nav: buildings with doors are entered through the door and climbed by thei
   // a 12 x 12 m two-storey box with a door on its west side and a flight of stairs inside
   const house = {
     id: 0, x: 0, z: -300, y: 8, bounds: [-6, -306, 6, -294], levels: [8, 11.2], top: 14,
-    doors: [[-6, -300, 8, -1, 0, 2.4, 2]], stairs: [[2, -304, 8, 2, -297, 11.2, 1.6]],
+    doors: [[-6, -300, 8, -1, 0, 2.4, 2]], stairs: [[2, -303, 8, 2, -297, 11.2, 1.6]],
   };
   const world = { ...SYN, houses: [house] };
   world.solidNear = (x, y, z, d, pad) => SYN.solidNear(x, y, z, d, pad) || (x > -6.5 && x < 6.5 && z > -306.5 && z < -293.5 && (Math.abs(x) > 5.5 || Math.abs(z + 300) > 5.5));
@@ -277,14 +277,28 @@ test('nav: buildings with doors are entered through the door and climbed by thei
   const iOut = [...Array(n).keys()].find((k) => Math.abs(wp(k)[0] + 8.4) < 0.01);
   assert.ok(iOut >= 0, 'goes to the outside of the door');
   assert.ok(Math.abs(wp(iOut + 1)[0] + 4.6) < 0.01, 'then just inside it');
-  assert.deepEqual(wp(iOut + 2), [2, 8, -304], 'then the foot of the stairs');
-  assert.deepEqual(wp(iOut + 3), [2, 11.2, -297], 'then their head');
+  const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
+  assert.ok(near(wp(iOut + 2), [2, 8, -304.3]), 'then lined up a step before the stairs');
+  assert.deepEqual(wp(iOut + 3), [2, 8, -303], 'then the foot of the stairs');
+  assert.deepEqual(wp(iOut + 4), [2, 11.2, -297], 'then their head');
+  assert.ok(near(wp(iOut + 5), [2, 11.2, -295.8]), 'and a step on');
   // never through the walls on the way round
   for (const [, , f] of routeCells(nav, pts.slice(0, (iOut + 1) * 4))) assert.equal(f & (F_HOUSE | F_BLOCK), 0);
-  // and out again: down the stairs, through the door
+  // and out again: down the stairs (lined up at their head), through the door
   const out = nav.route(3, 11.2, -296, -40, SYN.heightAt(-40, -300), -300);
-  assert.deepEqual([out[0], out[1], out[2]], [2, 11.2, -297]);
-  assert.deepEqual([out[4], out[5], out[6]], [2, 8, -304]);
+  assert.deepEqual([out[4], out[5], out[6]], [2, 11.2, -297]);
+  assert.deepEqual([out[8], out[9], out[10]], [2, 8, -303]);
+  // stairs that start against a wall (as the generated buildings' do, 0.2 m off the back wall):
+  // stepped onto from their open side, half a metre up, where the edge is low enough to step on
+  const wallFlight = { ...nav.rooms[0], stairs: [[-5.3, -305, 8, -0.5, -305, 11.2, 1.7]] };
+  const leg = [];
+  nav.roomLeg(wallFlight, 8, 11.2, 0, 11.2, -300, leg);
+  assert.equal(leg.length, 16, 'four waypoints');
+  const [ax, ay, az] = leg, [fx, fy, fz] = leg.slice(4);
+  assert.ok(Math.abs(ax - -4.8) < 1e-6 && ay === 8 && Math.abs(az - (-305 + 1.75)) < 1e-6, `lined up beside the stairs (${ax}, ${ay}, ${az})`);
+  assert.ok(Math.abs(fx - -4.8) < 1e-6 && Math.abs(fy - (8 + 3.2 / 4.8 * 0.5)) < 1e-6 && fz === -305, 'stepped onto them half a metre up');
+  assert.deepEqual(leg.slice(8, 11), [-0.5, 11.2, -305], 'then their head');
+  assert.ok(Math.abs(leg[12] - 0.7) < 1e-6 && leg[13] === 11.2, 'and a step on');
 });
 
 // ------------------------------------------------------------------ today's world

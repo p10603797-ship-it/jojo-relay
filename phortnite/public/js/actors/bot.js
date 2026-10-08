@@ -399,7 +399,7 @@ export class Bot extends Combatant {
       const needShotgun = isShotgun(k) && !this.hasShotgun();
       const missing = needShotgun || !this.hasClass(weaponClass(k));
       if (this.freeSlot() < 0) return missing && this.swapSlotFor(item) > 0 ? 3 + r * 0.5 + (needShotgun ? 3 : 0) : 0;
-      let v = (missing ? 5 : 1.2) + r * 0.6 + (needShotgun ? 4 : 0);
+      let v = (missing ? 5 : 1.2) + r * 0.6 + (needShotgun ? 6 : 0);
       if (w.scope) v += this.brain.persona.snipe * 2 - 0.6;
       return v;
     }
@@ -969,10 +969,12 @@ export class Bot extends Combatant {
       in2 = Math.max(0, st.r - 5) ** 2;
     }
     let best = null, bestS = 0;
+    // a shotgun is worth a longer walk while we don't have one (not with the storm on us)
+    const sg2 = b.urgent === 2 || this.hasShotgun() || !this.hasGun() ? 0 : Math.max(r2, 45 * 45);
     for (const it of this.game.loot.items.values()) {
       const dx = it.x - p.x, dz = it.z - p.z, dy = it.y - p.y;
       const d2 = dx * dx + dz * dz;
-      if (d2 > r2) {
+      if (d2 > r2 && !(d2 <= sg2 && isShotgun(it.item.k))) {
         // their stuff is scattered within a few metres of where they fell
         if (!kill || (it.x - b.killX) ** 2 + (it.z - b.killZ) ** 2 > 36) continue;
         if (in2 !== Infinity && (it.x - st.cx) ** 2 + (it.z - st.cz) ** 2 > in2) continue;
@@ -1256,7 +1258,8 @@ export class Bot extends Combatant {
 
   skydive(dt) {
     const b = this.brain;
-    b.skyT = this.time;
+    // (gliding after a launch pad isn't a landing: the calm after landing doesn't start over)
+    if (!this.mover.launched) b.skyT = this.time;
     if (!b.spread) {
       // everyone leaves the bus at the same point: fan out so nobody stands on anyone
       b.spread = true;
@@ -1396,7 +1399,10 @@ export class Bot extends Combatant {
     if (!f.routed && this.detour(f.tx, f.tz, Math.hypot(f.tx - p.x, f.tz - p.z), dt)) return 1;
     // a stuck route lets us pickaxe through destructible scenery (probe in moveWorld)
     b.noProg = f.stalled > 1.5 ? 1 : 0;
-    this.goTo(f.tx, f.tz, dt, sprint && !f.pad);
+    // through a door and up the stairs: exactly along the line, no sidestepping the frame
+    b.precise = f.precise;
+    this.goTo(f.tx, f.tz, dt, sprint && !f.pad && !b.precise);
+    b.precise = false;
     // stairs and steps: hop when the next point is a little above us and we're slowing down
     if (f.ty - p.y > 0.6 && f.ty - p.y < 2.2 && this.speed < 2 && b.jumpT <= 0 && this.mover.grounded) { this.ctl.jump = true; b.jumpT = 0.8; }
     return 1;
@@ -1467,7 +1473,7 @@ export class Bot extends Combatant {
     if (l < 1e-3) return;
     const m = Math.min(1, l);
     wx /= l; wz /= l;
-    if (b.avoidT > 0) {
+    if (b.precise) { b.avoidT = 0; } else if (b.avoidT > 0) {
       b.avoidT -= dt;
       const c = Math.cos(b.avoid * 0.9), s = Math.sin(b.avoid * 0.9);
       const rx = wx * c - wz * s, rz = wx * s + wz * c;
@@ -1682,6 +1688,8 @@ export class Bot extends Combatant {
     // no shotgun on us: up close is their game, keep a few steps further out
     const noSg = !this.hasShotgun();
     if (noSg) want = Math.max(want, 13);
+    // ...and with someone in our face, a wall between us first (then back off)
+    if (noSg && dist < 8 && b.buildT <= 0 && !this.build.busy && Math.random() < 0.6 * b.buildK && this.build.start('wall', Math.atan2(-ux, -uz))) b.buildT = rnd(1.2, 2.2);
     let fwd = 0;
     if (dist > want + 4 + 10 * (1 - P.aggro)) fwd = 1;
     else if (dist < Math.max(rg[0], want * 0.5) - 1 || (noSg && dist < SHOTGUN_NEAR)) fwd = -1;
