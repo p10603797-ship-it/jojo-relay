@@ -1,5 +1,6 @@
 // Shared game rules for Phortnite. Imported by the browser client AND the Node server,
 // so this file must stay free of DOM / Node specific APIs.
+import { MAP, BUS, DROP } from './world/scale.js';
 
 export const VERSION = '1.1.0';
 export const PROTOCOL = 2; // bump whenever old and new builds can't share a party
@@ -7,13 +8,8 @@ export const PROTOCOL = 2; // bump whenever old and new builds can't share a par
 export const TICK_HZ = 20;            // server snapshot rate
 export const SEND_HZ = 20;            // client state upload rate
 
-export const MAP = {
-  seed: 20261003,                     // one hand-tuned island, like the real thing
-  size: 640,                          // metres, terrain spans [-320, 320]
-  res: 160,                           // terrain cells per side (4 m cells)
-  islandRadius: 268,
-  waterY: 0,
-};
+// the island's size and the bus / drop reach live in world/scale.js
+export { MAP, BUS, DROP };
 
 export const BUILD = {
   cell: 4,                            // grid cell width (m)
@@ -48,12 +44,12 @@ export const PLAYER = {
   stepHeight: 0.5,
   fallSafe: 19,                       // impact speed below which there is no fall damage
   fallDmgPerMs: 7,
-  skydiveFall: 34,
-  skydiveDive: 50,
-  skydiveSpeed: 22,
-  glideFall: 8,
-  glideSpeed: 15,
-  glideHeight: 55,                    // glider deploys automatically this far above ground
+  skydiveFall: DROP.skydiveFall,
+  skydiveDive: DROP.skydiveDive,
+  skydiveSpeed: DROP.skydiveSpeed,
+  glideFall: DROP.glideFall,
+  glideSpeed: DROP.glideSpeed,
+  glideHeight: DROP.glideHeight,      // glider deploys automatically this far above ground
 };
 
 export const RARITY = [
@@ -191,8 +187,6 @@ export const STORM = {
     { wait: 18, shrink: 20, ratio: 0.0,  dps: 12 },
   ],
 };
-
-export const BUS = { height: 135, speed: 30, length: 680, forceDrop: 0.84 };
 
 export const SKINS = [
   { id: 0, name: 'Phantom',    outfit: '#2b2f45', accent: '#7cf2ff', pants: '#1c1f2e', skin: '#e9b48a', hair: '#141414', shoes: '#f1f1f1' },

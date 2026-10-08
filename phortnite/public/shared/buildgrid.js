@@ -1,7 +1,9 @@
 // Build grid math shared by client and server: keys, corners, structural support.
-import { BUILD } from './constants.js';
+import { BUILD, MAP } from './constants.js';
 
 const C = BUILD.cell, L = BUILD.level;
+// farthest grid cell from the centre a piece may use: 1.25 map sizes out (200 cells on the 640 m island)
+const MAX_CELL = Math.ceil((MAP.size * 1.25) / C);
 
 /** Types: 'w' wall (o = 'x' | 'z'), 'f' floor, 'r' ramp (d = 0..3 rising toward +z,+x,-z,-x). */
 export function pieceKey(t, cx, cy, cz, o) {
@@ -15,7 +17,7 @@ export function parseKey(k) {
   const parts = k.slice(1).split(',');
   const cx = parseInt(parts[0], 10), cy = parseInt(parts[1], 10), cz = parseInt(parts[2], 10);
   if (![cx, cy, cz].every(Number.isFinite)) return null;
-  if (Math.abs(cx) > 200 || Math.abs(cz) > 200 || cy < -10 || cy > 60) return null;
+  if (Math.abs(cx) > MAX_CELL || Math.abs(cz) > MAX_CELL || cy < -10 || cy > 60) return null;
   if (t === 'w') {
     const o = parts[3];
     if (o !== 'x' && o !== 'z') return null;

@@ -1,7 +1,53 @@
 // Deterministic island generator. Produces plain data only (no rendering) so both the
 // browser and the server agree on object ids, loot spots and chest positions.
+//
+// Determinism: decisions may only use + - * / floor sqrt and rng.js (mulberry32, Perlin), so
+// Node and every browser build the same island; the checksum is compared between them.
+//
+// ================================================================== THE WORLD CONTRACT
+// generateWorld(seed) returns plain data that the Room, the renderer, bots and modes read.
+// Names (biomes, surfaces, species, looks, pads, tiers) come from shared/world/keys.js; sizes
+// from shared/world/scale.js (MAP).
+//
+// Terrain
+//   seed, version (1 = the 640 m island), size (m), res (cells per side), cell (m), half (= size/2),
+//   N (= res + 1 grid points per side), heights: Float32Array(N*N), row-major (index iz*N + ix,
+//   point (-half + ix*cell, -half + iz*cell)); heightAt(x, z): the triangulated height (the same
+//   triangles as the physics heightfield)
+//   biome, surface: Uint8Array(N*N) of BIOMES / SURFACES indexes laid out like heights, or null
+//     when the world has no such grid (version 1)
+//   biomeAt(x, z) -> BIOMES key; surfaceKeyAt(x, z) -> SURFACES key, or null (version 1: no
+//     surface grid, the renderer paints grass / sand / rock / dirt itself)
+// Places
+//   regions: [{ id, name, x, z, r, biome, kind, tier, named }]: named places (named true) and
+//     landmarks; id = index; kind: 'town' | 'yard' in version 1; tier: a TIERS key
+//   pois: the version 1 places [{ name, x, z, y, r, type }] (regions[i] is pois[i])
+//   spawnPoints: [{ x, y, z, region }]: open ground for spawns (respawn, sky / ground drops),
+//     y = ground height, region = a regions id or -1
+//   spawns: [{ x, z }]: warm-up spots around the most central place
+//   mountain: { x, z }: the peak the menu camera looks from
+// Objects (index = id; destroyed ids are shared over the network)
+//   objects: [{ id, kind, x, y, z, mat, hp, … }]; hp 0 = indestructible
+//     kind 'part' (houses): house, look (a LOOKS key, or a LOOK_ALIASES key such as 'slab'),
+//       shape 'box' (hx, hy, hz half sizes; ax / ang: tilted about a local axis) or 'prism' (pts)
+//     kind 'prop': type 'container' | 'car' | 'crate', hx, hy, hz, yaw?, color
+//     kind 'tree': type (legacy 0 pine, 1 oak, 2 palm), species (a SPECIES key), s (scale), yaw
+//     kind 'rock': type 0-2, s, yaw
+//   objectsNear(x, z, r, fn): calls fn(o) for every object whose centre is within r metres of
+//     (x, z) (a 32 m hash, cell by cell); fn returning true stops the walk (objectsNear then
+//     returns true)
+//   solidNear(x, y, z, destroyed?, pad?): is the point touching an intact solid object?
+//   houses: [{ id, x, z, y, base, rot, w, d, hx, hz, floors, style, roof, paint, poi, archetype,
+//     region }]: archetype 'house' | 'warehouse' in version 1; region = a regions id or -1
+// Loot
+//   chests: [{ x, y, z, yaw, tier }]; lootSpots: [{ x, y, z, ground?, tier }] (tier: a TIERS key)
+//   barrels: [{ x, y, z }] (physics props)
+// Features (empty in version 1)
+//   roads, rivers, lakes, pads (launch pads: kind a PADS key), lava (lava zones)
+// checksum: compared between the Room and every client (welcome.checksum)
 import { MAP, ENV } from './constants.js';
 import { mulberry32, Perlin, smoothstep, lerp, clamp } from './rng.js';
+import { SPECIES } from './world/keys.js';
 
 export const POI_NAMES = [
   'Pinewood Plaza', 'Breezy Bluffs', 'Rusty Yard', 'Sunny Shacks', 'Mossy Mill', 'Crater Cove', 'Hilltop Haven',
@@ -499,9 +545,70 @@ export function generateWorld(seed = MAP.seed) {
   let checksum = objects.length * 7919 + chests.length * 31 + lootSpots.length;
   for (const o of objects) checksum = (checksum + Math.floor(o.x * 10) * 13 + Math.floor(o.z * 10) * 17) % 1000000007;
 
+  // ---------------------------------------------------------------- contract fields (see the header)
+  // All derived from the island above, after the checksum, without the rng: the checksum and every
+  // object id stay the same.
+  const regions = pois.map((p, i) => ({ id: i, name: p.name, x: p.x, z: p.z, r: p.r, biome: 'meadow', kind: p.type, tier: 'normal', named: true }));
+  for (const o of objects) if (o.kind === 'tree') o.species = SPECIES[o.type];
+  for (const c of chests) c.tier = 'normal';
+  for (const l of lootSpots) l.tier = 'normal';
+  for (const h of houses) { h.archetype = h.style === 'metal' ? 'warehouse' : 'house'; h.region = h.poi; }
+
+  // object hash for objectsNear
+  const NEAR = 32;
+  const nearKey = (gx, gz) => (gx + 2048) * 4096 + (gz + 2048);
+  const nearHash = new Map();
+  for (const o of objects) {
+    const k = nearKey(Math.floor(o.x / NEAR), Math.floor(o.z / NEAR));
+    let list = nearHash.get(k);
+    if (!list) nearHash.set(k, (list = []));
+    list.push(o);
+  }
+  /** fn(o) for every object whose centre is within r of (x, z); fn returning true stops (and returns true). */
+  function objectsNear(x, z, r, fn) {
+    const gx0 = Math.floor((x - r) / NEAR), gx1 = Math.floor((x + r) / NEAR);
+    const gz0 = Math.floor((z - r) / NEAR), gz1 = Math.floor((z + r) / NEAR);
+    const rr = r * r;
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const list = nearHash.get(nearKey(gx, gz));
+        if (!list) continue;
+        for (const o of list) {
+          const dx = o.x - x, dz = o.z - z;
+          if (dx * dx + dz * dz <= rr && fn(o) === true) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // open ground on three rings around every place (16 compass directions, alternating per ring)
+  const DIRS = [
+    [1, 0], [0.92388, 0.38268], [0.70711, 0.70711], [0.38268, 0.92388], [0, 1], [-0.38268, 0.92388], [-0.70711, 0.70711], [-0.92388, 0.38268],
+    [-1, 0], [-0.92388, -0.38268], [-0.70711, -0.70711], [-0.38268, -0.92388], [0, -1], [0.38268, -0.92388], [0.70711, -0.70711], [0.92388, -0.38268],
+  ];
+  const spawnPoints = [];
+  for (const g of regions) {
+    [[0.5, 0], [0.95, 1], [1.4, 0]].forEach(([k, odd]) => {
+      for (let i = odd; i < DIRS.length; i += 2) {
+        const x = g.x + DIRS[i][0] * g.r * k, z = g.z + DIRS[i][1] * g.r * k;
+        const y = heightAt(x, z);
+        if (y < 1.5 || overlapsHouse(x, z, 0.5, 0.5, 1)) continue;
+        const sl = Math.abs(heightAt(x + 2, z) - heightAt(x - 2, z)) + Math.abs(heightAt(x, z + 2) - heightAt(x, z - 2));
+        if (sl > 3 || solidNear(x, y + 0.9, z, null, 0.5)) continue;
+        spawnPoints.push({ x, y, z, region: g.id });
+      }
+    });
+  }
+
   return {
     seed, size, res, cell, half, N, heights, heightAt,
     pois, houses, objects, chests, lootSpots, barrels, spawns, solidNear,
     mountain: { x: mx, z: mz }, checksum,
+    version: 1, regions, biome: null, surface: null,
+    biomeAt: (x, z) => (heightAt(x, z) < 3 ? 'beach' : 'meadow'),
+    surfaceKeyAt: null,
+    roads: [], rivers: [], lakes: [], pads: [], lava: [],
+    spawnPoints, objectsNear,
   };
 }
