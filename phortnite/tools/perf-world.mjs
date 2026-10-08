@@ -260,7 +260,7 @@ function pageSetup() {
       for (let i = 0; i < frames; i++) {
         world.update(1 / 30, cam, focus, app.game || null);
         if (world.farFor && app.applyFar) app.applyFar(true);
-        if (i % 3 === 0) app.physics.step(1 / 60);
+        app.physics.step(1 / 60);
       }
       return focus;
     },

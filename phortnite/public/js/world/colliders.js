@@ -1,14 +1,15 @@
 // Collider streaming: only the parts of the island near someone have physics colliders.
 //
-// Rapier's step cost grows with every static collider, even disabled ones, so a 1.6 km island
-// with ~40k colliders cannot keep them all. The island is cut into 64 m chunks. Every 0.2 s the
+// Rapier's step cost grows with every static collider, even disabled ones. The World groups its
+// objects into "units" (a building, or the trees / props of a 32 m cell, each one compound
+// collider; see World.buildColliders) and the island is cut into 64 m chunks. Every 0.2 s the
 // active set becomes every chunk within 96 m of a focus point (the local player, bots simulated
-// here, the spectated player, remote players, rockets in flight). Objects of newly wanted chunks
-// get their colliders (at most 600 new colliders a frame); chunks nobody wanted for 3 s lose them.
+// here, the spectated player, remote players, rockets in flight). Units of newly wanted chunks get
+// their collider (at most 600 a frame); chunks nobody wanted for 3 s lose theirs.
 // ensureAlong() activates the chunks under a bullet's path at once, so a long shot always hits.
 //
-// An object belongs to every chunk its footprint overlaps and keeps its colliders while any of
-// them is active (a reference count), so a big wall never vanishes at a chunk border.
+// A unit belongs to every chunk its footprint overlaps and keeps its collider while any of them is
+// active (a reference count), so a big building never vanishes at a chunk border.
 // The streamer knows nothing about Rapier: create(id) / remove(id) do the work (World supplies
 // them) and create returns how many colliders it made. Pure logic, tested in Node
 // (test/streaming.test.mjs).

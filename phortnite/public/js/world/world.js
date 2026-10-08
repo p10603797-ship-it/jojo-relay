@@ -2,7 +2,7 @@
 //   terrain.js     LOD tiles with the biome splat, roads, the physics heightfield
 //   batch.js       buildings and props in 128 m chunk batches (HLOD boxes far away)
 //   vegetation.js  trees, rocks and decor in NEAR / MID / FAR rings
-//   colliders.js   physics colliders only near players (64 m chunks, streamed)
+//   colliders.js   physics colliders only near players (compound units in 64 m chunks, streamed)
 //   traversal.js   launch pads, geysers and bounce mushrooms
 // The far view follows the camera's altitude: higher up, the fog (and the camera's far plane)
 // reach further, so the whole island shows from the bus.
@@ -21,7 +21,7 @@ import { paintMapArt } from '../ui/mapview.js';
 import * as M from './models.js';
 
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
-const FIX_CHUNK = 128;        // indestructible geometry: one trimesh per 128 m chunk (and material)
+const UNIT_CELL = 32;         // trees / rocks / props share one compound collider per 32 m cell
 const FOG_NEAR = 200;
 
 const _m = new THREE.Matrix4();
@@ -206,149 +206,245 @@ export class World {
 
   // ------------------------------------------------------------------ physics colliders
   /**
-   * Every solid object gets a make() closure for its colliders. Indestructible ones (hp 0) are
-   * merged into one triangle mesh per 128 m chunk and material, always there; everything else is
-   * streamed: its colliders exist only while a chunk it touches is near someone.
+   * Colliders come in "units", each one Rapier compound collider: a building (all its parts), or
+   * the trees and rocks, bushes, or props of a 32 m cell. Rapier's step costs about the same for a
+   * compound of 50 boxes as for one box, so a whole town is a few dozen colliders. Units are
+   * streamed in 64 m chunks near the people simulated or seen here (colliders.js), and a unit
+   * whose member is destroyed or restored is rebuilt (once, right after the messages that did it).
+   * Ray casts hitting a unit are resolved to the member they hit (physics.js calls unit.resolve),
+   * so damage, harvesting and footsteps see the same { kind: 'obj', id, mat } as before.
    */
   buildColliders() {
     const d = this.data;
     const R = this.physics.R;
-    this.streamer = new ColliderStreamer({ size: d.size, create: (id) => this.streamIn(id), remove: (id) => this.streamOut(id) });
-    const fixed = new Map(); // `${chunk}|${mat}` -> { v: [], i: [] }
+    this.units = [];
+    this.unitOf = new Int32Array(d.objects.length).fill(-1);
+    this.memberInfo = new Array(d.objects.length);
+    const cells = new Map();
+    const unitFor = (key, group, kind) => {
+      let u = cells.get(key);
+      if (!u) {
+        u = { id: this.units.length, kind, group, members: [], collider: null, dirty: false, info: null };
+        cells.set(key, u);
+        this.units.push(u);
+      }
+      return u;
+    };
+    const cellKey = (o) => `${Math.floor((o.x + d.half) / UNIT_CELL)},${Math.floor((o.z + d.half) / UNIT_CELL)}`;
     for (const o of d.objects) {
       if (o.kind === 'decor') continue;
-      if (o.kind === 'part' || o.kind === 'prop') {
-        if (!(o.hp > 0)) { this.addFixed(fixed, o); this.objs[o.id] = { o, alive: true, colliders: [], make: () => [], fixed: true }; continue; }
-        const make = () => this.staticColliders(o, R);
-        this.objs[o.id] = { o, alive: true, colliders: [], make, r: this.radiusOf(o) };
-      } else if (o.kind === 'tree') {
-        const spec = this.veg.models[this.veg.modelOf.get(this.veg.keyOf(o))];
-        const cols = spec ? spec.colliders : null;
-        const make = () => this.treeColliders(o, cols, R);
-        this.objs[o.id] = { o, alive: true, colliders: [], make, r: 3 * (o.s || 1) };
-      } else if (o.kind === 'rock') {
-        const make = () => this.rockColliders(o, R);
-        this.objs[o.id] = { o, alive: true, colliders: [], make, r: 2 * (o.s || 1) };
-      } else continue;
-      const r = this.objs[o.id];
-      this.streamer.add(o.id, o.x, o.z, Math.min(r.r, 40));
+      let u = null;
+      if (o.kind === 'part') u = unitFor(`h${o.house}`, GROUP.WORLD, 'building');
+      else if (o.kind === 'prop') u = unitFor(`p${cellKey(o)}`, GROUP.WORLD, 'props');
+      else if (o.kind === 'tree' || o.kind === 'rock') {
+        const spec = o.kind === 'tree' ? this.treeSpec(o) : null;
+        const walk = !!(spec && spec.length && spec.every((c) => c.walk));
+        u = unitFor(`${walk ? 'b' : 'v'}${cellKey(o)}`, walk ? GROUP.FOLIAGE : GROUP.WORLD, walk ? 'bushes' : 'trees');
+      }
+      if (!u) continue;
+      this.objs[o.id] = { o, alive: true, colliders: [] };
+      this.unitOf[o.id] = u.id;
+      u.members.push(o.id);
+      this.memberInfo[o.id] = { kind: 'obj', id: o.id, mat: o.mat || (o.kind === 'tree' ? 'wood' : 'stone') };
+    }
+    this.streamer = new ColliderStreamer({ size: d.size, create: (id) => this.unitIn(id), remove: (id) => this.unitOut(id) });
+    let shapes = 0;
+    for (const u of this.units) {
+      this.prepareUnit(u, R);
+      shapes += u.members.length;
+      this.streamer.add(u.id, u.cx, u.cz, Math.min(u.r, 120));
     }
     this.streamer.finalize();
     this.physics.streamer = this.streamer;
-    // the fixed meshes
-    let n = 0;
-    for (const [key, g] of fixed) {
-      const mat = key.split('|')[1];
-      const desc = R.ColliderDesc.trimesh(new Float32Array(g.v), new Uint32Array(g.i), R.TriMeshFlags ? R.TriMeshFlags.FIX_INTERNAL_EDGES : undefined);
-      this.physics.collider(desc, { kind: 'obj', id: -1, mat }, undefined, GROUP.WORLD);
-      n++;
-    }
-    this.fixedMeshes = n;
+    this.colliderShapes = shapes;
+    this.flushQueued = false;
     // focus points scratch (x, z pairs)
     this._pts = new Float64Array(128);
+    this._np = 0;
   }
 
-  radiusOf(o) {
-    if (o.bb) return Math.max(o.bb[3] - o.bb[0], o.bb[5] - o.bb[2]) / 2;
-    if (o.shape === 'prism') {
-      let r = 0;
-      for (let i = 0; i < 6; i++) r = Math.max(r, Math.hypot(o.pts[i * 3] - o.x, o.pts[i * 3 + 2] - o.z));
-      return r;
-    }
-    return Math.hypot(o.hx || 1, o.hz || 1) + (o.ax ? (o.hy || 0) : 0);
+  treeSpec(o) {
+    const m = this.veg.models[this.veg.modelOf.get(this.veg.keyOf(o))];
+    return m ? m.colliders : null;
   }
 
-  /** Append an indestructible object's triangles to its chunk's fixed mesh. */
-  addFixed(fixed, o) {
-    const h = this.data.half;
-    const key = `${Math.floor((o.x + h) / FIX_CHUNK)},${Math.floor((o.z + h) / FIX_CHUNK)}|${o.mat || 'stone'}`;
-    let g = fixed.get(key);
-    if (!g) fixed.set(key, (g = { v: [], i: [] }));
-    const base = g.v.length / 3;
+  /**
+   * Per member: its Rapier shapes (relative to the unit's centre) and its bounds for resolving
+   * hits; per unit: centre, footprint radius, a bounds grid for big buildings, and the resolver.
+   */
+  prepareUnit(u, R) {
+    const d = this.data;
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    const boxes = new Float32Array(u.members.length * 6);
+    u.members.forEach((id, k) => {
+      const b = this.boundsOf(d.objects[id]);
+      boxes.set(b, k * 6);
+      if (b[0] < x0) x0 = b[0];
+      if (b[2] < z0) z0 = b[2];
+      if (b[3] > x1) x1 = b[3];
+      if (b[5] > z1) z1 = b[5];
+    });
+    u.cx = (x0 + x1) / 2; u.cz = (z0 + z1) / 2;
+    u.r = Math.max(x1 - x0, z1 - z0) / 2 + 1;
+    u.boxes = boxes;
+    u.shapes = null; // built on first use (Rapier shape descriptions)
+    u.info = { kind: 'unit', unit: u.id, mat: 'stone', resolve: (x, y, z, nx, ny, nz) => this.resolveHit(u, x, y, z, nx, ny, nz) };
+    void R;
+  }
+
+  /** World bounds [x0, y0, z0, x1, y1, z1] of an object's colliders. */
+  boundsOf(o) {
+    if (o.bb) return o.bb;
     if (o.shape === 'prism') {
       const p = o.pts;
-      for (let k = 0; k < 18; k++) g.v.push(p[k]);
-      // two triangles (0 1 2 / 3 4 5) and the three sides between them
-      g.i.push(base, base + 1, base + 2, base + 3, base + 5, base + 4);
-      for (const [a, b] of [[0, 1], [1, 2], [2, 0]]) g.i.push(base + a, base + 3 + a, base + 3 + b, base + a, base + 3 + b, base + b);
-      return;
+      let a = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < 6; i++) for (let k = 0; k < 3; k++) { a[k] = Math.min(a[k], p[i * 3 + k]); a[k + 3] = Math.max(a[k + 3], p[i * 3 + k]); }
+      return a;
     }
-    // a box (tilted about x or z, or turned by yaw)
-    _m.identity();
-    if (o.ax === 'x') _m.makeRotationX(o.ang); else if (o.ax === 'z') _m.makeRotationZ(o.ang); else if (o.yaw) _m.makeRotationY(o.yaw);
-    _m.setPosition(o.x, o.y, o.z);
-    for (let c = 0; c < 8; c++) {
-      _a.set(c & 1 ? o.hx : -o.hx, c & 2 ? o.hy : -o.hy, c & 4 ? o.hz : -o.hz).applyMatrix4(_m);
-      g.v.push(_a.x, _a.y, _a.z);
+    if (o.kind === 'tree') {
+      const s = o.s || 1, spec = this.treeSpec(o) || [];
+      let r = 0.5, top = 2;
+      for (const c of spec) { r = Math.max(r, c.r); top = Math.max(top, c.y + (c.hh || c.r)); }
+      return [o.x - r * s, o.y, o.z - r * s, o.x + r * s, o.y + top * s, o.z + r * s];
     }
-    const F = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
-    for (const [a, b, c, e] of F) g.i.push(base + a, base + b, base + c, base + a, base + c, base + e);
+    if (o.kind === 'rock') {
+      const s = o.s || 1;
+      return [o.x - 1.5 * s, o.y - 0.4 * s, o.z - 1.5 * s, o.x + 1.5 * s, o.y + 1.1 * s, o.z + 1.5 * s];
+    }
+    let hx = o.hx || 0.5, hz = o.hz || 0.5;
+    const hy = o.hy || 0.5;
+    if (o.ax) { const e = Math.max(hx, hy, hz); return [o.x - (o.ax === 'z' ? e : hx), o.y - e, o.z - (o.ax === 'x' ? e : hz), o.x + (o.ax === 'z' ? e : hx), o.y + e, o.z + (o.ax === 'x' ? e : hz)]; }
+    if (o.yaw) { const e = Math.hypot(hx, hz); hx = e; hz = e; }
+    return [o.x - hx, o.y - hy, o.z - hz, o.x + hx, o.y + hy, o.z + hz];
   }
 
-  /** A streamed object's chunk came near: make its colliders (when it still stands). */
-  streamIn(id) {
-    const r = this.objs[id];
-    if (!r || !r.alive || r.colliders.length) return 0;
-    r.colliders = r.make();
-    const o = r.o;
-    this.physics.markFresh(r.colliders, o.x, o.y, o.z, (r.r || 3) + 6);
-    return r.colliders.length;
-  }
-
-  streamOut(id) {
-    const r = this.objs[id];
-    if (!r || !r.colliders.length) return;
-    for (const c of r.colliders) this.physics.removeCollider(c);
-    r.colliders = [];
-  }
-
-  staticColliders(o, R) {
-    const info = { kind: 'obj', id: o.id, mat: o.mat };
+  /** The Rapier shapes of one object, relative to (ox, 0, oz): [{ shape, pos, rot }]. */
+  shapesOf(o, ox, oz, R) {
     const out = [];
-    if (o.shape === 'prism') {
-      const desc = R.ColliderDesc.convexHull(new Float32Array(o.pts));
-      if (desc) out.push(this.physics.collider(desc, info, undefined, GROUP.WORLD));
+    const id = { x: 0, y: 0, z: 0, w: 1 };
+    if (o.kind === 'tree') {
+      const s = o.s || 1;
+      for (const c of this.treeSpec(o) || []) {
+        const shape = c.shape === 'cylinder' ? new R.Cylinder(c.hh * s, c.r * s) : c.shape === 'cone' ? new R.Cone(c.hh * s, c.r * s) : new R.Ball(c.r * s);
+        out.push({ shape, pos: { x: o.x - ox, y: o.y + c.y * s, z: o.z - oz }, rot: id });
+      }
       return out;
     }
-    const desc = R.ColliderDesc.cuboid(o.hx, o.hy, o.hz).setTranslation(o.x, o.y, o.z);
+    if (o.kind === 'rock') {
+      const geo = this.veg.geometryOf(o);
+      if (!geo) return out;
+      const p = geo.attributes.position;
+      _m.compose(_v.set(o.x - ox, o.y, o.z - oz), _q.setFromAxisAngle(_s.set(0, 1, 0), o.yaw || 0), _s.setScalar(o.s || 1));
+      // a coarse hull is plenty (every 3rd vertex)
+      const n = Math.ceil(p.count / 3);
+      const pts = new Float32Array(n * 3);
+      for (let i = 0, k = 0; i < p.count; i += 3, k++) {
+        _v.fromBufferAttribute(p, i).applyMatrix4(_m);
+        pts[k * 3] = _v.x; pts[k * 3 + 1] = _v.y; pts[k * 3 + 2] = _v.z;
+      }
+      out.push({ shape: new R.ConvexPolyhedron(pts, null), pos: { x: 0, y: 0, z: 0 }, rot: id });
+      return out;
+    }
+    if (o.shape === 'prism') {
+      const pts = new Float32Array(o.pts);
+      for (let k = 0; k < 18; k += 3) { pts[k] -= ox; pts[k + 2] -= oz; }
+      out.push({ shape: new R.ConvexPolyhedron(pts, null), pos: { x: 0, y: 0, z: 0 }, rot: id });
+      return out;
+    }
+    let rot = id;
     if (o.ax) {
-      const s = Math.sin(o.ang / 2), c = Math.cos(o.ang / 2);
-      desc.setRotation(o.ax === 'x' ? { x: s, y: 0, z: 0, w: c } : { x: 0, y: 0, z: s, w: c });
-    } else if (o.yaw) {
-      desc.setRotation({ x: 0, y: Math.sin(o.yaw / 2), z: 0, w: Math.cos(o.yaw / 2) });
-    }
-    out.push(this.physics.collider(desc, info, undefined, GROUP.WORLD));
+      const sn = Math.sin(o.ang / 2), cs = Math.cos(o.ang / 2);
+      rot = o.ax === 'x' ? { x: sn, y: 0, z: 0, w: cs } : { x: 0, y: 0, z: sn, w: cs };
+    } else if (o.yaw) rot = { x: 0, y: Math.sin(o.yaw / 2), z: 0, w: Math.cos(o.yaw / 2) };
+    out.push({ shape: new R.Cuboid(Math.max(0.02, o.hx), Math.max(0.02, o.hy), Math.max(0.02, o.hz)), pos: { x: o.x - ox, y: o.y, z: o.z - oz }, rot });
     return out;
   }
 
-  treeColliders(o, spec, R) {
-    const info = { kind: 'obj', id: o.id, mat: 'wood' };
-    const s = o.s || 1;
-    const out = [];
-    for (const c of spec || []) {
-      let desc;
-      if (c.shape === 'cylinder') desc = R.ColliderDesc.cylinder(c.hh * s, c.r * s);
-      else if (c.shape === 'cone') desc = R.ColliderDesc.cone(c.hh * s, c.r * s);
-      else desc = R.ColliderDesc.ball(c.r * s);
-      desc.setTranslation(o.x, o.y + c.y * s, o.z);
-      out.push(this.physics.collider(desc, info, undefined, c.walk ? GROUP.FOLIAGE : GROUP.WORLD));
+  /** Build a unit's compound from its standing members (none standing: no collider). */
+  buildUnit(u) {
+    const R = this.physics.R;
+    const d = this.data;
+    if (!u.shapes) u.shapes = u.members.map((id) => this.shapesOf(d.objects[id], u.cx, u.cz, R));
+    const shapes = [], pos = [], rot = [];
+    for (let k = 0; k < u.members.length; k++) {
+      const r = this.objs[u.members[k]];
+      if (!r || !r.alive) continue;
+      for (const s of u.shapes[k]) { shapes.push(s.shape); pos.push(s.pos); rot.push(s.rot); }
     }
-    return out;
+    if (!shapes.length) return null;
+    const desc = R.ColliderDesc.compound(shapes, pos, rot).setTranslation(u.cx, 0, u.cz);
+    const c = this.physics.collider(desc, u.info, undefined, u.group);
+    this.physics.markFresh([c], u.cx, (u.boxes[1] + u.boxes[4]) / 2, u.cz, u.r + 30);
+    return c;
   }
 
-  rockColliders(o, R) {
-    // convex hull from the transformed rock vertices
-    const geo = this.veg.geometryOf(o);
-    if (!geo) return [];
-    const p = geo.attributes.position;
-    _m.compose(_v.set(o.x, o.y, o.z), _q.setFromAxisAngle(_s.set(0, 1, 0), o.yaw || 0), _s.setScalar(o.s || 1));
-    const pts = new Float32Array(p.count * 3);
-    for (let i = 0; i < p.count; i++) {
-      _v.fromBufferAttribute(p, i).applyMatrix4(_m);
-      pts[i * 3] = _v.x; pts[i * 3 + 1] = _v.y; pts[i * 3 + 2] = _v.z;
+  unitIn(id) {
+    const u = this.units[id];
+    if (u.collider) return 0;
+    u.collider = this.buildUnit(u);
+    u.dirty = false;
+    return u.collider ? 1 : 0;
+  }
+
+  unitOut(id) {
+    const u = this.units[id];
+    if (u.collider) { this.physics.removeCollider(u.collider); u.collider = null; }
+  }
+
+  /** A member was destroyed or restored: rebuild its unit (if it has a collider now) after this message. */
+  touchUnit(objId) {
+    const ui = this.unitOf[objId];
+    if (ui < 0) return;
+    const u = this.units[ui];
+    if (!u.collider) return; // rebuilt from the alive members when it streams in
+    u.dirty = true;
+    if (!this.flushQueued) {
+      this.flushQueued = true;
+      queueMicrotask(() => this.flushUnits());
     }
-    const desc = R.ColliderDesc.convexHull(pts);
-    return desc ? [this.physics.collider(desc, { kind: 'obj', id: o.id, mat: 'stone' }, undefined, GROUP.WORLD)] : [];
+  }
+
+  flushUnits() {
+    this.flushQueued = false;
+    for (const u of this.units) {
+      if (!u.dirty) continue;
+      u.dirty = false;
+      if (!u.collider) continue;
+      this.physics.removeCollider(u.collider);
+      u.collider = this.buildUnit(u);
+    }
+  }
+
+  /**
+   * Which member of a unit a ray hit at (x, y, z) with surface normal n: the smallest standing
+   * member whose bounds hold the point (stepped a little into the surface).
+   */
+  resolveHit(u, x, y, z, nx, ny, nz) {
+    const px = x - nx * 0.03, py = y - ny * 0.03, pz = z - nz * 0.03;
+    const B = u.boxes, E = 0.06;
+    let best = -1, bv = Infinity;
+    for (let k = 0; k < u.members.length; k++) {
+      const o = k * 6;
+      if (px < B[o] - E || px > B[o + 3] + E || py < B[o + 1] - E || py > B[o + 4] + E || pz < B[o + 2] - E || pz > B[o + 5] + E) continue;
+      const id = u.members[k];
+      const r = this.objs[id];
+      if (!r || !r.alive) continue;
+      const v = (B[o + 3] - B[o] + 0.1) * (B[o + 4] - B[o + 1] + 0.1) * (B[o + 5] - B[o + 2] + 0.1);
+      if (v < bv) { bv = v; best = id; }
+    }
+    if (best >= 0) return this.memberInfo[best];
+    // nothing holds the point (a rounding miss): the nearest standing member
+    let bd = Infinity;
+    for (let k = 0; k < u.members.length; k++) {
+      const id = u.members[k];
+      const r = this.objs[id];
+      if (!r || !r.alive) continue;
+      const o = k * 6;
+      const dx = Math.max(B[o] - px, 0, px - B[o + 3]), dy = Math.max(B[o + 1] - py, 0, py - B[o + 4]), dz = Math.max(B[o + 2] - pz, 0, pz - B[o + 5]);
+      const dd = dx * dx + dy * dy + dz * dz;
+      if (dd < bd) { bd = dd; best = id; }
+    }
+    return best >= 0 ? this.memberInfo[best] : { kind: 'obj', id: -1, mat: 'stone' };
   }
 
   // ------------------------------------------------------------------ chests & barrels
@@ -451,8 +547,7 @@ export class World {
     if (!r || !r.alive) return null;
     r.alive = false;
     this.destroyedIds.add(id);
-    for (const c of r.colliders) this.physics.removeCollider(c);
-    r.colliders = [];
+    this.touchUnit(id);
     if (this.veg.has(id)) this.veg.kill(id);
     else this.batch.setVisible(id, false);
     if (r.o.kind === 'tree' && !quiet) this.spawnFallingTree(r.o, fromDir);
@@ -465,13 +560,11 @@ export class World {
     for (const r of this.objs) {
       if (!r || r.alive) continue;
       r.alive = true;
-      if (this.streamer.isLive(r.o.id) && !r.colliders.length) {
-        r.colliders = r.make();
-        this.physics.markFresh(r.colliders, r.o.x, r.o.y, r.o.z, (r.r || 3) + 6);
-      }
+      this.touchUnit(r.o.id);
       if (this.veg.has(r.o.id)) veg = true;
       else this.batch.setVisible(r.o.id, true);
     }
+    this.flushUnits();
     if (veg) this.veg.reviveAll();
     for (const f of this.falling) this.root.remove(f.group);
     this.falling.length = 0;
@@ -637,6 +730,7 @@ export class World {
   stats() {
     return {
       colliders: this.physics.activeColliders(),
+      shapes: this.colliderShapes,
       stream: this.streamer.stats(),
       veg: this.veg.counts(),
       terrainTris: this.terrain.triangles(),

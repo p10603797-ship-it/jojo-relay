@@ -112,7 +112,9 @@ export class Physics {
     out.z = oz + dz * toi;
     out.nx = nx; out.ny = ny; out.nz = nz;
     out.collider = col;
-    out.info = this.info.get(col.handle) || null;
+    const info = this.info.get(col.handle) || null;
+    // a compound of many objects (js/world/world.js units): which one was hit
+    out.info = info && info.resolve ? info.resolve(out.x, out.y, out.z, nx, ny, nz) : info;
     return out;
   }
 }
