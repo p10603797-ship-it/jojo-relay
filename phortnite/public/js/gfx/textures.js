@@ -225,8 +225,8 @@ export class TextureLayers {
   constructor(lowMem, renderer = null) {
     this.renderer = renderer;
     const S = lowMem ? 256 : 512;
-    this.surfaces = new LayerArray(SURFACE_LAYERS, S, SURFACE_LAYERS.map((k) => SURFACE_GEN[k] || k));
-    // building normals at a quarter of the size: walls are seen close up, but the bumps are broad
+    // normals at a quarter of the albedo's size: the bumps are broad, and it keeps Medium under 80 MB
+    this.surfaces = new LayerArray(SURFACE_LAYERS, S, SURFACE_LAYERS.map((k) => SURFACE_GEN[k] || k), 2);
     this.looks = new LayerArray(LOOK_LAYERS, S, LOOK_LAYERS, 2);
     this.queue = [];
     this.busy = 0;

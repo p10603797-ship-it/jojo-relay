@@ -423,7 +423,9 @@ try {
       });
       result.views.fight24 = res;
       log('fight24'.padEnd(16), JSON.stringify(res));
-      if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${QUALITY}-fight24.png`) });
+      if (SHOTS) {
+        try { await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${QUALITY}-fight24.png`), timeout: 120000 }); } catch (e) { log('no fight screenshot:', e.message.split('\n')[0]); }
+      }
     }
   }
 } finally {
