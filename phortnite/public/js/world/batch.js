@@ -278,7 +278,18 @@ if (lL >= 0.0) {
     const list = objects.filter((o) => o.kind === 'part' && typeof o.sign === 'string' && o.sign.trim() && !o.ax);
     if (!list.length) return;
     const W = 1024, ROW = 64, FS = 44;
-    const rows = Math.ceil(list.length / 2) + 1;
+    // one atlas cell per distinct text and ink (most signs say SHOP): two cells per row
+    const cells = new Map(), cellOf = [];
+    for (const o of list) {
+      const text = o.sign.trim().toUpperCase().slice(0, 24);
+      // dark letters on a light panel, light letters on a dark one
+      _c.setHex(o.tint ?? 0xf4efe2);
+      const dark = 0.2126 * _c.r + 0.7152 * _c.g + 0.0722 * _c.b > 0.35;
+      const key = (dark ? 'd' : 'l') + text;
+      if (!cells.has(key)) cells.set(key, { text, dark, n: cells.size });
+      cellOf.push(cells.get(key));
+    }
+    const rows = Math.ceil(cells.size / 2);
     const c = document.createElement('canvas');
     c.width = W;
     c.height = Math.min(2048, 1 << Math.ceil(Math.log2(Math.max(64, rows * ROW))));
@@ -286,23 +297,23 @@ if (lL >= 0.0) {
     g.textBaseline = 'middle';
     g.textAlign = 'center';
     g.lineJoin = 'round';
-    const pos = [], uv = [], nor = [], idx = [];
-    this.signOf = new Map();
-    let col = 0, row = 0;
-    for (const o of list) {
-      if ((row + 1) * ROW > c.height) break;
-      const text = o.sign.trim().toUpperCase().slice(0, 24);
-      const u0 = col * (W / 2), v0 = row * ROW;
-      // dark letters on a light panel, light letters on a dark one
-      _c.setHex(o.tint ?? 0xf4efe2);
-      const lum = 0.2126 * _c.r + 0.7152 * _c.g + 0.0722 * _c.b;
-      const fs = Math.min(FS, Math.floor((W / 2 - 16) / Math.max(1, text.length) * 1.7));
+    for (const cell of cells.values()) {
+      const u0 = (cell.n & 1) * (W / 2), v0 = (cell.n >> 1) * ROW;
+      if (v0 + ROW > c.height) continue;
+      const fs = Math.min(FS, Math.floor((W / 2 - 16) / Math.max(1, cell.text.length) * 1.7));
       g.font = `${fs}px "Luckiest Guy", "Russo One", sans-serif`;
       g.lineWidth = 6;
-      g.strokeStyle = lum > 0.35 ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.85)';
-      g.fillStyle = lum > 0.35 ? '#1d2440' : '#ffe27a';
-      g.strokeText(text, u0 + W / 4, v0 + ROW / 2);
-      g.fillText(text, u0 + W / 4, v0 + ROW / 2);
+      g.strokeStyle = cell.dark ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.85)';
+      g.fillStyle = cell.dark ? '#1d2440' : '#ffe27a';
+      g.strokeText(cell.text, u0 + W / 4, v0 + ROW / 2);
+      g.fillText(cell.text, u0 + W / 4, v0 + ROW / 2);
+    }
+    const pos = [], uv = [], nor = [], idx = [];
+    this.signOf = new Map();
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i], cell = cellOf[i];
+      const u0 = (cell.n & 1) * (W / 2), v0 = (cell.n >> 1) * ROW;
+      if (v0 + ROW > c.height) continue;
       // a quad on each big face of the panel
       const thinX = o.hx < o.hz;
       const along = thinX ? o.hz : o.hx, thin = thinX ? o.hx : o.hz;
@@ -322,8 +333,6 @@ if (lL >= 0.0) {
         idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
       }
       this.signOf.set(o.id, start);
-      col = 1 - col;
-      if (!col) row++;
     }
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
