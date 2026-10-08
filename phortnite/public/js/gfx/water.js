@@ -56,7 +56,7 @@ export function createWater(normalTex, terrainTex, half, cell, n) {
         vec3 n = normalize(vec3(n1.x + n2.x, 5.0, n1.y + n2.y));
         vec3 V = normalize(cameraPosition - vW);
         vec2 tuv = ((vW.xz + uHalf) / uCell + 0.5) / uN;
-        float th = -20.0, biome = 0.0;
+        float th = -16.0, biome = 0.0;
         if (tuv.x > 0.0 && tuv.x < 1.0 && tuv.y > 0.0 && tuv.y < 1.0) { vec4 ti = texture2D(uTerrain, tuv); th = ti.r; biome = ti.a; }
         float depth = max(0.0, vW.y - th);
         float shallow = exp(-depth * 0.2);
@@ -70,7 +70,8 @@ export function createWater(normalTex, terrainTex, half, cell, n) {
         float fn = texture2D(uNormal, vW.xz * 0.21 + vec2(uTime * 0.02, 0.0)).b;
         float foam = smoothstep(1.1, 0.0, depth) * smoothstep(0.42, 0.7, fn + 0.25 * sin(depth * 11.0 - uTime * 2.2)) * (1.0 - swamp);
         col = mix(col, vec3(0.96), foam * 0.85);
-        float alpha = mix(0.95, 0.5, shallow * smoothstep(1.8, 0.0, depth));
+        // deep water is opaque (nothing below it shows through, wherever the sea floor ends)
+        float alpha = mix(mix(0.95, 1.0, smoothstep(3.0, 8.0, depth)), 0.5, shallow * smoothstep(1.8, 0.0, depth));
         alpha = mix(alpha, 0.97, swamp);
         if (uLava > 0.5) {
           // Floor is Lava: glowing, slowly churning
