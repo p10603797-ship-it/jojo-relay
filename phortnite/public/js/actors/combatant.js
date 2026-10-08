@@ -307,7 +307,9 @@ export class Combatant {
       this.burstLeft = 0;
       this.ads = false;
       this.flags |= FLAG.BUILD;
-      if (ctl.firePressed || (ctl.fire && this.buildCool <= 0)) {
+      // a tap (fire, or a touch piece button with Build immediately) places at once; holding either
+      // turbo-builds every 0.11 s into whatever slot the view now points at
+      if (ctl.firePressed || ctl.buildFire || ((ctl.fire || ctl.buildHold) && this.buildCool <= 0)) {
         this.game.tryPlaceBuild(this);
         this.buildCool = 0.11;
       }

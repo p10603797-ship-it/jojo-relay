@@ -332,17 +332,39 @@ export class Effects {
     this.debris = new Debris(physics, buildMats);
     for (const o of [this.add.mesh, this.alpha.mesh, this.chips.mesh, this.tracers.mesh, this.decals.mesh]) scene.add(o);
     for (const p of Object.values(this.debris.pools)) scene.add(p.mesh);
-    this.lights = [0, 1].map(() => {
-      const l = new THREE.PointLight(0xffb060, 0, 18, 2);
-      scene.add(l);
-      return { light: l, t: 0, dur: 0.1, peak: 0 };
-    });
+    // muzzle / explosion lights: real PointLights only on High and Ultra (every lit shader pays for
+    // them); Low and Medium get an additive halo sprite instead
+    this.lights = [0, 1].map(() => ({ light: new THREE.PointLight(0xffb060, 0, 18, 2), t: 0, dur: 0.1, peak: 0 }));
+    this.lightsOn = false;
+    this.syncLights();
+    this._c = new THREE.Color();
   }
 
   scale() { return this.quality.particles ?? 1; }
 
+  /** Real lights only on High / Ultra (follows quality changes: main.js assigns into this.quality). */
+  wantLights() {
+    const q = this.quality;
+    return !!q.lights && (q.name === 'high' || q.name === 'ultra');
+  }
+
+  syncLights() {
+    const on = this.wantLights();
+    if (on === this.lightsOn) return;
+    this.lightsOn = on;
+    for (const L of this.lights) {
+      if (on) this.scene.add(L.light); else { this.scene.remove(L.light); L.peak = 0; L.light.intensity = 0; }
+    }
+  }
+
   flash(x, y, z, intensity, dur, color = 0xffb060, slot = 0) {
-    if (!this.quality.lights) return;
+    if (!this.lightsOn) {
+      // a soft additive glow where the light would have been
+      const c = this._c.setHex(color);
+      const size = Math.min(9, 0.9 + Math.sqrt(intensity) * 0.42);
+      this.add.emit(x, y, z, 0, 0, 0, Math.max(0.06, dur * 0.9), size, size * 1.25, c.r, c.g, c.b, Math.min(0.55, 0.12 + intensity / 260));
+      return;
+    }
     const L = this.lights[slot];
     L.light.position.set(x, y, z);
     L.light.color.setHex(color);
@@ -442,6 +464,21 @@ export class Effects {
     }
   }
 
+  /** A shield breaking: blue glass shards and a bright pop. */
+  shards(x, y, z) {
+    const n = Math.round(22 * Math.max(0.6, this.scale()));
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * 6.28, e = Math.random() * 1.4 - 0.3, sp = 3 + Math.random() * 6;
+      this.chips.emit(x, y, z, Math.cos(a) * Math.cos(e) * sp, Math.sin(e) * sp + 2, Math.sin(a) * Math.cos(e) * sp,
+        0.45 + Math.random() * 0.35, 0.09 + Math.random() * 0.07, 0.05, 0.45, 0.8, 1, 1, 12, 0.4, 14);
+    }
+    for (let i = 0; i < 10; i++) {
+      this.add.emit(x, y, z, (Math.random() - 0.5) * 9, (Math.random() - 0.1) * 7, (Math.random() - 0.5) * 9,
+        0.3 + Math.random() * 0.2, 0.12, 0.02, 0.5, 0.85, 1, 1, 8);
+    }
+    this.add.emit(x, y, z, 0, 0, 0, 0.16, 0.5, 1.6, 0.45, 0.8, 1, 0.9);
+  }
+
   stormWisp(x, y, z) {
     this.add.emit(x + (Math.random() - 0.5), y + Math.random() * 1.8, z + (Math.random() - 0.5), 0, 0.8, 0, 0.6, 0.25, 0.05, 0.8, 0.3, 1, 0.8);
   }
@@ -469,6 +506,7 @@ export class Effects {
     this.chips.update(dt);
     this.tracers.update(dt);
     this.debris.update(dt);
+    this.syncLights();
     for (const L of this.lights) {
       if (L.peak <= 0) continue;
       L.t += dt;

@@ -16,7 +16,17 @@ export class LocalPlayer extends Combatant {
     this.game.input.setBuildMode(this.buildMode);
   }
 
+  /** Switching items plays the weapon class's equip sound. */
+  select(i) {
+    const prev = this.inv.sel, wasBuilding = this.buildMode;
+    super.select(i);
+    if (this.inv.sel !== prev || wasBuilding) this.game.sfx.equip?.(this.current()?.k);
+  }
+
   onFired(w) {
+    // the last few rounds in a big magazine click, so you know to reload
+    const cur = this.current();
+    if (cur && w.mag > 6 && cur.m <= 3) this.game.sfx.lowAmmo?.(cur.m);
     // aiming down sights and crouching steady the gun
     const rc = this.rc;
     rc.kick(w, (this.ads ? 0.75 : 1) * (this.mover.crouch ? 0.8 : 1));
@@ -52,6 +62,7 @@ export class LocalPlayer extends Combatant {
     if (!this.canAct()) return;
 
     let changed = false;
+    const build0 = this.buildMode, mat0 = this.buildMat;
     if (s.emote && this.mover.grounded) { this.dancing = !this.dancing; this.buildMode = false; changed = true; }
     if (s.slot >= 0 && (s.slot === 0 || this.inv.slots[s.slot])) { this.select(s.slot); changed = true; }
     if (s.scroll) { this.cycle(s.scroll > 0 ? 1 : -1); changed = true; }
@@ -74,5 +85,10 @@ export class LocalPlayer extends Combatant {
       changed = true;
     }
     if (changed) this.onInventory();
+    const sfx = this.game.sfx;
+    // (leaving build mode by picking an item plays that item's equip sound instead, in select)
+    if (this.buildMode && !build0) sfx.buildMode?.(true);
+    else if (!this.buildMode && build0 && s.buildToggle) sfx.buildMode?.(false);
+    else if (this.buildMode && this.buildMat !== mat0) sfx.matSwitch?.(this.buildMat);
   }
 }
