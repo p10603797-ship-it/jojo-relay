@@ -52,6 +52,7 @@ const HS_START = PLAYER.maxHp + PLAYER.startShield, HS_MAX = PLAYER.maxHp + PLAY
 const SHOTGUN_NEAR = 10;  // m: inside this a shotgun is the gun
 const CALM_S = 60;        // s after landing spent looting rather than starting fights (rushers: RUSH_CALM_S)
 const RUSH_CALM_S = 15;
+const RESPAWN_CALM_S = 10;
 
 // preferred engagement ranges [min, ideal, max] in m; guns not listed are derived from their stats
 const RANGES = { shotgun: [0, 7, 14], smg: [0, 12, 28], pistol: [0, 15, 35], ar: [8, 40, 120], sniper: [45, 110, 400], rocket: [12, 35, 80] };
@@ -836,8 +837,11 @@ export class Bot extends Combatant {
    * target is right in front of us (or shooting at us); rushers don't care.
    */
   calm(d, threat) {
-    const b = this.brain;
-    return !threat && d > 10 && this.time - b.skyT < (b.persona.aggro < 0.9 ? CALM_S : RUSH_CALM_S) && modeKey(this.game) === 'br';
+    const b = this.brain, g = this.game;
+    if (threat || d <= 10 || modeKey(g) !== 'br') return false;
+    // respawn modes (Team Rumble...): a short look round for a gun after each drop, then fight
+    const t = g.rules && g.rules.respawn > 0 ? RESPAWN_CALM_S : b.persona.aggro < 0.9 ? CALM_S : RUSH_CALM_S;
+    return this.time - b.skyT < t;
   }
 
   /** King of the hill: standing on it (nothing else going on: hold it). */

@@ -402,9 +402,25 @@ async function runMatch(browser, url, cfg) {
   }, cfg);
   const t0 = Date.now();
   let lastLog = -99;
+  // a page that stops answering (a script stuck in a loop): pause it and print where it is
+  const cdp = await page.context().newCDPSession(page);
+  let hungAt = null;
+  cdp.on('Debugger.paused', (e) => { hungAt = e.callFrames.slice(0, 12).map((f) => `${f.functionName || '(anon)'} ${f.url.split('/').slice(-2).join('/')}:${f.location.lineNumber + 1}`); });
+  const answer = async (p) => {
+    let timer;
+    const r = await Promise.race([p, new Promise((res) => { timer = setTimeout(() => res(null), 60000); })]);
+    clearTimeout(timer);
+    if (r) return r;
+    await cdp.send('Debugger.enable');
+    await cdp.send('Debugger.pause');
+    for (let i = 0; i < 40 && !hungAt; i++) await new Promise((res) => setTimeout(res, 250));
+    console.log(`  page not answering for 60 s; stack: ${hungAt ? `\n    ${hungAt.join('\n    ')}` : '(no pause)'}`);
+    errors.push(`[hung] ${hungAt ? hungAt.slice(0, 4).join(' < ') : 'no answer'}`);
+    return null;
+  };
   for (;;) {
     await page.waitForTimeout(1500);
-    const s = await page.evaluate(() => {
+    const s = await answer(page.evaluate(() => {
       const g = window.__phortnite.game, M = window.__M;
       // sample once per simulated second (catch up if the page ran ahead)
       const t = g.time - M.t0;
@@ -412,7 +428,11 @@ async function runMatch(browser, url, cfg) {
       let alive = 0;
       for (const b of g.bots.values()) if (b.alive) alive++;
       return { t, phase: g.phase, alive, pieces: M.pieces, shots: M.shots, elims: M.elims.length };
-    });
+    }));
+    if (!s) {
+      await page.close().catch(() => {});
+      return { hung: true, errors: errors.length, errorList: errors.slice(0, 8), realSeconds: Math.round((Date.now() - t0) / 1000) };
+    }
     if (s.t - lastLog >= 30) {
       lastLog = s.t;
       console.log(`  t=${s.t.toFixed(0)}s ${s.phase} alive ${s.alive} pieces ${s.pieces} shots ${s.shots} elims ${s.elims} (${((Date.now() - t0) / 1000).toFixed(0)} s real)`);

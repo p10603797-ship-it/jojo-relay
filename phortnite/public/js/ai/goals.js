@@ -33,8 +33,13 @@ export function wantsLoot(bot) {
 
 /** The infected / seekers: they hunt with their pickaxe. */
 export function isHunter(bot) {
-  const r = bot.game.roleOf ? bot.game.roleOf(bot.id) : null;
-  return r === 'zombie' || r === 'seeker';
+  const g = bot.game;
+  const r = g.roleOf ? g.roleOf(bot.id) : null;
+  if (r) return r === 'zombie' || r === 'seeker';
+  // no role (yet): Infection and Hide & Seek put the hunters on team 2 (the very first ones'
+  // role message can reach this device before the match start that clears the roles)
+  const k = modeKey(g);
+  return (k === 'infection' || k === 'hideseek') && typeof g.teamOf === 'function' && g.teamOf(bot.id) === 2;
 }
 
 /** The play area {x, z, r} (null: the whole island). */

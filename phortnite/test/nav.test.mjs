@@ -411,6 +411,11 @@ test('bots: the mode decides the goal (hill, Juggernaut, zombies, survivors) and
   for (const a of [z, s1, s2, s3]) g.bots.set(a.id, a);
   g.roles.set(1, 'zombie');
   assert.equal(goals.isHunter(z), true);
+  // (the first infected's role can be missing on this device: team 2 says it too)
+  g.roles.delete(1);
+  assert.equal(goals.isHunter(z), true, 'team 2 without a role yet');
+  assert.equal(goals.isHunter(s1), false);
+  g.roles.set(1, 'zombie');
   assert.equal(goals.wantsLoot(z), false);
   assert.equal(goals.modeGoal(z, out), 'hunt');
   assert.equal(out.x, 30, 'the nearest survivor');
