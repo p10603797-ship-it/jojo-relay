@@ -1,6 +1,10 @@
-// Phortnite bootstrap: renderer, assets, world, menus, main loop, dynamic resolution.
+// Phortnite bootstrap: renderer, assets, world, the party lobby, main loop, dynamic resolution.
+//
+// The game opens in a party of one (a LocalNet room in this page) on the lobby stage. While in a
+// party there is always exactly one Game; INVITE / JOIN swap the party's connection underneath the
+// stage (enterParty), and losing a party drops you back into a party of one with a toast.
 import * as THREE from 'three';
-import { SKINS, VERSION, PROTOCOL } from '../shared/constants.js';
+import { VERSION, PROTOCOL } from '../shared/constants.js';
 import { getWorld } from '../shared/room.js';
 import { Physics } from './physics.js';
 import { buildTextures, spriteTextures } from './gfx/textures.js';
@@ -11,11 +15,15 @@ import { Input } from './input.js';
 import { Sfx } from './audio.js';
 import { Hud } from './ui/hud.js';
 import { Ui } from './ui/menu.js';
-import { Character, prewarmCharacters } from './actors/character.js';
+import { prewarmCharacters } from './actors/character.js';
 import { Game } from './game/game.js';
-import { WsNet, LocalNet } from './net/net.js';
-import { P2PHost, P2PClient, qrDataUrl } from './net/p2p.js';
+import { LocalNet } from './net/net.js';
 import { applyGrade } from './gfx/grade.js';
+import { LobbyStage } from './lobby/stage.js';
+import { LobbyUi } from './ui/lobby.js';
+import { Invite, keepSettings } from './ui/invite.js';
+import { Profile } from './profile.js';
+import { Music } from './music.js';
 
 const TIPS = [
   'Tip: build a wall the moment someone starts shooting at you.',
@@ -54,6 +62,13 @@ function loadSettings() {
 }
 
 const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const RESUME_KEY = 'phortnite.resume';
+const RESUME_MS = 60000; // the room holds a dropped player this long
+const REJOIN_MS = 10 * 60000; // the REJOIN chip after a party ended or the connection was lost
+// a Game being replaced must not close the connection it hands over to the next one
+const NULL_NET = { kind: 'none', rtt: 0, send() {}, close() {}, onMessage() { return () => {}; } };
+const inMatch = (g) => !!g && (g.phase === 'bus' || g.phase === 'match');
 
 class App {
   constructor() {
@@ -68,7 +83,11 @@ class App {
     this.fpsT = 0;
     this.fpsN = 0;
     this.fps = 0;
-    this.menuT = 0;
+    this.stageOn = false; // the lobby stage is showing (rendered instead of the island)
+    this.warming = false; // warm-up on the island from the lobby
+    this.paused = false; // solo: the pause menu / an app switch stopped the match
+    this.rejoinState = null;
+    this.playAgainPending = false;
   }
 
   saveSettings() {
@@ -133,7 +152,7 @@ class App {
     this.input.forceTouch = this.settings.forceTouch;
     if (this.isTouch || this.settings.forceTouch) this.input.setTouchMode(true);
     this.input.onLockChange = (locked) => {
-      if (!locked && this.game && this.game.wantsPause() && !this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
+      if (!locked && this.game && !this.stageOn && this.game.wantsPause() && !this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
     };
     this.sfx = new Sfx(this.settings);
     this.hud = new Hud(this.world);
@@ -144,30 +163,41 @@ class App {
     this.ui = new Ui(this);
     this.physics.step(1 / 60);
 
-    // menu scene: your character on the mountain top looking over the island
-    this.setupMenuScene(data);
+    // the lobby: your party on a stage of its own, the lobby screen, invites, XP and music
+    prewarmCharacters(); // build every skin's meshes in the background while the lobby is idle
+    this.profile = new Profile();
+    this.music = new Music(this.sfx, this.settings);
+    this.stage = new LobbyStage(this);
+    this.lobby = new LobbyUi(this);
+    this.invite = new Invite(this);
+    this.hud.lobbyPanel.onBack = () => this.warmUp(false);
     this.progress(0.93, 'Compiling shaders…');
     await new Promise((r) => setTimeout(r, 0));
     try { renderer.compile(this.scene, this.camera); } catch (e) { /* optional */ }
+    try { renderer.compile(this.stage.scene, this.stage.camera); } catch (e) { /* optional */ }
     this.progress(1, 'Ready!');
     window.addEventListener('resize', () => this.onResize());
     this.onResize();
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.sfx.ctx) this.sfx.ctx.suspend();
-      else if (!document.hidden && this.sfx.ctx) this.sfx.ctx.resume();
-    });
+    document.addEventListener('visibilitychange', () => this.onVisibility());
+    window.addEventListener('pagehide', (e) => { if (!e.persisted) this.saveResume(true); });
     window.addEventListener('keydown', (e) => {
-      if ((e.code === 'Escape' || e.code === 'KeyP') && this.game && this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
+      if ((e.code === 'Escape' || e.code === 'KeyP') && this.game && !this.stageOn && this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
     });
-    // click on the canvas resumes pointer lock on desktop
-    $('#game').addEventListener('click', () => { if (this.game && !this.input.touchMode && !this.input.locked && !this.ui.modalOpen()) this.input.requestLock(); });
+    // click on the canvas resumes pointer lock on desktop (never on the lobby stage)
+    $('#game').addEventListener('click', () => { if (this.game && !this.stageOn && !this.input.touchMode && !this.input.locked && !this.ui.modalOpen()) this.input.requestLock(); });
     $('#loading').style.display = 'none';
-    this.ui.showMenu(true);
+    // a party of one; then an invite link (#join=CODE) or a party to get back into after a reload
+    this.enterParty(new LocalNet(this.hello()));
+    this.showStage(true);
     const jm = /join=([A-Za-z]{4})/.exec(location.hash || '');
+    const back = this.loadResume();
     if (jm) {
       history.replaceState(null, '', location.pathname + location.search);
-      this.ui.p2pModal(jm[1].toUpperCase());
+      this.invite.join(jm[1].toUpperCase(), { fromLink: true, resume: back && back.code === jm[1].toUpperCase() ? back.token : undefined });
+    } else if (back && (back.kind === 'server' || back.kind === 'p2p')) {
+      this.invite.join(back.code, { kind: back.kind, resume: back.token, quiet: true });
     }
+    setInterval(() => this.saveResume(), 5000);
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
     window.__phortnite = this;
@@ -177,61 +207,11 @@ class App {
     }
   }
 
-  setupMenuScene(data) {
-    const m = data.mountain;
-    let best = { x: m.x, z: m.z, h: -1 };
-    for (let i = 0; i < 300; i++) {
-      const x = m.x + (Math.random() - 0.5) * 70, z = m.z + (Math.random() - 0.5) * 70;
-      const h = data.heightAt(x, z);
-      if (h > best.h) best = { x, z, h };
-    }
-    // step slightly toward the island centre so the view opens up
-    const dl = Math.hypot(best.x, best.z) || 1;
-    const dir = new THREE.Vector3(-best.x / dl, 0, -best.z / dl);
-    const px = best.x + dir.x * 3, pz = best.z + dir.z * 3;
-    this.menuPos = new THREE.Vector3(px, data.heightAt(px, pz), pz);
-    this.menuDir = dir;
-    this.setMenuSkin(this.settings.skin);
-    prewarmCharacters(); // build every skin's meshes while the menu is idle
-  }
-
-  setMenuSkin(skin) {
-    if (!this.scene || !this.menuPos) return;
-    if (this.menuChar) { this.scene.remove(this.menuChar.group); this.menuChar.dispose(); }
-    const c = new Character(skin, '');
-    c.setWeapon('pickaxe', 0);
-    c.group.position.copy(this.menuPos);
-    // face the camera (camera sits on the far side, looking toward the island)
-    c.group.rotation.y = Math.atan2(-this.menuDir.x, -this.menuDir.z);
-    this.scene.add(c.group);
-    this.menuChar = c;
-    c.setVisible(!this.game);
-  }
-
-  updateMenu(dt) {
-    this.menuT += dt;
-    const c = this.menuChar;
-    if (c) {
-      c.update(dt, { anim: 0, speed: 0, pitch: 0.1 + Math.sin(this.menuT * 0.7) * 0.05, gun: false });
-      if (Math.sin(this.menuT * 0.5) > 0.985 && c.swing <= 0) c.playSwing();
-    }
-    const p = this.menuPos, d = this.menuDir;
-    const side = new THREE.Vector3(-d.z, 0, d.x);
-    const sway = Math.sin(this.menuT * 0.15) * 0.6;
-    const portrait = innerWidth < innerHeight;
-    const cam = this.camera;
-    // the character stands at p looking back at us; the island spreads out behind them
-    cam.position.set(p.x - d.x * 4.6 + side.x * sway, p.y + 2.1, p.z - d.z * 4.6 + side.z * sway);
-    const off = portrait ? 0 : 1.7;
-    const look = new THREE.Vector3(p.x - side.x * off + d.x * 3, p.y + 0.9, p.z - side.z * off + d.z * 3);
-    cam.lookAt(look);
-    if (Math.abs(cam.fov - 55) > 0.1) { cam.fov = 55; cam.updateProjectionMatrix(); }
-  }
-
   onResize() {
     this.renderer.setSize(innerWidth, innerHeight);
     this.camera.aspect = innerWidth / innerHeight;
     this.camera.updateProjectionMatrix();
+    if (this.stage) this.stage.resize();
     this.applyPixelRatio();
   }
 
@@ -269,133 +249,308 @@ class App {
   }
 
   // ------------------------------------------------------------------ sessions
-  hello() {
-    return { name: this.settings.name || 'Player', skin: this.settings.skin, v: PROTOCOL };
+  /** What this page tells a party when it joins. extra: { resume, keep } to get back in. */
+  hello(extra = {}) {
+    return {
+      name: this.settings.name || 'Player', skin: this.settings.skin, v: PROTOCOL,
+      tier: this.isTouch ? 'ipad' : 'desktop', lvl: this.profile ? this.profile.level : 1,
+      resume: '', // this page can rejoin after a dropped connection
+      ...extra,
+    };
   }
 
-  async playSolo() {
-    if (this.game) return;
-    const net = new LocalNet(this.hello());
-    this.beginGame(net, true);
-    await net.connect();
-  }
+  /** 'solo' (party of one) | 'p2p-host' | 'p2p' | 'server'. */
+  partyKind() { return (this.game && this.game.net && this.game.net.kind) || 'solo'; }
 
-  async connectServer() {
-    if (this.serverNet && this.serverNet.open) return this.serverNet;
+  wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}${location.pathname.replace(/[^/]*$/, '')}ws`;
-    const net = new WsNet(url);
-    await net.connect();
-    this.serverNet = net;
-    net.onClose = () => {
-      this.serverNet = null;
-      if (this.game && this.game.net === net) {
-        this.leaveGame();
-        this.ui.alert('Lost connection to the Phortnite server.');
-      }
-    };
-    return net;
+    return `${proto}//${location.host}${location.pathname.replace(/[^/]*$/, '')}ws`;
   }
 
-  /** Host a peer-to-peer party from this device (no server needed). */
-  async startP2PHost() {
-    if (this.game) return;
-    const net = new P2PHost(this.hello());
-    this.shareHtml = 'Creating your party…';
-    this.beginGame(net, false);
-    try {
-      await net.connect();
-    } catch (e) {
-      if (this.game && this.game.net === net) {
-        this.leaveGame();
-        this.ui.alert(e.message || 'Could not create a party.');
-      }
-      return;
+  /**
+   * Make net the party: one new Game on it, replacing the old one (the stage stays up, so INVITE
+   * and JOIN swap the connection underneath). opts.replay: messages that arrived before (the
+   * welcome); opts.off: their listener, removed once the Game listens itself.
+   */
+  enterParty(net, opts = {}) {
+    const old = this.game;
+    if (old) {
+      if (old.net === net) old.net = NULL_NET;
+      old.dispose();
     }
-    if (!this.game || this.game.net !== net) return;
-    const url = `${location.origin}${location.pathname}#join=${net.code}`;
-    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    this.shareHtml = `Friends tap <b>Play with Friends</b> and type <b style="color:#ffd23f;letter-spacing:3px;font-size:16px">${net.code}</b>, or scan:`;
-    qrDataUrl(url).then((src) => {
-      if (src && this.game && this.game.net === net) {
-        this.shareHtml += `<br><img src="${src}" alt="Join link" style="width:110px;height:110px;margin-top:6px;border-radius:6px"><br><code>${esc(url)}</code>`;
-      }
-    });
-  }
-
-  /** Join a friend's peer-to-peer party by code. */
-  async startP2PJoin(code) {
-    if (this.game) return;
-    const net = new P2PClient(code, this.hello());
+    this.paused = false;
+    this.playAgainPending = false;
+    if (this.hud.reset) this.hud.reset();
     this.shareHtml = '';
-    this.beginGame(net, false);
-    try {
-      await net.connect();
-    } catch (e) {
-      if (this.game && this.game.net === net) {
-        this.leaveGame();
-        this.ui.alert(e.message || 'Could not join that party.');
-      }
-      return;
-    }
-    // the host can turn us away before the welcome (party full, different game version)
-    const off = net.onMessage((m) => {
-      if (m.t === 'welcome') off();
-      if (m.t === 'err' && this.game && this.game.net === net && !this.game.me) {
-        off();
-        net.onClose = null;
-        this.leaveGame();
-        this.ui.alert(m.msg || 'Could not join that party.');
-      }
-    });
-    net.onClose = () => {
-      if (this.game && this.game.net === net) {
-        this.leaveGame();
-        this.ui.alert('The party host left or lost connection.');
-      }
-    };
-  }
-
-  startOnlineGame(net, code) {
-    this.beginGame(net, false);
-    if (code) net.send({ t: 'join', code: String(code).trim().toUpperCase(), hello: this.hello() });
-    else net.send({ t: 'create', hello: this.hello() });
-    // surface join errors that arrive before the welcome
-    const off = net.onMessage((m) => {
-      if (m.t === 'welcome') off();
-      if (m.t === 'err' && this.game && !this.game.me) {
-        off();
-        this.leaveGame();
-        this.ui.alert(m.msg);
-      }
-    });
-  }
-
-  beginGame(net, solo) {
-    this.ui.closeModal();
-    this.ui.showMenu(false);
-    if (this.menuChar) this.menuChar.setVisible(false);
-    this.game = new Game(this, net, { solo, name: this.settings.name, skin: this.settings.skin });
+    this.game = new Game(this, net, { solo: net.kind === 'solo', name: this.settings.name, skin: this.settings.skin });
     document.body.classList.add('ingame');
-    this.resume();
-    if (navigator.wakeLock) navigator.wakeLock.request('screen').then((l) => { this.wake = l; }).catch(() => {});
+    document.body.classList.remove('ended', 'dead', 'inbus');
+    if (opts.off) opts.off();
+    if (opts.replay) for (const m of opts.replay) this.game.onMessage(m);
+    if (net.kind !== 'solo') net.onClose = (msg) => this.onPartyLost(net, msg);
+    if (net.kind === 'solo') {
+      this.saveResume(true);
+      net.connect();
+    }
+    this.updateWake();
+    if (this.lobby) this.lobby.render();
+    return this.game;
+  }
+
+  /** A party of one again (after leaving, a kick, or a lost party), keeping the mode you had picked. */
+  soloParty() {
+    const g = this.game;
+    const keep = g && g.settingsState && g.settingsState.modeId ? keepSettings(g.settingsState) : null;
+    if (keep) delete keep.bots;
+    this.enterParty(new LocalNet(this.hello(), { settings: keep }));
+    if (!this.warming) this.showStage(true);
+  }
+
+  /** The party's welcome (or 'resumed'): remember how to get back in. */
+  onWelcome(g, m) {
+    const net = g.net;
+    if (!net || net.kind === 'solo' || !m.resume) return;
+    this.resumeInfo = { kind: net.kind, code: m.code, token: m.resume, name: m.name || '' };
+    this.saveResume();
+    if (net.kind === 'server' || net.kind === 'p2p') {
+      const code = m.code, token = m.resume;
+      net.rejoin = () => ({ t: 'join', code, hello: this.hello({ resume: token, keep: true }) });
+    }
+    if (this.rejoinState && this.rejoinState.code === m.code) this.rejoinState = null;
+  }
+
+  saveResume(clear = false) {
+    try {
+      const g = this.game;
+      if (clear || !g || g.net.kind === 'solo' || !this.resumeInfo || this.resumeInfo.code !== g.code) {
+        if (clear) sessionStorage.removeItem(RESUME_KEY);
+        return;
+      }
+      sessionStorage.setItem(RESUME_KEY, JSON.stringify({ ...this.resumeInfo, t: Date.now() }));
+    } catch (e) { /* private mode */ }
+  }
+
+  loadResume() {
+    try {
+      const r = JSON.parse(sessionStorage.getItem(RESUME_KEY) || 'null');
+      if (r && typeof r.code === 'string' && /^[A-Z]{4}$/.test(r.code) && typeof r.token === 'string' && Date.now() - r.t < RESUME_MS) return r;
+    } catch (e) { /* none */ }
+    return null;
+  }
+
+  rejoinInfo() {
+    const r = this.rejoinState;
+    if (!r || Date.now() > r.until) return null;
+    if (this.game && this.partyKind() !== 'solo' && this.game.code === r.code) return null;
+    return r;
+  }
+
+  setRejoin(kind, code, host) {
+    if (!code || !/^[A-Z]{4}$/.test(code)) return;
+    this.rejoinState = { kind, code, until: Date.now() + REJOIN_MS, label: `↩ REJOIN ${host ? `${host.toUpperCase()}'S PARTY` : code}` };
+  }
+
+  rejoin() {
+    const r = this.rejoinInfo();
+    if (!r) return;
+    const back = this.loadResume();
+    this.invite.join(r.code, { kind: r.kind === 'server' ? 'server' : 'p2p', fromLink: true, resume: back && back.code === r.code ? back.token : undefined });
+  }
+
+  hostName(g) {
+    const row = g && g.roster.get(g.leader);
+    return row ? row.name : '';
+  }
+
+  /** The connection gave up (after trying to get back in). */
+  onPartyLost(net, msg) {
+    const g = this.game;
+    if (!g || g.net !== net) return;
+    const code = g.code, kind = net.kind, host = this.hostName(g);
+    this.soloParty();
+    this.lobby.netStatus('');
+    if (kind === 'p2p') this.lobby.toast(`${esc(host || 'The host')}'s party ended`, { kind: 'bad', ms: 6000 });
+    else this.lobby.toast(msg && msg.msg ? esc(msg.msg) : 'Lost connection to the party', { kind: 'bad', ms: 6000 });
+    this.setRejoin(kind, code, kind === 'p2p' ? host : '');
+    this.lobby.render();
+  }
+
+  onKicked(g, m) {
+    if (g !== this.game) return;
+    this.saveResume(true);
+    this.soloParty();
+    this.lobby.toast(esc(m.msg || 'You were removed from the party.'), { kind: 'bad', ms: 6000 });
+  }
+
+  /** The P2P host closed the party. */
+  onPartyEnd(g, m) {
+    if (g !== this.game) return;
+    const code = g.code, host = this.hostName(g);
+    this.saveResume(true);
+    this.soloParty();
+    this.lobby.toast(esc(m.msg || `${host || 'The host'}'s party ended`), { kind: 'bad', ms: 6000 });
+    this.setRejoin('p2p', code, host);
+    this.lobby.render();
+  }
+
+  /** Transport events ('_net'): the status pill, and starting over when the party let us go. */
+  onNet(g, m) {
+    if (g !== this.game) return;
+    const kind = g.net.kind;
+    if (m.state === 'reconnecting') this.lobby.netStatus('Connection lost — getting you back in…');
+    else if (m.state === 'stall') this.lobby.netStatus(kind === 'p2p' ? 'Waiting for the host…' : 'Waiting for the server…');
+    else if (m.state === 'online' || m.state === 'lost') this.lobby.netStatus('');
+    else if (m.state === 'fresh' && m.msg) {
+      // away too long: the party let us go, but we are welcome back in its lobby (or as a spectator)
+      this.lobby.netStatus('');
+      this.enterParty(g.net, { replay: [m.msg] });
+      this.lobby.toast('You were away too long, so you are back in the party lobby.', { ms: 6000 });
+    }
+  }
+
+  /** LEAVE PARTY: back to a party of one. */
+  leaveParty() {
+    if (this.partyKind() === 'solo') return;
+    const host = this.partyKind() === 'p2p-host';
+    this.saveResume(true);
+    this.soloParty();
+    this.lobby.toast(host ? 'You closed your party.' : 'You left the party.');
+  }
+
+  /** Test / harness hook (and older call sites): be in a party of one, warming up on the island. */
+  async playSolo() {
+    if (this.partyKind() !== 'solo') this.soloParty();
+    for (let i = 0; i < 200 && !(this.game && this.game.me); i++) await new Promise((r) => setTimeout(r, 10));
+    if (this.game && this.game.phase === 'lobby') this.warmUp(true);
+  }
+
+  /** Kept for older call sites: leaving = back to a party of one. */
+  leaveGame() { if (this.partyKind() === 'solo') this.backToLobby(); else this.leaveParty(); }
+
+  // ------------------------------------------------------------------ lobby actions
+  /** The stage instead of the island (the lobby), or the island (match, warm-up, spectating). */
+  showStage(on) {
+    if (!this.stage) return;
+    this.stageOn = on;
+    this.stage.show(on);
+    this.lobby.show(on);
+    if (this.music) this.music.lobby(on);
+    if (on) this.input.exitLock();
+    else this.resume();
+    this.updateWake();
+  }
+
+  /** The leader's PLAY: 3, 2, 1 for everyone, then the bus. */
+  play() {
+    const g = this.game;
+    if (!g || g.phase !== 'lobby' || g.leader !== g.myId) return;
+    g.send({ t: 'start', cd: 1 });
+  }
+
+  /** WARM UP: today's warm-up island, with a BACK TO LOBBY chip. */
+  warmUp(on) {
+    const g = this.game;
+    if (on) {
+      if (!g || g.phase !== 'lobby' || !g.me) return;
+      this.warming = true;
+      if (!g.me.alive) g.spawnWarmup();
+      this.showStage(false);
+      this.lobby.toast('Warm-up! Unlimited ammo and materials. Tap <b>↩ LOBBY</b> to go back.', { ms: 4000 });
+    } else {
+      this.warming = false;
+      this.showStage(true);
+    }
+  }
+
+  /** BACK TO LOBBY from the death card: wait with friends on the stage (the match goes on). */
+  backToLobby() {
+    const g = this.game;
+    if (!g) return;
+    // solo: nobody to wait for, so end the match
+    if (g.solo && g.phase !== 'lobby') g.send({ t: 'end' });
+    this.showStage(true);
+  }
+
+  /** SPECTATE from the lobby banner: watch the match on the island. */
+  spectate() {
+    const g = this.game;
+    if (!g || !inMatch(g)) return;
+    this.showStage(false);
+    if (!g.me || !g.me.alive) {
+      this.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: g.solo });
+    }
+  }
+
+  emote() {
+    const g = this.game;
+    if (!g || g.phase !== 'lobby') return;
+    g.send({ t: 'emote', e: 1 });
+    this.stage.emote(g.myId);
+  }
+
+  /** Solo pause (pause menu, app switch): the room's clock and this page's simulation stop. */
+  pauseSolo() {
+    const g = this.game;
+    if (!g || g.net.kind !== 'solo' || this.stageOn) return;
+    g.net.pause();
+    this.paused = true;
+  }
+
+  unpause() {
+    const g = this.game;
+    this.paused = false;
+    if (!g || !g.net.resume) return;
+    const d = g.net.resume();
+    // the bus is predicted from this page's clock: it waited too
+    if (d > 0 && g.bus && g.bus.path && typeof g.bus.t0 === 'number') g.bus.t0 += d;
+    this.last = performance.now();
+  }
+
+  onVisibility() {
+    const g = this.game;
+    if (document.hidden) {
+      if (this.sfx.ctx) this.sfx.ctx.suspend();
+      // solo always waits for you; a P2P host's party waits during a match (instead of ending)
+      if (g && g.net.pause && (g.net.kind === 'solo' || inMatch(g))) {
+        g.net.pause();
+        this.hiddenPause = true;
+      }
+      this.saveResume();
+    } else {
+      if (this.sfx.ctx) this.sfx.ctx.resume();
+      this.last = performance.now();
+      if (this.input.resetToggles) this.input.resetToggles();
+      if (this.hiddenPause) {
+        this.hiddenPause = false;
+        if (g && g.net.kind === 'solo' && inMatch(g) && !this.stageOn && !this.ui.modalOpen()) {
+          // solo: stay paused until RESUME
+          this.paused = true;
+          this.ui.pauseModal();
+        } else if (!this.paused) this.unpause();
+      }
+      this.updateWake();
+    }
+  }
+
+  /** Keep the screen awake in a party with friends or during a match (asked again on every return). */
+  updateWake() {
+    const g = this.game;
+    const want = !document.hidden && !!g && (this.partyKind() !== 'solo' || g.phase !== 'lobby');
+    if (want && !this.wake && !this.wakeAsk && navigator.wakeLock) {
+      this.wakeAsk = true;
+      navigator.wakeLock.request('screen').then((l) => {
+        this.wakeAsk = false;
+        this.wake = l;
+        l.addEventListener('release', () => { if (this.wake === l) this.wake = null; });
+      }).catch(() => { this.wakeAsk = false; });
+    } else if (!want && this.wake) {
+      this.wake.release().catch(() => {});
+      this.wake = null;
+    }
   }
 
   resume() {
-    if (!this.input.touchMode) this.input.requestLock();
-  }
-
-  leaveGame() {
-    if (!this.game) return;
-    const g = this.game;
-    this.game = null;
-    if (g.net === this.serverNet) this.serverNet = null;
-    g.dispose();
-    this.input.exitLock();
-    document.body.classList.remove('ingame');
-    this.ui.showMenu(true);
-    if (this.menuChar) this.menuChar.setVisible(true);
-    if (this.wake) { this.wake.release().catch(() => {}); this.wake = null; }
+    if (!this.input.touchMode && !this.stageOn) this.input.requestLock();
   }
 
   // ------------------------------------------------------------------ loop
@@ -404,22 +559,31 @@ class App {
     const raw = (now - this.last) / 1000;
     this.last = now;
     const dt = Math.max(0, Math.min(raw, 0.05)); // never negative (e.g. a timestamp from before a pause)
-    let focus;
-    if (this.game) {
+    const g = this.game;
+    const stage = this.stageOn;
+    // the lobby on the stage has nothing to simulate; a match goes on behind it (bots owned here)
+    const sim = !!g && !this.paused && !(stage && (g.phase === 'lobby' || !g.me));
+    if (sim) {
       // debug/test hook: run extra simulation steps per rendered frame
-      for (let i = 1; i < (this.simSteps || 1); i++) this.game.update(1 / 60);
-      this.game.update(this.simSteps ? 1 / 60 : dt);
-      const me = this.game.me;
-      focus = me && me.alive && !me.inBus ? me.pos : this.camera.position;
+      for (let i = 1; i < (this.simSteps || 1); i++) g.update(1 / 60);
+      g.update(this.simSteps ? 1 / 60 : dt);
+    } else this.input.update();
+    if (stage) {
+      if (sim) {
+        const me = g.me;
+        this.world.update(dt, this.camera, me && me.alive && !me.inBus ? me.pos : this.camera.position, g);
+        this.fx.update(dt);
+      }
+      this.stage.update(dt);
+      this.stage.render(this.renderer);
     } else {
-      this.input.update();
-      this.updateMenu(dt);
-      focus = this.menuPos;
+      const me = g && g.me;
+      const focus = me && me.alive && !me.inBus ? me.pos : this.camera.position;
+      this.world.update(dt, this.camera, focus, g);
+      if (this.world.farFor) this.applyFar();
+      this.fx.update(dt);
+      this.renderer.render(this.scene, this.camera);
     }
-    this.world.update(dt, this.camera, focus, this.game);
-    if (this.world.farFor) this.applyFar();
-    this.fx.update(dt);
-    this.renderer.render(this.scene, this.camera);
     this.perf(raw, dt);
   }
 

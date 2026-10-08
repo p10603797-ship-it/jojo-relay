@@ -7,59 +7,76 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 export class Ui {
   constructor(app) {
     this.app = app;
-    this.menu = $('#menu');
     this.modalEl = $('#modal');
     this.modalBody = $('.modal-body', this.modalEl);
     this.onModalClose = null;
     $('.modal-x', this.modalEl).addEventListener('click', () => this.closeModal());
     this.modalEl.addEventListener('pointerdown', (e) => { if (e.target === this.modalEl) this.closeModal(); });
 
-    const st = app.settings;
-    const name = $('#name');
-    name.value = st.name;
-    name.addEventListener('input', () => { st.name = name.value.slice(0, 16); app.saveSettings(); });
-    name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
-    $('#btn-solo').addEventListener('click', () => { app.sfx.ui(); app.playSolo(); });
-    $('#btn-friends').addEventListener('click', () => { app.sfx.ui(); this.friendsModal(); });
-    $('#btn-locker').addEventListener('click', () => { app.sfx.ui(); this.lockerModal(); });
-    $('#btn-settings').addEventListener('click', () => { app.sfx.ui(); this.settingsModal(); });
-    $('#btn-help').addEventListener('click', () => { app.sfx.ui(); this.helpModal(); });
-    $('#btn-fullscreen').addEventListener('click', () => this.toggleFullscreen());
-    $('#skin-prev').addEventListener('click', () => this.setSkin(st.skin - 1));
-    $('#skin-next').addEventListener('click', () => this.setSkin(st.skin + 1));
-    this.setSkin(st.skin);
-
     // in-game buttons
     $('#menubtn').addEventListener('click', () => this.pauseModal());
-    $('.es-again').addEventListener('click', () => { this.app.game && this.app.game.playAgain(); });
+    // the end screen (js/ui/endscreen.js)
+    $('.es-again').addEventListener('click', () => {
+      const g = this.app.game;
+      if (!g) return;
+      this.app.sfx.ui();
+      if (g.phase !== 'lobby') this.app.playAgainPending = true;
+      g.playAgain();
+    });
     $('.es-spec').addEventListener('click', () => {
+      this.app.sfx.ui();
       this.app.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: this.app.game && this.app.game.solo });
       this.app.resume();
     });
-    $('.es-leave').addEventListener('click', () => this.app.leaveGame());
-    const lp = $('#lobbypanel');
-    $('.lp-min', lp).addEventListener('click', () => lp.classList.toggle('min'));
-    const bots = $('.lp-bots', lp), botsv = $('.lp-botsv', lp), mats = $('.lp-mats', lp), mode = $('.lp-mode', lp);
-    mode.addEventListener('change', () => this.app.game && this.app.game.send({ t: 'settings', mode: mode.value }));
-    bots.addEventListener('input', () => { botsv.textContent = bots.value; });
-    bots.addEventListener('change', () => this.app.game && this.app.game.send({ t: 'settings', bots: +bots.value }));
-    mats.addEventListener('change', () => this.app.game && this.app.game.send({ t: 'settings', mats: +mats.value }));
-    $('.lp-start', lp).addEventListener('click', () => {
-      this.app.sfx.ui();
-      this.app.game && this.app.game.startMatch(+bots.value, +mats.value, mode.value);
-    });
-    for (const el of [lp, $('#elimscreen'), $('#menubtn')]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
+    $('.es-leave').addEventListener('click', () => { this.app.sfx.ui(); this.app.backToLobby(); });
+    for (const el of [$('#elimscreen'), $('#menubtn')]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
 
   setSkin(i) {
-    const st = this.app.settings;
+    const app = this.app;
+    const st = app.settings;
     st.skin = (i + SKINS.length) % SKINS.length;
-    this.app.saveSettings();
-    $('#skin-name').textContent = SKINS[st.skin].name.toUpperCase();
-    this.app.setMenuSkin(st.skin);
+    app.saveSettings();
+    // friends see it at once (skins change in the lobby only)
+    const g = app.game;
+    if (g && g.phase === 'lobby') g.send({ t: 'look', skin: st.skin });
   }
 
-  showMenu(on) { this.menu.classList.toggle('hidden', !on); }
+  /** Rename yourself (tap your nameplate or your party card). */
+  renameModal() {
+    const app = this.app;
+    const st = app.settings;
+    this.modal(`<h2>YOUR NAME</h2>
+      <div class="rn-row"><input id="rn-name" maxlength="16" autocomplete="off" autocorrect="off" spellcheck="false" value="${esc(st.name)}"></div>
+      <div class="sheet-btns"><button class="btn yellow big rn-ok">SAVE</button></div>`, (b) => {
+      const input = $('#rn-name', b);
+      const save = () => {
+        const n = input.value.replace(/[\u0000-\u001f<>&"']/g, '').trim().slice(0, 16);
+        if (n) {
+          st.name = n;
+          app.saveSettings();
+          if (app.game) app.game.send({ t: 'look', name: n });
+        }
+        this.closeModal();
+      };
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+      $('.rn-ok', b).addEventListener('click', save);
+      input.focus();
+      input.select();
+    });
+  }
+
+  /** Your level and totals (the level chip). */
+  profileModal() {
+    const pr = this.app.profile;
+    if (!pr) return;
+    const L = pr.levelInfo(), d = pr.data;
+    this.modal(`<h2>LEVEL ${L.level}</h2>
+      <div class="rs-bar big"><i style="width:${Math.round(L.frac * 100)}%"></i></div>
+      <p class="mem-sub">${L.xp} / ${L.need} XP to level ${L.level + 1}</p>
+      <div class="rs-tiles">${[[d.matches, 'Matches'], [d.wins, 'Wins'], [d.elims, 'Elims'], [d.total, 'Total XP']].map(([n, l]) => `<div class="rs-tile"><b>${n}</b><span>${l}</span></div>`).join('')}</div>
+      <p class="mem-sub">Earn XP with eliminations (50 each), a top 10 finish, damage, and 300 for every Phictory Royale.</p>`);
+  }
 
   modal(html, onMount, onClose) {
     if (this.app.game) this.app.input.enabled = false;
@@ -100,7 +117,7 @@ export class Ui {
   // ------------------------------------------------------------------ locker
   lockerModal() {
     const st = this.app.settings;
-    const html = `<h2>LOCKER</h2><div class="skins">${SKINS.map((s, i) => `<button data-i="${i}" class="${i === st.skin ? 'sel' : ''}" style="background:linear-gradient(160deg, ${s.outfit}, ${s.pants}); box-shadow: inset 0 -6px 0 ${s.accent}">${esc(s.name)}</button>`).join('')}</div>`;
+    const html = `<h2>LOCKER</h2><p class="mem-sub">Pick a look: your friends see it in the lobby right away.</p><div class="skins">${SKINS.map((s, i) => `<button data-i="${i}" class="${i === st.skin ? 'sel' : ''}" style="background:linear-gradient(160deg, ${s.outfit}, ${s.pants}); box-shadow: inset 0 -6px 0 ${s.accent}">${esc(s.name)}</button>`).join('')}</div>`;
     this.modal(html, (b) => {
       b.querySelectorAll('.skins button').forEach((btn) => btn.addEventListener('click', () => {
         this.setSkin(+btn.dataset.i);
@@ -125,6 +142,11 @@ export class Ui {
       <div class="setting"><span>Camera shake</span><input id="s-shake" type="checkbox" ${st.shake ? 'checked' : ''}></div>
       <div class="setting"><span>Show FPS counter</span><input id="s-fps" type="checkbox" ${st.showFps ? 'checked' : ''}></div>
       <div class="setting"><span>Always use touch controls</span><input id="s-touch" type="checkbox" ${st.forceTouch ? 'checked' : ''}></div>
+      <div class="setting"><span>Build immediately (touch: one tap places a piece)</span><input id="s-tap" type="checkbox" ${st.tapBuild ? 'checked' : ''}></div>
+      <div class="setting"><span>Touch button size</span><input id="s-tbs" type="range" min="0.8" max="1.3" step="0.05" value="${st.tbScale}"></div>
+      <div class="setting"><span>Touch button opacity</span><input id="s-tba" type="range" min="0.3" max="1" step="0.05" value="${st.tbAlpha}"></div>
+      <div class="setting"><span>Music volume</span><input id="s-music" type="range" min="0" max="1" step="0.05" value="${st.music}"></div>
+      <div class="setting"><span>Default bot difficulty</span><select id="s-bot">${['easy', 'normal', 'hard', 'mixed'].map((x) => `<option ${x === st.botLevel ? 'selected' : ''} value="${x}">${x[0].toUpperCase() + x.slice(1)}</option>`).join('')}</select></div>
       <p style="font-size:13px;opacity:.7">"Auto" picks Medium on iPad and High on computers, then the game lowers its resolution on the fly to hold a steady frame rate.</p>`;
     this.modal(html, (b) => {
       const bind = (id, key, conv, after) => {
@@ -146,6 +168,18 @@ export class Ui {
       bind('#s-shake', 'shake', Boolean);
       bind('#s-fps', 'showFps', Boolean, () => this.app.hud.fps(''));
       bind('#s-touch', 'forceTouch', Boolean, () => { this.app.input.forceTouch = st.forceTouch; this.app.input.setTouchMode(st.forceTouch || this.app.isTouch); });
+      bind('#s-tap', 'tapBuild', Boolean);
+      const tb = () => {
+        // the touch layout reads these (build-feel: --tb-scale / --tb-alpha)
+        const r = document.documentElement.style;
+        r.setProperty('--tb-scale', String(st.tbScale));
+        r.setProperty('--tb-alpha', String(st.tbAlpha));
+        if (this.app.input.applySettings) this.app.input.applySettings(st);
+      };
+      bind('#s-tbs', 'tbScale', Number, tb);
+      bind('#s-tba', 'tbAlpha', Number, tb);
+      bind('#s-music', 'music', Number, () => this.app.music && this.app.music.setVolume(st.music));
+      bind('#s-bot', 'botLevel', String);
     }, onClose);
   }
 
@@ -178,130 +212,45 @@ export class Ui {
       <h3>Controllers</h3>
       <p>Bluetooth game controllers work too: sticks move & look, triggers aim & shoot, A jump, B crouch, X reload/interact, Y build, D-pad picks wall/floor/ramp/material.</p>
       <h3>Playing with friends</h3>
-      <p>Everyone opens the Phortnite website and taps <b>Play with Friends</b>. One player hosts a party; the others join with the 4-letter party code it shows (or scan its QR code with the iPad camera). The host picks how many bots to add and starts the match — and must keep the game open, because the match runs on the host's device.</p>`;
+      <p>Play with friends anywhere: tap <b>+ INVITE</b> in the lobby and send the 4-letter party code, the QR code or the link (SHARE / COPY LINK). Friends tap <b>JOIN A FRIEND</b> and type the code, or just open the link. The party leader (♛) picks the mode with <b>CHANGE</b> and presses <b>PLAY</b>; everyone else taps <b>READY</b>. After a match everybody comes back to the lobby together. On the website the party runs on the host's device, so the host should keep the game open; if the Wi-Fi blips you get back into the same match within a minute.</p>`;
     this.modal(html, null, onClose);
-  }
-
-  // ------------------------------------------------------------------ multiplayer
-  async friendsModal() {
-    const app = this.app;
-    if (!document.documentElement.dataset.server) {
-      // the website (no Phortnite server behind it): parties are hosted peer-to-peer
-      this.p2pModal();
-      return;
-    }
-    this.modal('<h2>PLAY WITH FRIENDS</h2><p>Connecting to the Phortnite server…</p>');
-    let net;
-    try {
-      net = await app.connectServer();
-    } catch (e) {
-      // no Phortnite server behind this page (e.g. the GitHub Pages website): play peer-to-peer
-      this.p2pModal();
-      return;
-    }
-    let info = null;
-    try { info = await (await fetch('api/info', { cache: 'no-store' })).json(); } catch (e) { /* hosted without info */ }
-    const lan = info && info.lan && info.lan[0];
-    const here = location.hostname === 'localhost' || location.hostname === '127.0.0.1' ? lan : location.href.split('#')[0].split('?')[0];
-    const shareUrl = here || location.href;
-    app.shareHtml = `Friends open <code>${esc(shareUrl)}</code> → Play with Friends`;
-    const render = (rooms) => {
-      const list = rooms.length ? rooms.map((r) => `<li><span class="nm">${esc(r.name)}</span>${r.sameNet ? '<span class="badge">SAME WI-FI</span>' : ''}<span class="meta">${r.players}/${r.max} · ${r.phase === 'lobby' ? 'in lobby' : 'match running'} · ${esc(r.code)}</span><button class="btn small yellow" data-code="${esc(r.code)}">JOIN</button></li>`).join('')
-        : '<li><span class="meta">No parties yet — create one and your friends will see it here.</span></li>';
-      this.modalBody.querySelector('.mp-list').innerHTML = list;
-      this.modalBody.querySelectorAll('.mp-list button').forEach((b) => b.addEventListener('click', () => this.join(net, b.dataset.code)));
-    };
-    this.modal(`<h2>PLAY WITH FRIENDS</h2>
-      <h3>Parties on this server</h3>
-      <ul class="mp-list"></ul>
-      <div class="mp-row">
-        <button class="btn yellow mp-create">CREATE PARTY</button>
-        <input class="mp-code" maxlength="4" placeholder="CODE" autocomplete="off">
-        <button class="btn blue mp-join">JOIN CODE</button>
-        <button class="btn small mp-refresh">↻</button>
-      </div>
-      <div class="share"><img alt="QR code" src="api/qr.svg?u=${encodeURIComponent(shareUrl)}"><div>Everyone on the same Wi-Fi: open<br><code>${esc(shareUrl)}</code><br>or scan this code with the iPad camera, then tap <b>Play with Friends</b>.</div></div>`, (b) => {
-      $('.mp-create', b).addEventListener('click', () => this.join(net, null));
-      $('.mp-join', b).addEventListener('click', () => this.join(net, $('.mp-code', b).value));
-      $('.mp-code', b).addEventListener('keydown', (e) => { if (e.key === 'Enter') this.join(net, e.target.value); });
-      $('.mp-refresh', b).addEventListener('click', () => net.send({ t: 'list' }));
-      const img = $('.share img', b);
-      img.addEventListener('error', () => { img.style.display = 'none'; });
-    }, () => { if (!app.game) net.close(); });
-    const off = net.onMessage((m) => {
-      if (m.t === 'rooms') render(m.rooms);
-      if (m.t === 'err' && !app.game) this.alert(m.msg);
-    });
-    this.roomsOff = off;
-    net.send({ t: 'list' });
-    clearInterval(this.listTimer);
-    this.listTimer = setInterval(() => { if (this.modalOpen() && !app.game) net.send({ t: 'list' }); else clearInterval(this.listTimer); }, 3000);
-  }
-
-  /** Parties without a server: one device hosts, friends join with the code. */
-  p2pModal(prefill = '') {
-    const app = this.app;
-    this.modal(`<h2>PLAY WITH FRIENDS</h2>
-      <p>One player hosts a party on their iPad or computer, then everyone else joins with the 4-letter party code. Works best when you're all on the same Wi-Fi. The host's device runs the match, so the host should keep the game open.</p>
-      <div class="mp-row"><button class="btn big yellow p2p-host" style="width:auto">HOST A PARTY</button></div>
-      <h3>Join a friend's party</h3>
-      <div class="mp-row">
-        <input class="mp-code" maxlength="4" placeholder="CODE" autocomplete="off" autocapitalize="characters" value="${esc(prefill)}">
-        <button class="btn blue p2p-join">JOIN</button>
-      </div>`, (b) => {
-      const go = () => {
-        const code = $('.mp-code', b).value.trim().toUpperCase();
-        if (!/^[A-Z]{4}$/.test(code)) { this.alert('Party codes are 4 letters, like ABCD.'); return; }
-        this.onModalClose = null;
-        this.modalEl.classList.add('hidden');
-        app.startP2PJoin(code);
-      };
-      $('.p2p-host', b).addEventListener('click', () => {
-        this.onModalClose = null;
-        this.modalEl.classList.add('hidden');
-        app.startP2PHost();
-      });
-      $('.p2p-join', b).addEventListener('click', go);
-      $('.mp-code', b).addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-    });
-  }
-
-  join(net, code) {
-    const app = this.app;
-    if (code !== null && !/^[a-z]{4}$/i.test(String(code).trim())) { this.alert('Party codes are 4 letters, like ABCD.'); return; }
-    clearInterval(this.listTimer);
-    this.onModalClose = null;
-    this.modalEl.classList.add('hidden');
-    app.startOnlineGame(net, code);
   }
 
   // ------------------------------------------------------------------ pause
   pauseModal() {
     const app = this.app;
     const g = app.game;
-    if (!g) return;
+    if (!g || app.stageOn) return;
     app.input.exitLock();
-    const canEnd = g.leader === g.myId && g.phase !== 'lobby' && !g.solo;
+    const solo = g.net.kind === 'solo';
+    const live = g.phase === 'bus' || g.phase === 'match';
+    // solo: the match really stops while this is open
+    if (solo && live) app.pauseSolo();
+    const canEnd = g.leader === g.myId && g.phase !== 'lobby' && !solo;
     const html = `<h2>PAUSED</h2>
-      <p style="opacity:.75;font-size:14px">${g.solo ? 'Solo match' : `Party code <b style="color:#ffd23f;letter-spacing:3px">${esc(g.code)}</b>`} — the game keeps running in the background.</p>
+      <p style="opacity:.75;font-size:14px">${solo ? (live ? 'The match is paused.' : 'Warm-up') : `Party code <b style="color:#ffd23f;letter-spacing:3px">${esc(g.code)}</b> — the match keeps running for your friends.`}</p>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
         <button class="btn yellow p-resume">RESUME</button>
         <button class="btn p-settings">SETTINGS</button>
         <button class="btn p-help">HOW TO PLAY</button>
-        ${g.solo && g.phase !== 'lobby' ? '<button class="btn p-restart">RESTART MATCH</button>' : ''}
+        ${solo && live ? '<button class="btn p-restart">RESTART MATCH</button>' : ''}
         ${canEnd ? '<button class="btn p-end">END MATCH FOR EVERYONE</button>' : ''}
-        <button class="btn p-leave">LEAVE GAME</button>
+        <button class="btn p-lobby">${solo && live ? 'QUIT TO LOBBY' : 'BACK TO LOBBY'}</button>
+        ${solo ? '' : '<button class="btn p-leave">LEAVE PARTY</button>'}
       </div>`;
+    const done = () => { if (app.paused) app.unpause(); };
     const resume = () => { this.closeModal(); app.resume(); };
     this.modal(html, (b) => {
       $('.p-resume', b).addEventListener('click', resume);
-      $('.p-settings', b).addEventListener('click', () => this.settingsModal(() => this.pauseModal()));
-      $('.p-help', b).addEventListener('click', () => this.helpModal(() => this.pauseModal()));
+      $('.p-settings', b).addEventListener('click', () => { this.onModalClose = null; this.settingsModal(() => this.pauseModal()); });
+      $('.p-help', b).addEventListener('click', () => { this.onModalClose = null; this.helpModal(() => this.pauseModal()); });
       const rs = $('.p-restart', b);
-      if (rs) rs.addEventListener('click', () => { this.closeModal(); g.playAgain(); app.resume(); });
+      if (rs) rs.addEventListener('click', () => { this.closeModal(); app.playAgainPending = true; g.playAgain(); app.resume(); });
       const end = $('.p-end', b);
       if (end) end.addEventListener('click', () => { g.send({ t: 'end' }); resume(); });
-      $('.p-leave', b).addEventListener('click', () => { this.closeModal(); app.leaveGame(); });
-    });
+      $('.p-lobby', b).addEventListener('click', () => { this.closeModal(); app.backToLobby(); });
+      const lv = $('.p-leave', b);
+      if (lv) lv.addEventListener('click', () => { this.closeModal(); app.leaveParty(); });
+    }, done);
   }
 }

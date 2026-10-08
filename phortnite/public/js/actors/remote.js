@@ -169,7 +169,32 @@ export class RemotePlayer {
     this.char.setVisible(true);
   }
 
-  setNameVisible(v) { if (this.char.tag) this.char.tag.visible = v; }
+  setNameVisible(v) { this.nameVisible = v; if (this.char.tag) this.char.tag.visible = v; }
+
+  /** A new skin from the roster (a Locker change in the lobby): rebuild the model in place. */
+  setSkin(skin) {
+    if (skin === this.skin) return;
+    this.skin = skin;
+    const old = this.char;
+    const c = new Character(skin, this.name, { tagColor: this.isBot ? '#ffd27a' : '#ffffff' });
+    c.group.position.copy(old.group.position);
+    c.group.rotation.copy(old.group.rotation);
+    c.setVisible(old.visible);
+    if (c.tag && this.nameVisible !== undefined) c.tag.visible = this.nameVisible;
+    old.dispose();
+    this.game.scene.remove(old.group);
+    this.char = c;
+    this.game.scene.add(c.group);
+  }
+
+  /** A new name from the roster. */
+  setName(name) {
+    if (name === this.name) return;
+    this.name = name;
+    const vis = this.char.tag ? this.char.tag.visible : true;
+    this.char.setName(name, this.isBot ? '#ffd27a' : '#ffffff');
+    this.char.tag.visible = vis;
+  }
 
   dispose() {
     this.game.physics.removeCollider(this.collider);
