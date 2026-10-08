@@ -721,6 +721,34 @@ export class Game {
       }, 3200);
     }
     if (this.spectateId === m.v) this.spectateId = m.k && m.k !== m.v ? m.k : 0;
+    // the last of my team fell after me: now the team has its placing
+    if (!meV && this.me && !this.me.alive && !this.myPlace && m.rs === 0 && this.lastElim && !this.lastElim.respawn
+      && this.phase !== 'lobby' && this.friendly(m.v, this.myId)) this.teamOut();
+  }
+
+  /** Who is still standing (from the roster): {players, teams (other than mine), mine (my team's players)}. */
+  standing() {
+    const myTeam = this.teamOf(this.myId);
+    const teams = new Set();
+    let players = 0, mine = 0;
+    for (const p of this.roster.values()) {
+      if (p.alive === false || p.spec) continue;
+      players++;
+      if (p.team === myTeam) mine++; else teams.add(p.team);
+    }
+    return { players, teams: teams.size, mine };
+  }
+
+  /** My team is out (I fell first): '#4 – Your team placed #4 – 6 players left'. */
+  teamOut() {
+    const st = this.standing();
+    if (st.mine) return; // someone is still standing
+    this.myPlace = st.teams + 1;
+    this.lastElim = {
+      ...this.lastElim, place: this.myPlace,
+      sub: `Your team placed #${this.myPlace} – ${st.players} player${st.players === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+    };
+    this.hud.elim(this.lastElim);
   }
 
   onMyDeath(m, killer) {
@@ -740,12 +768,23 @@ export class Game {
     if (respawning) {
       // endscreen ignores {respawn: true} once mode-catalog's overlay counts down (modeState.rs)
       this.lastElim = { respawn: true, title: 'ELIMINATED', sub: `${how} · Respawning in ${Math.ceil(m.rs)}…`, spectate: false, leave: true };
-    } else {
-      const left = Math.max(0, (m.place | 0) - 1);
-      this.myPlace = m.place | 0;
+    } else if (mate) {
+      // a teammate fights on: no placing yet (the team's comes when the last of us falls)
+      this.myPlace = 0;
       this.lastElim = {
-        place: m.place, title: 'ELIMINATED',
-        sub: `${how} · You placed #${m.place} – ${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+        title: 'ELIMINATED', sub: `${how} · Your team fights on – spectating ${this.nameOf(mate.id)}`,
+        again: this.solo, spectate: true, leave: true,
+      };
+    } else {
+      // free for all: your place among the players; teams: your team's place among the teams
+      const st = this.standing();
+      const team = this.teams.has(this.teamOf(this.myId));
+      const place = team ? st.teams + 1 : m.place | 0;
+      const left = st.players;
+      this.myPlace = place;
+      this.lastElim = {
+        place, title: 'ELIMINATED',
+        sub: `${how} · ${team ? 'Your team' : 'You'} placed #${place} – ${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
         again: this.solo, spectate: true, leave: true,
       };
     }
@@ -876,10 +915,10 @@ export class Game {
     if (m.reason === 'humans-out') {
       // every human is out: say honestly how we did, never crown a bot
       const place = this.myPlace || (this.lastElim && this.lastElim.place) || 0;
-      const left = this.aliveCount | 0;
+      const left = this.standing().players;
       this.hud.elim({
         place, title: 'MATCH OVER',
-        sub: `${place ? `You placed #${place} – ` : ''}${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+        sub: `${place ? `${this.teams.has(myTeam) ? 'Your team' : 'You'} placed #${place} – ` : ''}${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
         again: this.solo, leave: true,
       });
     } else if (!meWon && this.me && !this.me.alive && this.lastElim && !this.lastElim.respawn) {
