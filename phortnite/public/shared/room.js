@@ -837,6 +837,7 @@ export class Room {
   checkWin() {
     if ((this.phase !== 'match' && this.phase !== 'bus') || this.elimDepth > 0) return;
     const res = this.runtime.checkWin();
+    if (this.phase !== 'match' && this.phase !== 'bus') return; // the game ended it itself (ctx.end)
     let humans = false;
     for (const p of this.players.values()) if (!p.bot && p.inMatch) { humans = true; break; }
     const humansIn = this.humansInGame();
