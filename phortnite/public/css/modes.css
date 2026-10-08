@@ -231,3 +231,100 @@
 @media (max-width: 600px) {
   .dv-title { display: none; }
 }
+
+/* ================================================================== In-match mode HUD (js/game/modeViews.js) */
+/* what a mode does not have */
+body.mode-nobuild #buildbar, body.mode-nobuild #mats, body.mode-nobuild .tb-build, body.mode-nobuild .tbtn.bonly,
+body.mode-nobuild .tb-wall, body.mode-nobuild .tb-floor, body.mode-nobuild .tb-ramp, body.mode-nobuild .tb-cone,
+body.mode-nobuild .tb-edit, body.mode-nobuild .tb-mat, body.mode-nobuild [data-build-only] { display: none !important; }
+body.mode-nostorm #st-storm { display: none; }
+/* while the respawn countdown runs, it replaces the elimination screen */
+body.respawning #elimscreen { display: none; }
+
+#modehud { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; width: min(250px, 32vw); pointer-events: none; text-shadow: 0 1px 0 #000; }
+#modehud.hidden { display: none; }
+#modehud > * { display: none; }
+#modehud > .on { display: flex; }
+#modehud > ol.on, #modehud > .mh-line.on { display: block; }
+.mh-clock { align-items: center; gap: 6px; background: rgba(0, 0, 0, 0.55); padding: 4px 10px; border-radius: 4px; font-size: 17px; }
+.mh-clock .ico { font-weight: normal; font-size: 13px; opacity: 0.85; }
+.mh-bar { width: 100%; align-items: stretch; gap: 4px; }
+.mh-t { position: relative; flex: 1; min-width: 0; height: 32px; padding: 0 8px; display: flex; align-items: center; gap: 6px; background: rgba(0, 0, 0, 0.6); border-radius: 4px; overflow: hidden; font-size: 12px; }
+.mh-t i { position: absolute; top: 0; bottom: 0; width: 0; background: var(--tc); opacity: 0.6; transition: width 0.3s; }
+.mh-t.a i { left: 0; }
+.mh-t.b i { right: 0; }
+.mh-t span, .mh-t b { position: relative; white-space: nowrap; }
+.mh-t span { overflow: hidden; text-overflow: ellipsis; }
+.mh-t b { font-size: 19px; font-weight: normal; }
+.mh-t.a b { margin-left: auto; }
+.mh-t.b b { margin-right: auto; }
+.mh-t.mine { box-shadow: inset 0 0 0 2px #fff; }
+.mh-goal { flex: none; width: 40px; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.75); border-radius: 4px; font-size: 14px; color: var(--yellow); }
+.mh-top { list-style: none; margin: 0; padding: 4px 8px; width: 100%; background: rgba(0, 0, 0, 0.5); border-radius: 4px; }
+.mh-top li { display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 21px; }
+.mh-top li em { font-style: normal; width: 12px; opacity: 0.7; }
+.mh-top li i { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+.mh-top li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mh-top li.me { color: var(--yellow); }
+.mh-me { background: rgba(0, 0, 0, 0.5); padding: 3px 8px; border-radius: 4px; font-size: 13px; }
+.mh-me b { color: var(--yellow); font-weight: normal; }
+.mh-ladder { width: 100%; flex-wrap: wrap; justify-content: flex-end; gap: 3px; padding: 5px; background: rgba(0, 0, 0, 0.5); border-radius: 4px; }
+.mh-ladder span { min-width: 23px; height: 22px; padding: 0 3px; display: flex; align-items: center; justify-content: center; border-radius: 3px; background: rgba(255, 255, 255, 0.13); font-size: 9px; }
+.mh-ladder span.done { opacity: 0.35; }
+.mh-ladder span.cur { background: var(--yellow); color: #2a1a00; text-shadow: none; transform: scale(1.18); }
+.mh-ladder em { width: 100%; margin-top: 3px; font-style: normal; font-size: 12px; text-align: right; }
+.mh-line { padding: 5px 10px; background: rgba(0, 0, 0, 0.55); border-radius: 4px; font-size: 14px; line-height: 1.3; text-align: right; }
+.mh-line b { color: var(--yellow); font-weight: normal; }
+.mh-line small { font-size: 12px; opacity: 0.9; }
+.mh-line.zombie { background: rgba(58, 150, 40, 0.8); }
+.mh-line.jugg { background: rgba(200, 30, 30, 0.75); }
+.mh-line.contested { background: rgba(255, 255, 255, 0.28); }
+.mh-line.danger { background: rgba(230, 60, 15, 0.85); animation: mh-pulse 0.7s ease-in-out infinite alternate; }
+@keyframes mh-pulse { to { transform: scale(1.05); } }
+
+/* teammates, top left under the menu button */
+.mh-mates { position: absolute; left: calc(10px + var(--sal)); top: calc(64px + var(--sat)); width: 176px; display: flex; flex-direction: column; gap: 4px; pointer-events: none; }
+.mh-mates.hidden { display: none; }
+.mh-mate { position: relative; height: 28px; padding: 3px 8px 0; background: rgba(0, 0, 0, 0.5); border-left: 4px solid var(--tc); border-radius: 3px; font-size: 12px; text-shadow: 0 1px 0 #000; }
+.mh-mate span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 14px; }
+.mh-mate small { color: var(--yellow); }
+.mh-mate i { position: absolute; left: 8px; width: calc(100% - 16px); height: 3px; transform-origin: 0 50%; }
+.mh-mate i.sh { bottom: 7px; background: #7fd6ff; }
+.mh-mate i.hp { bottom: 3px; background: #6df06a; }
+.mh-mate.dead { opacity: 0.55; }
+.mh-mate.dead span::after { content: ' ✖'; color: #ff6b6b; }
+.mh-more { font-size: 11px; opacity: 0.8; padding-left: 4px; }
+
+/* respawn countdown */
+.mh-respawn { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
+.mh-respawn.hidden { display: none; }
+.mh-rring { position: relative; width: 116px; height: 116px; }
+.mh-rring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.mh-rring circle { fill: rgba(10, 5, 30, 0.45); stroke-width: 3.2; }
+.mh-rring .bg { stroke: rgba(255, 255, 255, 0.2); }
+.mh-rring .fg { fill: none; stroke: var(--yellow); stroke-dasharray: 100.5; stroke-dashoffset: 0; stroke-linecap: round; transition: stroke-dashoffset 0.12s linear; }
+.mh-rring b { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--font-title); font-weight: normal; font-size: 56px; text-shadow: 0 4px 0 #3a1b8a; }
+.mh-rtext { font-family: var(--font-title); font-size: 30px; letter-spacing: 2px; text-shadow: 0 3px 0 #3a1b8a, 0 6px 14px rgba(0, 0, 0, 0.6); }
+.mh-rsub { font-size: 16px; opacity: 0.9; text-shadow: 0 1px 2px #000; }
+
+/* off-screen hill arrow */
+.mh-arrow { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
+.mh-arrow.hidden { display: none; }
+.mh-arrow i { position: absolute; left: -18px; top: -20px; width: 36px; height: 40px; font-style: normal; font-size: 34px; line-height: 40px; text-align: center; color: var(--yellow); text-shadow: 0 0 4px #000, 0 2px 0 #6a3a00; }
+.mh-arrow span { position: absolute; left: -40px; top: 18px; width: 80px; text-align: center; font-size: 13px; text-shadow: 0 1px 2px #000; }
+
+@media (max-height: 460px) {
+  #modehud { width: min(200px, 30vw); gap: 3px; }
+  .mh-clock { font-size: 14px; padding: 2px 8px; }
+  .mh-t { height: 26px; font-size: 11px; }
+  .mh-t b { font-size: 15px; }
+  .mh-top li { font-size: 11px; line-height: 17px; }
+  .mh-line { font-size: 12px; padding: 3px 8px; }
+  .mh-ladder span { min-width: 18px; height: 18px; font-size: 8px; }
+  .mh-mates { top: calc(58px + var(--sat)); width: 150px; }
+  .mh-mate { height: 24px; font-size: 11px; }
+  .mh-mate:nth-child(n + 4) { display: none; }
+  .mh-rring { width: 86px; height: 86px; }
+  .mh-rring b { font-size: 40px; }
+  .mh-rtext { font-size: 22px; }
+}
