@@ -495,7 +495,7 @@ body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
   body.touch .mat { font-size: 12px; padding: 1px 6px 1px 3px; }
   body.touch .mat i { width: 12px; height: 12px; }
   body.touch #poi { display: none; } /* entering a place still shows its name */
-  body.touch .slot { width: 46px; height: 46px; }
+  body.touch .slot { width: 48px; height: 48px; }
   body.touch #ammo { bottom: calc(60px + var(--sab)); }
   /* little room: bigger buttons (the size setting) grow at most 15% here */
   #touch { --lay: 0.72; --k: calc(var(--lay) * (0.3 + 0.7 * min(var(--tb-scale), 1.15))); --s: calc(var(--lay) * min(var(--tb-scale), 1.15)); }

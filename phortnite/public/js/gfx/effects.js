@@ -361,8 +361,8 @@ export class Effects {
     if (!this.lightsOn) {
       // a soft additive glow where the light would have been
       const c = this._c.setHex(color);
-      const size = Math.min(9, 0.9 + Math.sqrt(intensity) * 0.42);
-      this.add.emit(x, y, z, 0, 0, 0, Math.max(0.06, dur * 0.9), size, size * 1.25, c.r, c.g, c.b, Math.min(0.55, 0.12 + intensity / 260));
+      const size = Math.min(8, 0.5 + Math.sqrt(intensity) * 0.3);
+      this.add.emit(x, y, z, 0, 0, 0, Math.max(0.06, dur * 0.9), size, size * 1.25, c.r, c.g, c.b, Math.min(0.5, 0.08 + intensity / 400));
       return;
     }
     const L = this.lights[slot];
