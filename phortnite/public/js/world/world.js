@@ -17,7 +17,7 @@ import { Vegetation } from './vegetation.js';
 import { Terrain } from './terrain.js';
 import { ColliderStreamer } from './colliders.js';
 import { Traversal } from './traversal.js';
-import { paintMapArt } from '../ui/mapview.js';
+import { mapArtJob } from '../ui/mapview.js';
 import * as M from './models.js';
 
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
@@ -69,8 +69,32 @@ export class World {
     t('barrels', () => this.buildBarrels());
     t('pads', () => { this.traversal = new Traversal(this); });
     t('colliders', () => this.buildColliders());
-    t('map', () => { this.mapCanvas = paintMapArt(this); });
     this.requestLayers();
+    // the painted map: a few rows at a time after boot (no long stall), finished at once if needed sooner
+    this._mapJob = null;
+    this._mapCanvas = null;
+    this._mapMs = 0;
+    const slice = () => {
+      if (this._mapCanvas) return;
+      if (!this._mapJob) this._mapJob = mapArtJob(this);
+      const t0 = performance.now();
+      const done = this._mapJob.step(40);
+      this._mapMs += performance.now() - t0;
+      if (done) { this._mapCanvas = this._mapJob.canvas; this.timings.map = +this._mapMs.toFixed(1); } else this._mapTimer = setTimeout(slice, 30);
+    };
+    this._mapTimer = setTimeout(slice, 800);
+  }
+
+  /** The island picture for the minimap, full map and mode creator (js/ui/mapview.js paintMapArt). */
+  get mapCanvas() {
+    if (!this._mapCanvas) {
+      const t0 = performance.now();
+      if (!this._mapJob) this._mapJob = mapArtJob(this);
+      this._mapCanvas = this._mapJob.finish();
+      this.timings.map = +(this._mapMs + performance.now() - t0).toFixed(1);
+      if (this._mapTimer) { clearTimeout(this._mapTimer); this._mapTimer = 0; }
+    }
+    return this._mapCanvas;
   }
 
   // ------------------------------------------------------------------ lights & sky

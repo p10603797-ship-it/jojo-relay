@@ -6,7 +6,7 @@ import { BIOMES } from '../../shared/world/keys.js';
 const TINTS = {
   ocean: [0x2a6820, 0x76bf48, 1], beach: [0x6f8a3a, 0xc9c77a, 0.8], meadow: [0x2a6820, 0x76bf48, 1], forest: [0x1d5220, 0x4c963a, 0.9],
   farm: [0x4a6e22, 0xa4c050, 1], city: [0x2e6a26, 0x6fb24a, 0.8], snow: [0x5d7a62, 0xb8cfc0, 0.7], desert: [0x7a7238, 0xc7b46a, 0.8],
-  mesa: [0x7a6a38, 0xc0a060, 0.8], jungle: [0x165a1c, 0x50b03a, 1.25], swamp: [0x3d5222, 0x8a9a4a, 1.1], volcano: [0x3a3a2a, 0x6a6a40, 0.7],
+  mesa: [0x7a6a38, 0xc0a060, 0.8], jungle: [0x165a1c, 0x50b03a, 1.0], swamp: [0x3d5222, 0x8a9a4a, 1.0], volcano: [0x3a3a2a, 0x6a6a40, 0.7],
   wheat: [0x9a7a2a, 0xf0d070, 1.9],
 };
 

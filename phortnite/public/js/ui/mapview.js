@@ -26,11 +26,13 @@ const TIER_STYLE = {
 
 /**
  * The island picture: biome and surface colours, hillshade, water depth, roads, building
- * footprints and lava, ART x ART pixels for the whole map (names are drawn live, so they stay sharp).
+ * footprints and lava, about 1.6 m a pixel (512-1024 px; names are drawn live, so they stay sharp).
+ * mapArtJob(world) paints it a slice of rows at a time: job.step(rows) returns true when done,
+ * job.finish() completes it at once; job.canvas is the picture.
  */
-export function paintMapArt(world) {
+export function mapArtJob(world) {
   const d = world.data;
-  const S = ART;
+  const S = Math.max(512, Math.min(ART, 1 << Math.round(Math.log2(d.size / 1.6))));
   const c = document.createElement('canvas');
   c.width = c.height = S;
   const g = c.getContext('2d');
@@ -41,78 +43,103 @@ export function paintMapArt(world) {
   const keys = (world.terrain && world.terrain.layerKeys) || SURFACES;
   const biome = d.biome;
   const sea = 0;
-  for (let py = 0; py < S; py++) {
-    const z = -half + ((py + 0.5) / S) * d.size;
-    const fz = (z + half) / cell;
-    const iz = Math.floor(fz), tz = fz - iz;
-    for (let px = 0; px < S; px++) {
-      const x = -half + ((px + 0.5) / S) * d.size;
-      const fx = (x + half) / cell;
-      const ix = Math.floor(fx), tx = fx - ix;
-      const h = (H(ix, iz) * (1 - tx) + H(ix + 1, iz) * tx) * (1 - tz) + (H(ix, iz + 1) * (1 - tx) + H(ix + 1, iz + 1) * tx) * tz;
-      let r, gg, b;
-      if (h < sea) {
-        const t = Math.min(1, (sea - h) / 12);
-        r = 70 - 44 * t; gg = 196 - 92 * t; b = 214 - 40 * t;
-      } else {
-        const gi = Math.min(N - 1, Math.round(fz)) * N + Math.min(N - 1, Math.round(fx));
-        const key = surf ? keys[surf[gi]] : 'grass';
-        const base = SURF_RGB[key] || SURF_RGB.grass;
-        r = base[0]; gg = base[1]; b = base[2];
-        if (biome && (key === 'grass' || key === 'junglefloor')) {
-          const sh = BIOME_SHIFT[BIOMES[biome[gi]]];
-          if (sh) { r *= sh[0]; gg *= sh[1]; b *= sh[2]; }
+  let row = 0;
+  const rows = (y0, y1) => {
+    for (let py = y0; py < y1; py++) {
+      const z = -half + ((py + 0.5) / S) * d.size;
+      const fz = (z + half) / cell;
+      const iz = Math.floor(fz), tz = fz - iz;
+      for (let px = 0; px < S; px++) {
+        const x = -half + ((px + 0.5) / S) * d.size;
+        const fx = (x + half) / cell;
+        const ix = Math.floor(fx), tx = fx - ix;
+        const h = (H(ix, iz) * (1 - tx) + H(ix + 1, iz) * tx) * (1 - tz) + (H(ix, iz + 1) * (1 - tx) + H(ix + 1, iz + 1) * tx) * tz;
+        let r, gg, b;
+        if (h < sea) {
+          const t = Math.min(1, (sea - h) / 12);
+          r = 70 - 44 * t; gg = 196 - 92 * t; b = 214 - 40 * t;
+        } else {
+          const gi = Math.min(N - 1, Math.round(fz)) * N + Math.min(N - 1, Math.round(fx));
+          const key = surf ? keys[surf[gi]] : 'grass';
+          const base = SURF_RGB[key] || SURF_RGB.grass;
+          r = base[0]; gg = base[1]; b = base[2];
+          if (biome && (key === 'grass' || key === 'junglefloor')) {
+            const sh = BIOME_SHIFT[BIOMES[biome[gi]]];
+            if (sh) { r *= sh[0]; gg *= sh[1]; b *= sh[2]; }
+          }
+          // hillshade (light from the north-west) and a little brightening with height
+          const slope = (H(ix - 1, iz - 1) - H(ix + 1, iz + 1)) / cell;
+          const lit = Math.max(0.55, Math.min(1.35, 1 + slope * 0.32));
+          const shade = (0.9 + Math.min(0.25, h / 400)) * lit;
+          r *= shade; gg *= shade; b *= shade;
+          // shoreline
+          if (h < sea + 0.6) { r = r * 0.8 + 236 * 0.2; gg = gg * 0.8 + 226 * 0.2; b = b * 0.8 + 180 * 0.2; }
         }
-        // hillshade (light from the north-west) and a little brightening with height
-        const slope = (H(ix - 1, iz - 1) - H(ix + 1, iz + 1)) / cell;
-        const lit = Math.max(0.55, Math.min(1.35, 1 + slope * 0.32));
-        const shade = (0.9 + Math.min(0.25, h / 400)) * lit;
-        r *= shade; gg *= shade; b *= shade;
-        // shoreline
-        if (h < sea + 0.6) { r = r * 0.8 + 236 * 0.2; gg = gg * 0.8 + 226 * 0.2; b = b * 0.8 + 180 * 0.2; }
+        const i = (py * S + px) * 4;
+        img.data[i] = r; img.data[i + 1] = gg; img.data[i + 2] = b; img.data[i + 3] = 255;
       }
-      const i = (py * S + px) * 4;
-      img.data[i] = r; img.data[i + 1] = gg; img.data[i + 2] = b; img.data[i + 3] = 255;
     }
-  }
-  g.putImageData(img, 0, 0);
-  const k = S / d.size;
-  const X = (x) => (x + half) * k, Z = (z) => (z + half) * k;
-  // lava pools
-  for (const l of d.lava || []) {
-    g.fillStyle = '#ff6a1a';
-    g.beginPath();
-    g.arc(X(l.x), Z(l.z), Math.max(2, l.r * k), 0, Math.PI * 2);
-    g.fill();
-  }
-  // roads: a dark casing, then the road
-  const roads = d.roads || [];
-  g.lineCap = 'round';
-  g.lineJoin = 'round';
-  for (const pass of [0, 1]) {
-    for (const rd of roads) {
-      if (!rd.pts || rd.pts.length < 2) continue;
-      const w = Math.max(1.6, (rd.w || 6) * k);
-      g.lineWidth = pass ? w : w + 2;
-      g.strokeStyle = pass ? (rd.kind === 'dirt' ? '#c4a57a' : '#e9e4d6') : 'rgba(40, 36, 30, 0.55)';
+  };
+  const overlays = () => {
+    g.putImageData(img, 0, 0);
+    const k = S / d.size;
+    const X = (x) => (x + half) * k, Z = (z) => (z + half) * k;
+    // lava pools
+    for (const l of d.lava || []) {
+      g.fillStyle = '#ff6a1a';
       g.beginPath();
-      g.moveTo(X(rd.pts[0][0]), Z(rd.pts[0][1]));
-      for (let i = 1; i < rd.pts.length; i++) g.lineTo(X(rd.pts[i][0]), Z(rd.pts[i][1]));
-      g.stroke();
+      g.arc(X(l.x), Z(l.z), Math.max(2, l.r * k), 0, Math.PI * 2);
+      g.fill();
     }
-  }
-  // building footprints
-  for (const hs of d.houses) {
-    const b = hs.bounds || [hs.x - hs.hx, hs.z - hs.hz, hs.x + hs.hx, hs.z + hs.hz];
-    const city = hs.archetype === 'skyscraper' || hs.archetype === 'apartment' || hs.archetype === 'mall' || hs.archetype === 'warehouse' || hs.archetype === 'stadium';
-    g.fillStyle = city ? '#cfcac0' : hs.roof === 'gable' || !hs.archetype || hs.archetype === 'house' ? ROOFS[(hs.paint | 0) % 4] : '#bdb4a4';
-    if (hs.archetype === 'bridge' || hs.archetype === 'pier') g.fillStyle = '#a0784a';
-    g.fillRect(X(b[0]), Z(b[1]), Math.max(1.5, (b[2] - b[0]) * k), Math.max(1.5, (b[3] - b[1]) * k));
-    g.strokeStyle = 'rgba(0,0,0,0.4)';
-    g.lineWidth = 1;
-    g.strokeRect(X(b[0]), Z(b[1]), Math.max(1.5, (b[2] - b[0]) * k), Math.max(1.5, (b[3] - b[1]) * k));
-  }
-  return c;
+    // roads: a dark casing, then the road
+    const roadList = d.roads || [];
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    for (const pass of [0, 1]) {
+      for (const rd of roadList) {
+        if (!rd.pts || rd.pts.length < 2) continue;
+        const w = Math.max(1.6, (rd.w || 6) * k);
+        g.lineWidth = pass ? w : w + 2;
+        g.strokeStyle = pass ? (rd.kind === 'dirt' ? '#c4a57a' : '#e9e4d6') : 'rgba(40, 36, 30, 0.55)';
+        g.beginPath();
+        g.moveTo(X(rd.pts[0][0]), Z(rd.pts[0][1]));
+        for (let i = 1; i < rd.pts.length; i++) g.lineTo(X(rd.pts[i][0]), Z(rd.pts[i][1]));
+        g.stroke();
+      }
+    }
+    // building footprints
+    for (const hs of d.houses) {
+      const b = hs.bounds || [hs.x - hs.hx, hs.z - hs.hz, hs.x + hs.hx, hs.z + hs.hz];
+      const city = hs.archetype === 'skyscraper' || hs.archetype === 'apartment' || hs.archetype === 'mall' || hs.archetype === 'warehouse' || hs.archetype === 'stadium';
+      g.fillStyle = city ? '#cfcac0' : hs.roof === 'gable' || !hs.archetype || hs.archetype === 'house' ? ROOFS[(hs.paint | 0) % 4] : '#bdb4a4';
+      if (hs.archetype === 'bridge' || hs.archetype === 'pier') g.fillStyle = '#a0784a';
+      g.fillRect(X(b[0]), Z(b[1]), Math.max(1.5, (b[2] - b[0]) * k), Math.max(1.5, (b[3] - b[1]) * k));
+      g.strokeStyle = 'rgba(0,0,0,0.4)';
+      g.lineWidth = 1;
+      g.strokeRect(X(b[0]), Z(b[1]), Math.max(1.5, (b[2] - b[0]) * k), Math.max(1.5, (b[3] - b[1]) * k));
+    }
+  };
+  let done = false;
+  const job = {
+    canvas: c,
+    /** Paint up to n more rows; true when the picture is finished. */
+    step(n = 48) {
+      if (done) return true;
+      const y1 = Math.min(S, row + n);
+      rows(row, y1);
+      row = y1;
+      if (row >= S) { overlays(); done = true; }
+      return done;
+    },
+    finish() { while (!job.step(S)); return c; },
+    get done() { return done; },
+  };
+  return job;
+}
+
+/** The whole island picture at once (see mapArtJob). */
+export function paintMapArt(world) {
+  return mapArtJob(world).finish();
 }
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
