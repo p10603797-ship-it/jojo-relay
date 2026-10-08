@@ -115,6 +115,8 @@ body.ended #touch, body.ended #hotbar, body.endcard #touch, body.endcard #hotbar
   background: linear-gradient(180deg, #fff, #ffd23f 55%, #ff9a1c); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 5px 0 #6a3a00);
 }
 @keyframes vpop { from { transform: scale(0.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+#lobby.celebrate .lb-rail, #lobby.celebrate .lb-br, #lobby.celebrate .lb-bl, #lobby.celebrate .lb-banner, #lobby.celebrate .lb-top > :not(.lb-logo) { visibility: hidden; }
+#stageplates.celebrate .plate { visibility: hidden; }
 .lb-confetti { position: absolute; inset: 0; }
 .lb-confetti i { position: absolute; top: -20px; width: 10px; height: 16px; border-radius: 2px; animation: confetti 3s linear infinite; will-change: transform; }
 .lb-confetti i:nth-child(3n) { width: 8px; height: 8px; border-radius: 50%; }

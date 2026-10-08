@@ -328,6 +328,7 @@ export class LobbyStage {
   /** Victory: these ids dance under '#1 PHICTORY ROYALE' (null ends it). */
   celebrate(ids) {
     this.celebrating = ids ? new Set(ids) : null;
+    this.plates.classList.toggle('celebrate', !!ids);
   }
 
   update(dt) {

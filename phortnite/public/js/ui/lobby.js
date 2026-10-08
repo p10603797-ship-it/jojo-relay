@@ -33,7 +33,8 @@ export function modeView(settings) {
   if (r.respawn > 0) tags.push('Respawn');
   const bots = s.modeId || s.rules ? r.bots : s.bots ?? r.bots;
   if (tags.length < 3 && bots > 0) tags.push(`${bots} bot${bots === 1 ? '' : 's'}`);
-  return { name: info.name || 'Battle Royale', emoji: info.emoji || '🎮', color: info.color || '#ffd23f', desc: info.desc || '', tags: tags.slice(0, 3) };
+  const name = info.name || 'Battle Royale';
+  return { name, emoji: info.emoji || '🎮', color: info.color || '#ffd23f', desc: info.desc || '', tags: tags.filter((t) => t !== name).slice(0, 3) };
 }
 
 /**
@@ -336,6 +337,8 @@ export class LobbyUi {
   /** Victory: '#1 PHICTORY ROYALE' with confetti over the dancing winners. */
   victory(on) {
     this.el.victory.classList.toggle('hidden', !on);
+    // the moment belongs to the winners: the lobby panels step aside
+    this.root.classList.toggle('celebrate', !!on);
   }
 
   memberTap(id) {
