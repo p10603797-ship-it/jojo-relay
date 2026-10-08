@@ -384,8 +384,11 @@ async function runMatch(browser, url, cfg) {
   await page.evaluate((cfg) => {
     const g = window.__phortnite.game, M = window.__M;
     M.patchBots();
-    // no mode engine to set the difficulty: give every bot a skill from the asked level ourselves
-    if (cfg.skill && !(g.rules && g.rules.botSkill === cfg.skill)) {
+    // no mode engine to roll the bots' skills from the difficulty: give every bot a skill from the
+    // asked level ourselves (the room may still have taken rules.botSkill, which the brains read)
+    const room = g.net && g.net.room;
+    const rolled = room && [...room.players.values()].some((p) => p.bot && p.skill !== undefined);
+    if (cfg.skill && !rolled) {
       if (g.rules) g.rules.botSkill = cfg.skill;
       let i = 0;
       for (const b of g.bots.values()) {

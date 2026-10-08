@@ -138,12 +138,12 @@ function traits(skill, persona, easy) {
     sight: (55 + 55 * skill) * (easy ? 0.8 : 1), // m in the open
     ears: 0.8 + 0.35 * skill,
     reactBase: 0.8 - 0.55 * skill + (easy ? 0.15 : 0), // s from spotting to the first deliberate shot
-    aimK: easy ? 1.7 : 1, // aim error multiplier
+    aimK: easy ? 2.4 : 1, // aim error multiplier (easy bots: a shaky hand, for young kids)
     buildK: easy ? 0.25 : 1, // how often building is the answer
     memory: 10 + 10 * persona.camp + Math.random() * 3,
     turnSpeed: (4 + 9 * skill) * (easy ? 0.8 : 1), // rad/s flick limit
     turnK: 6 + 10 * skill,
-    trackK: (0.55 + 0.4 * skill) * (easy ? 0.85 : 1), // how much of a moving target's motion the hand follows
+    trackK: (0.55 + 0.4 * skill) * (easy ? 0.7 : 1), // how much of a moving target's motion the hand follows
     settle: 1 + 2.5 * skill, // aim error settling rate (1/s)
     scopeSettle: 0.35 + 0.7 * (1 - skill),
     matsWant: Math.round((persona.build > 0.6 ? 300 : 150) * (easy ? 0.5 : 1)), // keep about this many
@@ -1583,6 +1583,8 @@ export class Bot extends Combatant {
     }
     // the error settles toward a floor: hand steadiness, own movement, distance
     let floor = (0.01 + 0.04 * (1 - b.skill)) * b.aimK + d * 0.00006;
+    // easy bots also wobble by a hand's width whatever the range (they miss up close too)
+    if (b.easy) floor += 0.3 / Math.max(3, d);
     if (!this.mover.grounded) floor *= 2.2;
     else if (this.speed > 4) floor *= 1.4;
     if (this.ads) floor *= 0.8;
@@ -1602,7 +1604,7 @@ export class Bot extends Combatant {
     const left = this.turnHuman(yawD + b.errY, pitchD + b.errP, dt, b.turnSpeed * slow, b.turnK * slow);
     b.reaction -= dt;
     b.aimDist = d;
-    const tol = Math.max(0.012, Math.atan2((w.pellets || 1) > 1 ? 0.9 : 0.45, d)) * (1.5 - 0.5 * b.skill);
+    const tol = Math.max(0.012, Math.atan2((w.pellets || 1) > 1 ? 0.9 : 0.45, d)) * (1.5 - 0.5 * b.skill) * (b.easy ? 1.2 : 1);
     return left < tol;
   }
 
