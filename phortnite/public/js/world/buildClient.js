@@ -9,7 +9,8 @@
 import * as THREE from 'three';
 import { WEAPONS, HEALS, BUILD } from '../../shared/constants.js';
 import { EDIT_PRESETS, EDIT_FULL, editOf, floorHoleFor } from '../../shared/buildgrid.js';
-import { RAY_SOLID } from '../physics.js';
+// (no physics.js import: game plugins must load in Node for the contract tests; physics.raycast's
+// default filter is the solid world + builds + props)
 
 const EDIT_REACH = 4.5; // m from the player to the piece under the crosshair
 const EDIT_KEEP = 6; // m: the open edit closes when you walk further from its piece
@@ -101,7 +102,7 @@ export class BuildClient {
     // camera forward = (0, 0, -1) rotated by its quaternion
     const fx = -2 * (_q.x * _q.z + _q.w * _q.y), fy = -2 * (_q.y * _q.z - _q.w * _q.x), fz = -(1 - 2 * (_q.x * _q.x + _q.y * _q.y));
     const o = cam.position;
-    const h = g.physics.raycast(o.x, o.y, o.z, fx, fy, fz, 14, RAY_SOLID);
+    const h = g.physics.raycast(o.x, o.y, o.z, fx, fy, fz, 14);
     if (!h || !h.info || h.info.kind !== 'build') return null;
     const dx = h.x - me.pos.x, dy = h.y - (me.pos.y + 1), dz = h.z - me.pos.z;
     if (dx * dx + dy * dy + dz * dz > EDIT_REACH * EDIT_REACH) return null;
