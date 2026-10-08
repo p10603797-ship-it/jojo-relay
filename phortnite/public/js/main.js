@@ -193,10 +193,10 @@ class App {
     $('#game').addEventListener('click', () => { if (this.game && !this.stageOn && !this.input.touchMode && !this.input.locked && !this.ui.modalOpen()) this.input.requestLock(); });
     $('#loading').style.display = 'none';
     // a party of one; then an invite link (#join=CODE) or a party to get back into after a reload
+    const back = this.loadResume(); // (read before the party of one clears it)
     this.enterParty(new LocalNet(this.hello()));
     this.showStage(true);
     const jm = /join=([A-Za-z]{4})/.exec(location.hash || '');
-    const back = this.loadResume();
     if (jm) {
       history.replaceState(null, '', location.pathname + location.search);
       this.invite.join(jm[1].toUpperCase(), { fromLink: true, resume: back && back.code === jm[1].toUpperCase() ? back.token : undefined });
