@@ -178,6 +178,7 @@ if (lL >= 0.0) {
     for (const c of this.list) this.writeChunk(c);
     houses.forEach((h, i) => this.chunkOf(h.x, h.z).houses.push(i));
     this.buildHlod();
+    this.buildSigns(objects);
     this.writeMs = performance.now() - t0;
     return this.meshes;
   }
@@ -265,6 +266,95 @@ if (lL >= 0.0) {
       arr.i += idx ? ni : nv;
     }
     arr.v += nv;
+  }
+
+  // ------------------------------------------------------------------ signs
+  /**
+   * Shop and place signs (parts with a `sign` text): every text in one canvas atlas and one mesh
+   * of quads on both faces of their panels (one draw call). A destroyed sign loses its text too.
+   */
+  buildSigns(objects) {
+    if (typeof document === 'undefined') return;
+    const list = objects.filter((o) => o.kind === 'part' && typeof o.sign === 'string' && o.sign.trim() && !o.ax);
+    if (!list.length) return;
+    const W = 1024, ROW = 64, FS = 44;
+    const rows = Math.ceil(list.length / 2) + 1;
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = Math.min(2048, 1 << Math.ceil(Math.log2(Math.max(64, rows * ROW))));
+    const g = c.getContext('2d');
+    g.textBaseline = 'middle';
+    g.textAlign = 'center';
+    g.lineJoin = 'round';
+    const pos = [], uv = [], nor = [], idx = [];
+    this.signOf = new Map();
+    let col = 0, row = 0;
+    for (const o of list) {
+      if ((row + 1) * ROW > c.height) break;
+      const text = o.sign.trim().toUpperCase().slice(0, 24);
+      const u0 = col * (W / 2), v0 = row * ROW;
+      // dark letters on a light panel, light letters on a dark one
+      _c.setHex(o.tint ?? 0xf4efe2);
+      const lum = 0.2126 * _c.r + 0.7152 * _c.g + 0.0722 * _c.b;
+      const fs = Math.min(FS, Math.floor((W / 2 - 16) / Math.max(1, text.length) * 1.7));
+      g.font = `${fs}px "Luckiest Guy", "Russo One", sans-serif`;
+      g.lineWidth = 6;
+      g.strokeStyle = lum > 0.35 ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.85)';
+      g.fillStyle = lum > 0.35 ? '#1d2440' : '#ffe27a';
+      g.strokeText(text, u0 + W / 4, v0 + ROW / 2);
+      g.fillText(text, u0 + W / 4, v0 + ROW / 2);
+      // a quad on each big face of the panel
+      const thinX = o.hx < o.hz;
+      const along = thinX ? o.hz : o.hx, thin = thinX ? o.hx : o.hz;
+      const hw = along * 0.92, hh = o.hy * 0.85;
+      const start = pos.length / 3;
+      for (const side of [1, -1]) {
+        const nx = thinX ? side : 0, nz = thinX ? 0 : side;
+        const fx = o.x + nx * (thin + 0.012), fz = o.z + nz * (thin + 0.012);
+        // the text's left-to-right direction as seen from this side
+        const tx = thinX ? 0 : side, tz = thinX ? -side : 0;
+        const b = pos.length / 3;
+        for (const [a, h] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+          pos.push(fx + tx * hw * a, o.y + hh * h, fz + tz * hw * a);
+          nor.push(nx, 0, nz);
+          uv.push((u0 + (a + 1) / 2 * (W / 2)) / W, 1 - (v0 + (1 - h) / 2 * ROW) / c.height);
+        }
+        idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+      }
+      this.signOf.set(o.id, start);
+      col = 1 - col;
+      if (!col) row++;
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    const geo = new THREE.BufferGeometry();
+    const pa = new THREE.Float32BufferAttribute(pos, 3);
+    pa.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('position', pa);
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeBoundingSphere();
+    this.signOrig = new Float32Array(pos);
+    const mat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.45, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.matrixAutoUpdate = false;
+    mesh.name = 'signs';
+    mesh.receiveShadow = true;
+    this.world.root.add(mesh);
+    this.signs = mesh;
+  }
+
+  showSign(id, on) {
+    if (!this.signs || !this.signOf.has(id)) return;
+    const o = this.signOf.get(id) * 3;
+    const arr = this.signs.geometry.attributes.position.array;
+    if (on) arr.set(this.signOrig.subarray(o, o + 24), o);
+    else for (let k = 3; k < 24; k++) arr[o + k] = arr[o + (k % 3)];
+    const a = this.signs.geometry.attributes.position;
+    a.addUpdateRange(o, 24);
+    a.needsUpdate = true;
   }
 
   // ------------------------------------------------------------------ HLOD
@@ -394,6 +484,7 @@ if (lL >= 0.0) {
 
   // ------------------------------------------------------------------ destruction
   setVisible(id, visible) {
+    if (this.signOf && this.signOf.has(id)) this.showSign(id, visible);
     const r = this.ranges.get(id);
     if (!r || r.hidden === !visible) return;
     const mesh = r.c.meshes[r.which];
@@ -418,6 +509,7 @@ if (lL >= 0.0) {
   dispose() {
     for (const m of this.meshes) { m.geometry.dispose(); this.world.root.remove(m); }
     if (this.hlod) { this.hlod.geometry.dispose(); this.hlod.material.dispose(); this.world.root.remove(this.hlod); }
+    if (this.signs) { this.signs.geometry.dispose(); this.signs.material.map.dispose(); this.signs.material.dispose(); this.world.root.remove(this.signs); }
     for (const m of this.materials) m.dispose();
   }
 }
