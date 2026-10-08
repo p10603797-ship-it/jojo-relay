@@ -40,7 +40,7 @@
 //       use instead of the look's default), sign (text on a panel), glow (1 = emissive: lamps)
 //     kind 'prop': type (props.js PROP_TYPES: car, container, crate, lamp, bench, fence, hay,
 //       stall, fountain, sign, pump, tent, hydrant, dumpster), hx, hy, hz (box collider half
-//       sizes, y = box centre), yaw?, color?, text? (sign), wreck?
+//       sizes, y = box centre), yaw (0 or a quarter turn), color?, text? (sign), wreck?
 //     kind 'decor' (no collider, not solid): type (props.js DECOR_TYPES), s (scale), yaw; y = ground
 //     kind 'tree': type (legacy 0 pine, 1 oak, 2 palm), species (a SPECIES key), s (scale), yaw
 //     kind 'rock': type 0-2, s, yaw (tint them by biomeAt(x, z))

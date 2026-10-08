@@ -43,7 +43,7 @@ export function scatter(G, L, W, regions, rng) {
   const pfGrid = new Float32Array(N * N).fill(1);
   for (const g of regions) {
     const rr = g.r * 1.15;
-    const core = g.kind === 'city' ? 1.1 : g.kind === 'landmark' ? 0.6 : 0.75;
+    const core = g.kind === 'city' || g.recipe === 'stadium' ? 1.1 : g.kind === 'landmark' ? 0.6 : 0.75;
     const ix0 = Math.max(0, Math.floor((g.x - rr + half) / cell)), ix1 = Math.min(N - 1, Math.ceil((g.x + rr + half) / cell));
     const iz0 = Math.max(0, Math.floor((g.z - rr + half) / cell)), iz1 = Math.min(N - 1, Math.ceil((g.z + rr + half) / cell));
     for (let iz = iz0; iz <= iz1; iz++) for (let ix = ix0; ix <= ix1; ix++) {

@@ -306,7 +306,9 @@ export function planPlace(G, g, rng, regions) {
       // a landmark at the centre or beside it
       const side = ax === 'x' ? [0, 1] : [1, 0];
       const lm = { mill: 'windmill', plaza: null, mines: 'mine', port: 'warehouse', swamp: 'warehouse', chalets: 'lodge', treehouses: null, beach: 'watchtower', cove: null, bluffs: null }[g.recipe];
-      if (lm) plan.plots.push(plot(rng, lm, cx + side[0] * 16, cz + side[1] * 16, rotToward(-side[0], -side[1]), { must: true }));
+      // the landmark sits in a corner between the main and the cross street, facing the main street
+      const along = ax === 'x' ? [1, 0] : [0, 1];
+      if (lm) plan.plots.push(plot(rng, lm, cx + side[0] * 18 + along[0] * 18, cz + side[1] * 18 + along[1] * 18, rotToward(-side[0], -side[1]), { must: true }));
       if (g.recipe === 'plaza') {
         plan.plazas.push({ x: cx, z: cz, hx: 14, hz: 14 });
         plan.props.push({ type: 'fountain', x: cx, z: cz });
@@ -315,7 +317,7 @@ export function planPlace(G, g, rng, regions) {
       if (g.recipe === 'port' || g.recipe === 'beach' || g.recipe === 'cove' || g.recipe === 'swamp') plan.piers = g.recipe === 'swamp' ? 1 : 2;
       if (g.recipe === 'port') plan.props.push({ type: 'containers', x: cx - side[0] * 20, z: cz - side[1] * 20, n: 10 });
       streetPlots(rng, plan, cx, cz, ax, r * 1.8, dirt ? 6 : 8, PALETTES[pal], {
-        skip: (a, w) => (lm || g.recipe === 'plaza') && Math.abs(a) < 12 + w / 2,
+        skip: (a, w) => (lm || g.recipe === 'plaza') && Math.abs(a - (lm ? 18 : 0)) < 12 + w / 2,
         gap: g.recipe === 'bluffs' || g.recipe === 'chalets' ? 8 : 4,
       });
       if (r > 56 && !dirt) streetPlots(rng, plan, cx, cz, other, r * 1.1, 8, PALETTES[pal], { skip: (a) => Math.abs(a) < 14 });

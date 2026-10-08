@@ -9,7 +9,7 @@ import { BIOMES, SURFACES, SPECIES, SPECIES_TYPE, LOOKS, LOOK_ALIASES, PADS, TIE
 import { ARCHETYPES } from '../public/shared/world/buildings.js';
 import { PROP_TYPES, DECOR_TYPES } from '../public/shared/world/props.js';
 
-const CHECKSUM = 317388778;   // pinned: the island everyone plays on (update deliberately with the map)
+const CHECKSUM = 338422541;   // pinned: the island everyone plays on (update deliberately with the map)
 
 const worlds = new Map();
 const world = (size = MAP.size) => {
@@ -200,7 +200,7 @@ function structural(w) {
   for (const o of w.objects) {
     if (o.kind === 'tree') assert.ok(SPECIES.includes(o.species) && SPECIES_TYPE[o.species] === o.type);
     else if (o.kind === 'part') assert.ok(LOOKS.includes(o.look) || Object.hasOwn(LOOK_ALIASES, o.look), o.look);
-    else if (o.kind === 'prop') assert.ok(PROP_TYPES[o.type] && o.hx > 0 && o.hy > 0 && o.hz > 0, o.type);
+    else if (o.kind === 'prop') assert.ok(PROP_TYPES[o.type] && o.hx > 0 && o.hy > 0 && o.hz > 0 && Number.isFinite(o.yaw), o.type);
     else if (o.kind === 'decor') assert.ok(DECOR_TYPES.includes(o.type), o.type);
     else assert.equal(o.kind, 'rock');
     assert.ok(['wood', 'stone', 'metal'].includes(o.mat) || o.kind === 'decor', `${o.kind} mat ${o.mat}`);
@@ -331,4 +331,59 @@ test('world v2: lookups and indexes', () => {
     const [[ax, az], [bx, bz]] = r.pts;
     assert.ok(w.heightAt((ax + bx) / 2, (az + bz) / 2) < 0.6, 'a bridge crosses water');
   }
+});
+
+test('map art: tree LODs within budget, colliders, props, writeBox, texture layers', async () => {
+  const M = await import('../public/js/world/models.js');
+  const tris = (g) => (g.trunk.index.count + g.leaves.index.count) / 3;
+  for (const sp of SPECIES) {
+    const [t0, t1, t2] = [0, 1, 2].map((l) => tris(M.treeGeometry(sp, l)));
+    assert.ok(t0 <= 420 && t1 >= 40 && t1 <= 120 && t2 <= 12, `${sp}: ${t0} / ${t1} / ${t2} triangles`);
+    assert.ok(Array.isArray(M.SPECIES_COLLIDERS[sp]) && M.SPECIES_INFO[sp], sp);
+    for (const l of [0, 1, 2]) {
+      const g = M.treeGeometry(sp, l);
+      for (const part of [g.trunk, g.leaves]) for (const k of ['position', 'normal', 'uv', 'color']) assert.ok(part.attributes[k], `${sp} ${l} ${k}`);
+      assert.ok(g.leaves.index.count > 0);
+    }
+  }
+  assert.equal(tris(M.treeGeometry(0)), tris(M.treeGeometry('pine')), 'legacy types are their species');
+  for (const b of BIOMES) assert.ok(Number.isInteger(M.ROCK_TINTS[b]), b);
+  for (const t of [...Object.keys(PROP_TYPES), ...DECOR_TYPES, ...PADS]) {
+    const g = M.propGeometry(t, 2);
+    assert.ok(g.index.count > 0 && g.attributes.color && g.attributes.uv, t);
+    g.computeBoundingBox();
+    assert.ok(g.boundingBox.min.y > -0.2, `${t} stands on y = 0`);
+  }
+  // the typed-array fast path writes the same boxes as partGeometry
+  const w = world();
+  const parts = w.objects.filter((o) => o.kind === 'part').slice(0, 3000);
+  const A = M.partArrays(parts.length, true);
+  for (const o of parts) M.writePart(A, o, 0xffffff);
+  assert.equal(A.v, parts.length * M.PART_VERTS);
+  assert.equal(A.i, parts.length * M.PART_INDICES);
+  for (let k = 0; k < parts.length; k += 37) {
+    const o = parts[k];
+    const g = M.partGeometry(o, 0xffffff);
+    const P = g.attributes.position.array;
+    let bx = Infinity, Bx = -Infinity, ax = Infinity, Ax = -Infinity;
+    for (let i = 0; i < P.length; i += 3) { bx = Math.min(bx, P[i] + P[i + 1] + P[i + 2]); Bx = Math.max(Bx, P[i] + P[i + 1] + P[i + 2]); }
+    for (let i = k * 72; i < (k + 1) * 72; i += 3) { ax = Math.min(ax, A.pos[i] + A.pos[i + 1] + A.pos[i + 2]); Ax = Math.max(Ax, A.pos[i] + A.pos[i + 1] + A.pos[i + 2]); }
+    assert.ok(Math.abs(ax - bx) < 1e-3 && Math.abs(Ax - Bx) < 1e-3, `part ${o.id} (${o.look})`);
+  }
+  // a texture for every surface and look, tileable, lava with an emissive mask
+  const { layerTexture } = await import('../public/js/gfx/texgen.js');
+  for (const k of [...SURFACES, ...LOOKS]) {
+    const img = layerTexture(k, 64);
+    assert.ok(img.size === 64 && img.color.length === 64 * 64 * 4 && img.height.length === 64 * 64, k);
+    let edge = 0, inner = 0;
+    for (let y = 0; y < 64; y++) {
+      for (let c = 0; c < 3; c++) {
+        edge += Math.abs(img.color[(y * 64 + 63) * 4 + c] - img.color[(y * 64) * 4 + c]);
+        inner += Math.abs(img.color[(y * 64 + 31) * 4 + c] - img.color[(y * 64 + 32) * 4 + c]);
+      }
+    }
+    assert.ok(edge <= inner * 3 + 64 * 3 * 24, `${k} wraps around (edge ${edge}, inner ${inner})`);
+  }
+  const lava = layerTexture('lava', 64);
+  assert.ok(lava.emissive && lava.emissive.length === 64 * 64 && Math.max(...lava.emissive) > 200);
 });

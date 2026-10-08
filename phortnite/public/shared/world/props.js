@@ -3,7 +3,7 @@
 // cones, umbrellas, flowers, pumpkins, campfires (kind 'decor': no collider). Barrels are physics
 // props (data.barrels).
 //
-// Prop object: { kind: 'prop', type, mat, hp, x, y, z, hx, hy, hz, yaw?, color?, text? } (y = box centre)
+// Prop object: { kind: 'prop', type, mat, hp, x, y, z, hx, hy, hz, yaw, color?, text? } (y = box centre)
 // Decor object: { kind: 'decor', type, x, y, z, s, yaw } (y = ground)
 import { OCC, BoxHash } from './grid.js';
 import { DIRS16 } from './pois.js';
@@ -53,8 +53,7 @@ export function placeProps(G, W, regions, plans, roads, barrels, rng) {
     const swap = yaw === YAW[1] || yaw === YAW[3];
     const hx = swap ? T.hz : T.hx, hz = swap ? T.hx : T.hz;
     const gy = G.heightAt(x, z);
-    const o = { kind: 'prop', type, mat: T.mat, hp: T.hp, x, y: gy + T.hy, z, hx: T.hx, hy: T.hy, hz: T.hz };
-    if (yaw) o.yaw = yaw;
+    const o = { kind: 'prop', type, mat: T.mat, hp: T.hp, x, y: gy + T.hy, z, hx: T.hx, hy: T.hy, hz: T.hz, yaw };
     if (extra) Object.assign(o, extra);
     W.add(o);
     propBoxes.add({ x0: x - hx, z0: z - hz, x1: x + hx, z1: z + hz });
