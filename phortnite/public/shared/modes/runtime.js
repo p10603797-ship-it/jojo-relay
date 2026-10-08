@@ -139,6 +139,7 @@ export function assignTeams(humans, bots, rules) {
 // ------------------------------------------------------------------ spawns
 const SPAWN_MARGIN = 5;
 const MEMBER_RING = 3.5; // m: teammates stand around their team's spot (all within 2 x this)
+const FAR_ENOUGH = 160;  // m: teams this far apart are spread enough (beyond it, spots are picked at random)
 
 /** Open land a player can stand on: above the sea, not too steep, not inside anything. */
 export function standable(world, x, z, destroyed = null) {
@@ -176,8 +177,9 @@ export function spawnCandidates(world, area, rng = Math.random, want = 48, base 
 
 /**
  * Start spots for every player: Map id -> {x, y, z}. Each team gets its own spot, as far from the
- * other teams' spots as the area allows (farthest-point sampling); teammates stand within
- * 2 x MEMBER_RING of each other around it.
+ * other teams' spots as the area allows (farthest-point sampling, up to FAR_ENOUGH, so two big
+ * teams don't start at opposite ends of the island); teammates stand within 2 x MEMBER_RING of
+ * each other around it.
  */
 export function pickSpawns(world, area, players, rng = Math.random, cands = null) {
   const out = new Map();
@@ -208,7 +210,7 @@ export function pickSpawns(world, area, players, rng = Math.random, cands = null
       let best = -1, bd = -1;
       for (let i = 0; i < C.length; i++) {
         if (used[i] && C.length > teams.length) continue;
-        const d = minD[i] + rng() * 0.01; // ties: a random one
+        const d = Math.min(minD[i], FAR_ENOUGH * FAR_ENOUGH) + rng() * 0.01; // far enough: a random one
         if (d > bd) { bd = d; best = i; }
       }
       pick = best;

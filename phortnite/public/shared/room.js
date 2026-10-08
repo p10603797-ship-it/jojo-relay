@@ -394,7 +394,7 @@ export class Room {
     for (const p of this.players.values()) if (p.role) roles.push([p.id, p.role]);
     return this.plugExtra({
       t: 'welcome', v: PROTOCOL, you: id, code: this.code, name: this.name, solo: this.solo,
-      checksum: this.world.checksum, phase: this.phase, leader: this.leader, settings: this.settings,
+      checksum: this.world.checksum, phase: this.phase === 'round' ? 'match' : this.phase, leader: this.leader, settings: this.settings,
       players: this.roster(),
       builds: [...this.grid.pieces.values()].map((b) => this.pieceMsg(b)),
       destroyed: [...this.destroyed],
