@@ -11,6 +11,7 @@
 //   cancel                  leader: stop the countdown
 //   suggest {id}            a member asks the leader for a mode (at most 1 per 3 s)
 //   mark {x, z} | {clear}   a map marker for your team (everyone in the lobby), at most 4 per second
+//   bye                     the page leaves on purpose: its disconnect is not held for a rejoin
 // Messages (room -> client): countdown {s, ends, ms} (s 0 = cancelled), kicked {msg},
 //   suggest {id, from}, mark {id, x, z} | {id, clear}, and on a rejoin 'resumed' (see below).
 //
@@ -98,6 +99,37 @@ function dropPlayer(room, p, broadcast = true) {
   if (room.leader === p.id || !room.players.has(room.leader)) room.leader = (firstConnected(room) || humans[0]).id;
   fixBotOwner(room);
   if (broadcast) rosterOut(room);
+}
+
+const cleanText = (s, n) => String(s ?? '').replace(/[\u0000-\u001f<>]/g, '').slice(0, n);
+
+/**
+ * Room settings sent by a page (server 'create' with the party-of-one's settings, a P2P host's
+ * new Room): only the known keys, with sane types. Rules are normalized. Unknown input -> {}.
+ */
+export function cleanSettings(s) {
+  const out = {};
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return out;
+  if (typeof s.bots === 'number' && Number.isFinite(s.bots)) out.bots = Math.max(0, Math.min(31, Math.round(s.bots)));
+  if (typeof s.mats === 'number' && Number.isFinite(s.mats)) out.mats = Math.max(0, Math.min(999, Math.round(s.mats)));
+  if (s.mode === 'ffa' || s.mode === 'squad') out.mode = s.mode;
+  if (typeof s.modeId === 'string' && /^[\w-]{1,48}$/.test(s.modeId)) out.modeId = s.modeId;
+  if (typeof s.botSkill === 'string' && /^[a-z]{1,12}$/.test(s.botSkill)) out.botSkill = s.botSkill;
+  if (s.rules && typeof s.rules === 'object' && !Array.isArray(s.rules)) out.rules = normalizeRules(s.rules, { games: Object.keys(GAMES) });
+  // custom: a flag, or the custom rules themselves
+  if (s.custom && typeof s.custom === 'object' && !Array.isArray(s.custom)) out.custom = normalizeRules(s.custom, { games: Object.keys(GAMES) });
+  else if (s.custom !== undefined) out.custom = !!s.custom;
+  const i = s.info;
+  if (i && typeof i === 'object' && !Array.isArray(i)) {
+    out.info = {
+      name: cleanText(i.name, 40) || 'Mode',
+      emoji: cleanText(i.emoji, 8),
+      color: typeof i.color === 'string' && /^#[0-9a-f]{6}$/i.test(i.color) ? i.color : '#8a8fa8',
+      desc: cleanText(i.desc, 160),
+      tags: Array.isArray(i.tags) ? i.tags.slice(0, 6).map((t) => cleanText(t, 24)).filter(Boolean) : [],
+    };
+  }
+  return out;
 }
 
 /**
@@ -230,6 +262,12 @@ export const party = {
   },
 
   handlers: {
+    // the page is leaving on purpose (LEAVE PARTY, closed): its disconnect is not held for a rejoin
+    bye(c) {
+      const p = this.players.get(c.pid);
+      if (p) p.resumeOk = false;
+    },
+
     ready(c, m) {
       if (this.phase !== 'lobby') return;
       const p = this.players.get(c.pid);
