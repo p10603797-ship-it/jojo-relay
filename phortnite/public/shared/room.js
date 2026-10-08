@@ -2,12 +2,17 @@
 // connections, and solo mode runs the very same code inside the browser.
 //
 // A connection is any object with { id, send(obj), ip }.
+//
+// Room plugins (shared/plugins/index.js) hook into joins, leaves, roster rows, the welcome,
+// ticks, match start / lobby / eliminations, build piece messages and client messages.
 import {
   MAP, BUILD, MAT_KEYS, PLAYER, WEAPONS, WEAPON_KEYS, AMMO, HEALS, STORM, BUS, SKINS, BOT_NAMES,
   RARITY_WEIGHTS, WEAPON_WEIGHTS, clampRarity, weaponDamage, MAX_MATS, PROTOCOL, ANIM, own,
 } from './constants.js';
 import { generateWorld } from './worldgen.js';
 import { BuildGrid, parseKey } from './buildgrid.js';
+import { rulesFromSettings } from './modes/rules.js';
+import { ROOM_PLUGINS } from './plugins/index.js';
 
 let sharedWorld = null;
 export function getWorld() {
@@ -42,12 +47,20 @@ export function rollWeapon(boost = 0) {
 }
 
 export class Room {
-  constructor({ code = 'SOLO', name = 'Party', solo = false, now = () => Date.now(), log = () => {} } = {}) {
+  /**
+   * settings: merged into the default settings ({bots, mats, mode}; settings.rules = mode rules).
+   * maxHumans: party size limit. plugins: room plugins (default ROOM_PLUGINS).
+   */
+  constructor({
+    code = 'SOLO', name = 'Party', solo = false, now = () => Date.now(), log = () => {},
+    settings = null, maxHumans = MAX_HUMANS, plugins = ROOM_PLUGINS,
+  } = {}) {
     this.code = code;
     this.name = name;
     this.solo = solo;
     this.now = now;
     this.log = log;
+    this.maxHumans = maxHumans;
     this.created = now();
     this.world = getWorld();
     this.destroyed = new Set();
@@ -60,7 +73,9 @@ export class Room {
     this.phase = 'lobby';
     this.phaseEnds = 0;
     this.leader = 0;
-    this.settings = { bots: solo ? 19 : 8, mats: 0, mode: 'ffa' };
+    this.settings = { bots: solo ? 19 : 8, mats: 0, mode: 'ffa', ...settings };
+    // mode rules (shared/modes/rules.js): settings.rules, or the legacy mode
+    this.rules = rulesFromSettings(this.settings);
     this.loot = new Map();
     this.nextLoot = 1;
     this.chestsOpened = new Set();
@@ -71,6 +86,49 @@ export class Room {
     this.lastTick = now();
     this.empty = false;
     this.winner = null;
+    // room plugins: their message handlers come before the Room's own (this.baseHandlers)
+    this.plugins = plugins.slice();
+    this.baseHandlers = HANDLERS;
+    this.pluginHandlers = Object.create(null);
+    for (const pl of this.plugins) if (pl.handlers) Object.assign(this.pluginHandlers, pl.handlers);
+    this.plug('init', this);
+  }
+
+  // ------------------------------------------------------------------ plugins
+  /** Run hook `name` on every room plugin that has it. A plugin error is logged, never thrown. */
+  plug(name, a, b, c, d) {
+    for (const pl of this.plugins) {
+      if (typeof pl[name] !== 'function') continue;
+      try { pl[name](a, b, c, d); } catch (e) { this.plugError(pl, name, e); }
+    }
+  }
+
+  /** The first true / false answer of hook `name` (undefined when no plugin answers). */
+  plugAnswer(name, a, b, c) {
+    for (const pl of this.plugins) {
+      if (typeof pl[name] !== 'function') continue;
+      try {
+        const r = pl[name](a, b, c);
+        if (r === true || r === false) return r;
+      } catch (e) { this.plugError(pl, name, e); }
+    }
+    return undefined;
+  }
+
+  /** Add the extra fields that plugins return from hook `name` to obj. */
+  plugExtra(obj, name, a, b) {
+    for (const pl of this.plugins) {
+      if (typeof pl[name] !== 'function') continue;
+      try {
+        const x = pl[name](a, b);
+        if (x && typeof x === 'object') Object.assign(obj, x);
+      } catch (e) { this.plugError(pl, name, e); }
+    }
+    return obj;
+  }
+
+  plugError(pl, hook, e) {
+    this.log('plugin error', { plugin: pl.name, hook, err: String((e && e.stack) || e) });
   }
 
   // ------------------------------------------------------------------ util
@@ -92,16 +150,16 @@ export class Room {
   }
 
   roster() {
-    return [...this.players.values()].map((p) => ({
+    return [...this.players.values()].map((p) => this.plugExtra({
       id: p.id, name: p.name, skin: p.skin, bot: p.bot, alive: p.alive, kills: p.kills, spec: p.spectator, team: p.team,
-    }));
+    }, 'roster', p));
   }
 
   publicInfo(ip) {
     const humans = this.humans();
     return {
       code: this.code, name: this.name, phase: this.phase, players: humans.length,
-      max: MAX_HUMANS, sameNet: !!ip && humans.some((p) => p.ip === ip),
+      max: this.maxHumans, sameNet: !!ip && humans.some((p) => p.ip === ip),
     };
   }
 
@@ -122,7 +180,10 @@ export class Room {
       this.send(conn, { t: 'err', ver: true, msg: 'Phortnite was updated, and this page is on a different version than your friends. Everyone should reload the page, then try again.' });
       return false;
     }
-    if (this.humans().length >= MAX_HUMANS) {
+    // a room plugin may take the join over (e.g. a rejoin after a dropped connection)
+    const took = this.plugAnswer('onJoin', this, conn, hello);
+    if (took !== undefined) return took;
+    if (this.humans().length >= this.maxHumans) {
       this.send(conn, { t: 'err', msg: 'This party is full.' });
       return false;
     }
@@ -150,6 +211,8 @@ export class Room {
     if (!c) return;
     this.conns.delete(connId);
     const p = this.players.get(c.pid);
+    // a room plugin may keep the player instead (e.g. held for a rejoin)
+    if (this.plugAnswer('onLeave', this, c, p) === true) return;
     if (p) {
       if (p.alive && (this.phase === 'match' || this.phase === 'bus')) this.eliminate(p, null, { c: 'left' });
       this.players.delete(p.id);
@@ -203,7 +266,7 @@ export class Room {
   }
 
   welcome(id) {
-    return {
+    return this.plugExtra({
       t: 'welcome', v: PROTOCOL, you: id, code: this.code, name: this.name, solo: this.solo,
       checksum: this.world.checksum, phase: this.phase, leader: this.leader, settings: this.settings,
       players: this.roster(),
@@ -213,7 +276,7 @@ export class Room {
       chests: [...this.chestsOpened],
       bus: this.bus ? this.busMsg() : null,
       match: this.match,
-    };
+    }, 'welcome', this, id);
   }
 
   // ------------------------------------------------------------------ messages
@@ -222,7 +285,7 @@ export class Room {
     const c = this.conns.get(connId);
     if (!c) return;
     c.last = this.now();
-    const h = this.handlers[msg.t];
+    const h = this.pluginHandlers[msg.t] || this.handlers[msg.t];
     if (!h) return;
     try {
       h.call(this, c, msg);
@@ -238,6 +301,7 @@ export class Room {
   // ------------------------------------------------------------------ match flow
   startMatch() {
     if (this.phase !== 'lobby') return;
+    this.rules = rulesFromSettings(this.settings);
     this.match++;
     this.phase = 'bus';
     this.winner = null;
@@ -282,6 +346,7 @@ export class Room {
       loot: [...this.loot.values()], settings: this.settings,
     });
     this.reassignBots();
+    this.plug('onStart', this);
     this.log('match start', { room: this.code, players: this.players.size });
   }
 
@@ -379,6 +444,7 @@ export class Room {
       place: left + 1, x: r2(victim.x), y: r2(victim.y), z: r2(victim.z),
     });
     this.siphon(killer, victim);
+    this.plug('onElim', this, victim, killer, info);
     this.checkWin();
   }
 
@@ -438,6 +504,7 @@ export class Room {
       p.a = ANIM.IDLE;
       p.team = p.id;
     }
+    this.plug('onLobby', this);
     this.broadcast({ t: 'lobby', players: this.roster(), leader: this.leader, settings: this.settings });
   }
 
@@ -463,7 +530,9 @@ export class Room {
   damageAllowed() { return this.phase === 'match' || this.phase === 'bus'; }
 
   // ------------------------------------------------------------------ builds
-  pieceMsg(b) { return { k: b.k, m: b.m, d: b.d | 0, hp: Math.round(this.pieceHp(b)), max: b.max, by: b.by, age: (this.now() - b.born) / 1000 }; }
+  pieceMsg(b) {
+    return this.plugExtra({ k: b.k, m: b.m, d: b.d | 0, hp: Math.round(this.pieceHp(b)), max: b.max, by: b.by, age: (this.now() - b.born) / 1000 }, 'pieceMsg', b);
+  }
 
   pieceHp(b) {
     const now = this.now();
@@ -606,6 +675,7 @@ export class Room {
   // ------------------------------------------------------------------ tick
   tick() {
     const now = this.now();
+    this.plug('tick', this, now);
     this.lastTick = now;
 
     if (this.phase === 'bus' && this.bus) {
@@ -719,6 +789,7 @@ const HANDLERS = {
     if (m.bots !== undefined) this.settings.bots = clampN(num(m.bots) | 0, 0, 30);
     if (m.mats !== undefined) this.settings.mats = clampN(num(m.mats) | 0, 0, MAX_MATS);
     if (m.mode === 'ffa' || m.mode === 'squad') this.settings.mode = m.mode;
+    this.rules = rulesFromSettings(this.settings);
     this.broadcast({ t: 'settings', settings: this.settings });
   },
 
