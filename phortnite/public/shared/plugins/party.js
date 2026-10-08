@@ -16,8 +16,8 @@
 //   suggest {id, from}, mark {id, x, z} | {id, clear}, and on a rejoin 'resumed' (see below).
 //
 // Rejoin: the welcome carries a 16-character resume token. A player whose hello said it can resume
-// (hello.resume is a string, '' on a first join) and whose connection drops during the bus or the
-// match is held for 60 s (roster row away: 1). Joining again with hello.resume = token rebinds the
+// (hello.resume is a string, '' on a first join) and whose connection drops (in the lobby, the bus
+// or the match; not on purpose: see bye) is held for 60 s (roster row away: 1). Joining again with hello.resume = token rebinds the
 // new connection to the same player (same id, health, team and place in the match). The answer is
 // the welcome with resumed: true and me {x, y, z, hp, sh, alive, inBus}; with hello.keep (the page
 // still has its game running) it comes as {t: 'resumed'} instead, so the client's game is not reset.
@@ -193,7 +193,8 @@ export const party = {
   },
 
   onLeave(room, c, p) {
-    if (!p || p.bot || !p.resumeOk || room.party.kicking === c.conn.id || !inMatch(room)) return undefined;
+    // held in the lobby too (a Wi-Fi blip should not cost the leader the crown), not at the end screen
+    if (!p || p.bot || !p.resumeOk || room.party.kicking === c.conn.id || room.phase === 'ended') return undefined;
     p.away = room.now() + HOLD_MS;
     // someone who is still here leads (and simulates the bots) while the leader is away
     if (room.leader === p.id) {

@@ -28,6 +28,10 @@ function storedCode() {
 function storeCode(c) { try { localStorage.setItem(HOST_CODE_KEY, c); } catch (e) { /* private mode */ } }
 
 let PeerCtor = null;
+/** Tests: use this Peer class instead of PeerJS from the CDN. */
+export function usePeer(ctor) { PeerCtor = ctor; }
+const pageHidden = () => typeof document !== 'undefined' && document.hidden;
+
 async function loadPeer() {
   if (PeerCtor) return PeerCtor;
   let m;
@@ -269,15 +273,17 @@ export class P2PClient extends Emitter {
     this.retrying = false;
     this.awaitRejoin = false;
     this.stalled = false;
+    this.stallMs = STALL_MS;
+    this.silentMs = SILENT_MS;
   }
 
   async connect() {
     await this.link();
     this.out({ t: 'join', hello: this.hello });
-    this.pingTimer = setInterval(() => this.watch(), 1000);
+    this.pingTimer = setInterval(() => this.watch(), Math.min(1000, this.stallMs / 2));
     // coming back to the page after a while: allow the host a moment to answer again
-    this.onVisible = () => { if (!document.hidden) this.lastRx = Math.max(this.lastRx, performance.now() - 5000); };
-    document.addEventListener('visibilitychange', this.onVisible);
+    this.onVisible = () => { if (!pageHidden()) this.lastRx = Math.max(this.lastRx, performance.now() - 5000); };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisible);
   }
 
   /** Open a peer and a data channel to the host. */
@@ -333,8 +339,8 @@ export class P2PClient extends Emitter {
     if (!this.open || this.retrying) return;
     const quiet = performance.now() - this.lastRx;
     // a host whose iPad went to sleep may never close the link
-    if (quiet > SILENT_MS && !document.hidden) { this.lost(); return; }
-    if (quiet > STALL_MS && !this.stalled && !document.hidden) { this.stalled = true; this.emit({ t: '_net', state: 'stall' }); }
+    if (quiet > this.silentMs && !pageHidden()) { this.lost(); return; }
+    if (quiet > this.stallMs && !this.stalled && !pageHidden()) { this.stalled = true; this.emit({ t: '_net', state: 'stall' }); }
     this.pingN = (this.pingN || 0) + 1;
     if (this.pingN % 2 === 0) this.send({ t: 'ping', c: performance.now() });
   }
@@ -393,7 +399,7 @@ export class P2PClient extends Emitter {
     this.onClose = null;
     this.open = false;
     clearInterval(this.pingTimer);
-    if (this.onVisible) document.removeEventListener('visibilitychange', this.onVisible);
+    if (this.onVisible && typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisible);
     const dc = this.dc, peer = this.peer;
     // a moment for the bye to leave
     setTimeout(() => {

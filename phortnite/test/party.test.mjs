@@ -352,3 +352,171 @@ test('party: the lobby picks modes before the mode engine has its own handler', 
   assert.equal(H.room.settings.rules.gravity, 0.35);
   assert.deepEqual(H.errors, []);
 });
+
+// ------------------------------------------------------------------ P2P transport (fake PeerJS)
+// WebRTC does not work in this sandbox, so the P2P host / client logic runs over an in-memory
+// stand-in for PeerJS: peers by id, data channels that deliver strings asynchronously.
+import { P2PHost, P2PClient, usePeer, P2P_MAX_HUMANS } from '../public/js/net/p2p.js';
+import { PROTOCOL } from '../public/shared/constants.js';
+
+const PEERS = new Map();
+let anon = 0;
+class FakeChannel {
+  constructor() { this.h = {}; this.open = false; this.other = null; }
+  on(ev, fn) { (this.h[ev] || (this.h[ev] = [])).push(fn); }
+  fire(ev, a) { for (const fn of this.h[ev] || []) fn(a); }
+  send(s) { if (!this.open) return; const o = this.other; setImmediate(() => { if (o.open) o.fire('data', s); }); }
+  close() { if (!this.open) return; this.open = false; this.other.open = false; setImmediate(() => { this.fire('close'); this.other.fire('close'); }); }
+}
+class FakePeer {
+  constructor(id, opts) {
+    if (typeof id === 'object') { opts = id; id = null; }
+    this.id = id || `anon${++anon}`;
+    this.h = {};
+    this.dcs = new Set();
+    setImmediate(() => {
+      if (PEERS.has(this.id)) { this.fire('error', { type: 'unavailable-id', message: 'taken' }); return; }
+      PEERS.set(this.id, this);
+      this.fire('open');
+    });
+  }
+  on(ev, fn) { (this.h[ev] || (this.h[ev] = [])).push(fn); }
+  once(ev, fn) { const w = (a) => { this.h[ev] = this.h[ev].filter((x) => x !== w); fn(a); }; this.on(ev, w); }
+  fire(ev, a) { for (const fn of [...(this.h[ev] || [])]) fn(a); }
+  connect(id) {
+    const a = new FakeChannel(), b = new FakeChannel();
+    a.other = b; b.other = a;
+    this.dcs.add(a);
+    setImmediate(() => {
+      const target = PEERS.get(id);
+      if (!target) { this.fire('error', { type: 'peer-unavailable' }); return; }
+      target.dcs.add(b);
+      a.open = b.open = true;
+      target.fire('connection', b);
+      setImmediate(() => { b.fire('open'); a.fire('open'); });
+    });
+    return a;
+  }
+  reconnect() {}
+  destroy() { if (PEERS.get(this.id) === this) PEERS.delete(this.id); for (const dc of this.dcs) dc.close(); }
+}
+const until = async (fn, ms = 4000) => {
+  const t0 = Date.now();
+  while (!fn()) { if (Date.now() - t0 > ms) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 10)); }
+};
+const hello = (name, extra = {}) => ({ name, skin: 1, v: PROTOCOL, resume: '', ...extra });
+function inbox(net) { const box = []; net.onMessage((m) => box.push(m)); box.last = (t) => { for (let i = box.length - 1; i >= 0; i--) if (box[i].t === t) return box[i]; return null; }; return box; }
+
+test('P2P: the host keeps its mode and code, caps the party at 8, kicks close the link, a dropped friend rejoins', async () => {
+  usePeer(FakePeer);
+  const store = new Map();
+  globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+  try {
+    const host = new P2PHost(hello('Mia'), { settings: { modeId: 'duos', rules: { teams: 2, nope: 1 }, bots: 2, junk: { x: 1 } } });
+    const hb = inbox(host);
+    await host.connect();
+    await until(() => hb.last('welcome'));
+    assert.match(host.code, /^[A-Z]{4}$/);
+    assert.equal(store.get('phortnite.hostCode'), host.code, 'the code is kept for next time');
+    assert.equal(host.room.maxHumans, P2P_MAX_HUMANS);
+    assert.equal(P2P_MAX_HUMANS, 8);
+    assert.deepEqual([host.room.settings.modeId, host.room.settings.rules.teams, host.room.settings.junk, host.room.settings.rules.nope], ['duos', 2, undefined, undefined]);
+    // friends join
+    const ben = new P2PClient(host.code, hello('Ben'));
+    const bb = inbox(ben);
+    await ben.connect();
+    await until(() => bb.last('welcome'));
+    const cat = new P2PClient(host.code, hello('Cat'));
+    const cb = inbox(cat);
+    await cat.connect();
+    await until(() => cb.last('welcome'));
+    assert.equal(host.room.humans().length, 3);
+    // kick Cat: she hears it, then the link closes (~300 ms)
+    let catLost = null;
+    cat.onClose = (m) => { catLost = m || true; };
+    host.send({ t: 'kick', id: cb.last('welcome').you });
+    await until(() => cb.last('kicked'));
+    assert.equal(cat.rejoin, null, 'nothing to come back to');
+    await until(() => catLost, 3000);
+    assert.equal(host.room.humans().length, 2);
+    // a match; Ben's link drops; he gets back in as the same player with the game still running
+    const w = bb.last('welcome');
+    ben.rejoin = () => ({ t: 'join', hello: hello('Ben', { resume: w.resume, keep: true }) });
+    host.send({ t: 'start', bots: 0, mats: 0 });
+    await until(() => bb.last('start'));
+    for (const dc of [...PEERS.get(`phortnite-v1-${host.code}`).dcs]) if (dc.open) { dc.close(); break; } // the network blips
+    await until(() => bb.some((m) => m.t === '_net' && m.state === 'reconnecting'));
+    assert.equal(host.room.players.get(w.you).away > 0, true, 'held for a rejoin');
+    await until(() => bb.last('resumed'), 6000);
+    assert.equal(bb.last('resumed').you, w.you);
+    assert.ok(bb.some((m) => m.t === '_net' && m.state === 'online'));
+    assert.equal(host.room.players.get(w.you).away, 0);
+    // the host pauses (page hidden mid-match): the friend notices the silence, then the host is back
+    ben.stallMs = 300;
+    host.pause();
+    await until(() => bb.filter((m) => m.t === '_net' && m.state === 'stall').length === 1, 3000);
+    const paused = host.room.now();
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(host.room.now(), paused, 'the room clock stands still');
+    host.resume();
+    await until(() => bb.filter((m) => m.t === '_net' && m.state === 'online').length >= 2, 3000);
+    // the host closes the party: friends hear it (no 45 s wait)
+    host.close();
+    await until(() => bb.last('partyend'));
+    assert.match(bb.last('partyend').msg, /Mia's party ended/);
+    assert.equal(ben.rejoin, null);
+    ben.close();
+    // the next party from this device gets the same code back
+    const again = new P2PHost(hello('Mia'));
+    await again.connect();
+    assert.equal(again.code, store.get('phortnite.hostCode'));
+    again.close();
+  } finally {
+    delete globalThis.localStorage;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+});
+
+test('P2P: a party of 8 turns the 9th friend away', async () => {
+  usePeer(FakePeer);
+  const host = new P2PHost(hello('Host'));
+  await host.connect();
+  const nets = [];
+  for (let i = 0; i < 8; i++) {
+    const c = new P2PClient(host.code, hello(`F${i}`));
+    const box = inbox(c);
+    await c.connect();
+    await until(() => box.last('welcome') || box.last('err'));
+    nets.push([c, box]);
+  }
+  assert.equal(nets.filter(([, b]) => b.last('welcome')).length, 7);
+  assert.match(nets[7][1].last('err').msg, /full/);
+  host.close();
+  for (const [c] of nets) c.close(false);
+  await new Promise((r) => setTimeout(r, 400));
+});
+
+test('party: a Wi-Fi blip in the lobby keeps your spot (and the crown comes back to you if nobody took it); bye leaves at once', () => {
+  const H = makeRoom();
+  const a = H.join('Ann', RES), b = H.join('Ben', RES);
+  const tokA = H.last(a, 'welcome').resume;
+  H.leave(a);
+  assert.ok(H.room.players.has(a.pid), 'held in the lobby');
+  assert.equal(H.room.leader, b.pid, 'Ben leads while Ann is away');
+  assert.equal(H.last(b, 'roster').players.find((p) => p.id === a.pid).away, 1);
+  H.advance(5000);
+  const a2 = H.join('Ann', { resume: tokA, keep: true });
+  assert.equal(H.last(a2, 'resumed').you, a.pid);
+  assert.equal(H.last(a2, 'resumed').phase, 'lobby');
+  // on purpose: no hold
+  H.send(b, { t: 'bye' });
+  H.leave(b);
+  assert.equal(H.room.players.has(b.pid), false);
+  assert.equal(H.room.leader, a.pid);
+  // never back: gone after 60 s, and the room empties
+  H.leave(a2);
+  H.advance(HOLD_MS + 500);
+  assert.equal(H.room.players.size, 0);
+  assert.equal(H.room.empty, true);
+  assert.deepEqual(H.errors, []);
+});

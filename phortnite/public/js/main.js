@@ -179,7 +179,12 @@ class App {
     window.addEventListener('resize', () => this.onResize());
     this.onResize();
     document.addEventListener('visibilitychange', () => this.onVisibility());
-    window.addEventListener('pagehide', (e) => { if (!e.persisted) this.saveResume(true); });
+    window.addEventListener('pagehide', (e) => {
+      if (e.persisted) return;
+      // closing (or reloading) in the lobby: leave at once; mid-match a reload gets back in
+      const g = this.game;
+      if (g && g.phase === 'lobby' && g.net.kind !== 'solo') { g.net.send({ t: 'bye' }); this.saveResume(true); } else this.saveResume();
+    });
     window.addEventListener('keydown', (e) => {
       if ((e.code === 'Escape' || e.code === 'KeyP') && this.game && !this.stageOn && this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
     });
@@ -280,7 +285,14 @@ class App {
     }
     this.paused = false;
     this.playAgainPending = false;
+    // no stale 'Mia left' / 'THE BUS IS LEAVING!' from the last session
     if (this.hud.reset) this.hud.reset();
+    else {
+      const el = this.hud.el;
+      this.hud.noticeTimer = 0;
+      if (el.notice) el.notice.classList.remove('show');
+      if (el.big) { el.big.classList.remove('show'); el.big.innerHTML = ''; }
+    }
     this.shareHtml = '';
     this.game = new Game(this, net, { solo: net.kind === 'solo', name: this.settings.name, skin: this.settings.skin });
     document.body.classList.add('ingame');
@@ -301,7 +313,6 @@ class App {
   soloParty() {
     const g = this.game;
     const keep = g && g.settingsState && g.settingsState.modeId ? keepSettings(g.settingsState) : null;
-    if (keep) delete keep.bots;
     this.enterParty(new LocalNet(this.hello(), { settings: keep }));
     if (!this.warming) this.showStage(true);
   }
@@ -362,35 +373,50 @@ class App {
     return row ? row.name : '';
   }
 
+  /**
+   * Run fn after the message being handled now (never swap the Game inside one of its own
+   * handlers: the old one would keep handling the message, and the new one would see it too).
+   * Skipped if the party changed in the meantime.
+   */
+  later(g, fn) {
+    setTimeout(() => { if (this.game === g && !g.disposed) fn(); }, 0);
+  }
+
   /** The connection gave up (after trying to get back in). */
   onPartyLost(net, msg) {
     const g = this.game;
     if (!g || g.net !== net) return;
-    const code = g.code, kind = net.kind, host = this.hostName(g);
-    this.soloParty();
-    this.lobby.netStatus('');
-    if (kind === 'p2p') this.lobby.toast(`${esc(host || 'The host')}'s party ended`, { kind: 'bad', ms: 6000 });
-    else this.lobby.toast(msg && msg.msg ? esc(msg.msg) : 'Lost connection to the party', { kind: 'bad', ms: 6000 });
-    this.setRejoin(kind, code, kind === 'p2p' ? host : '');
-    this.lobby.render();
+    this.later(g, () => {
+      const code = g.code, kind = net.kind, host = this.hostName(g);
+      this.soloParty();
+      this.lobby.netStatus('');
+      if (kind === 'p2p') this.lobby.toast(`${esc(host || 'The host')}'s party ended`, { kind: 'bad', ms: 6000 });
+      else this.lobby.toast(msg && msg.msg ? esc(msg.msg) : 'Lost connection to the party', { kind: 'bad', ms: 6000 });
+      this.setRejoin(kind, code, kind === 'p2p' ? host : '');
+      this.lobby.render();
+    });
   }
 
   onKicked(g, m) {
     if (g !== this.game) return;
-    this.saveResume(true);
-    this.soloParty();
-    this.lobby.toast(esc(m.msg || 'You were removed from the party.'), { kind: 'bad', ms: 6000 });
+    this.later(g, () => {
+      this.saveResume(true);
+      this.soloParty();
+      this.lobby.toast(esc(m.msg || 'You were removed from the party.'), { kind: 'bad', ms: 6000 });
+    });
   }
 
   /** The P2P host closed the party. */
   onPartyEnd(g, m) {
     if (g !== this.game) return;
-    const code = g.code, host = this.hostName(g);
-    this.saveResume(true);
-    this.soloParty();
-    this.lobby.toast(esc(m.msg || `${host || 'The host'}'s party ended`), { kind: 'bad', ms: 6000 });
-    this.setRejoin('p2p', code, host);
-    this.lobby.render();
+    this.later(g, () => {
+      const code = g.code, host = this.hostName(g);
+      this.saveResume(true);
+      this.soloParty();
+      this.lobby.toast(esc(m.msg || `${host || 'The host'}'s party ended`), { kind: 'bad', ms: 6000 });
+      this.setRejoin('p2p', code, host);
+      this.lobby.render();
+    });
   }
 
   /** Transport events ('_net'): the status pill, and starting over when the party let us go. */
@@ -401,10 +427,16 @@ class App {
     else if (m.state === 'stall') this.lobby.netStatus(kind === 'p2p' ? 'Waiting for the host…' : 'Waiting for the server…');
     else if (m.state === 'online' || m.state === 'lost') this.lobby.netStatus('');
     else if (m.state === 'fresh' && m.msg) {
-      // away too long: the party let us go, but we are welcome back in its lobby (or as a spectator)
+      // back, but the party had let us go (a drop in the lobby, or away too long): a new Game
+      // with this welcome; keep what arrives until it takes over
+      const net = g.net, w = m.msg, buf = [];
+      const off = net.onMessage((x) => { if (x.t !== '_net') buf.push(x); });
       this.lobby.netStatus('');
-      this.enterParty(g.net, { replay: [m.msg] });
-      this.lobby.toast('You were away too long, so you are back in the party lobby.', { ms: 6000 });
+      this.later(g, () => {
+        this.enterParty(net, { replay: [w, ...buf], off });
+        this.lobby.toast(w.phase === 'lobby' ? 'Reconnected! 👍' : 'You were away too long: watching until the next match.', { ms: 5000 });
+      });
+      setTimeout(off, 1000); // in case the party changed meanwhile
     }
   }
 
