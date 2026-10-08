@@ -101,7 +101,10 @@ body.ended #touch, body.ended #hotbar, body.endcard #touch, body.endcard #hotbar
   padding: 6px 6px 6px 18px; border-radius: 30px; background: rgba(16, 12, 44, 0.85); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); font-size: 17px; white-space: nowrap;
 }
 .lb-spec { height: 48px; padding: 0 18px; border: 0; border-radius: 24px; background: linear-gradient(180deg, #ffe86b, #ffb800); color: #2a1a00; font-size: 18px; }
-#lobby .lb-count { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; pointer-events: none; }
+#lobby .lb-count {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; pointer-events: none;
+  background: radial-gradient(circle at 50% 50%, rgba(10, 6, 40, 0.55), rgba(10, 6, 40, 0) 38%);
+}
 .lb-count.hidden { display: none; }
 .lb-cnum { font-family: var(--font-title); font-size: 180px; line-height: 1; color: #fff; text-shadow: 0 8px 0 #3a1b8a, 0 16px 40px rgba(0, 0, 0, 0.6); }
 .lb-cnum.pop { animation: cdpop 0.9s ease-out; }

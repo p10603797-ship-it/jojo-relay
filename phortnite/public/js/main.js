@@ -295,11 +295,14 @@ class App {
       if (el.big) { el.big.classList.remove('show'); el.big.innerHTML = ''; }
     }
     this.shareHtml = '';
-    this.game = new Game(this, net, { solo: net.kind === 'solo', name: this.settings.name, skin: this.settings.skin });
+    const game = new Game(this, net, { solo: net.kind === 'solo', name: this.settings.name, skin: this.settings.skin });
+    this.game = game;
     document.body.classList.add('ingame');
     document.body.classList.remove('ended', 'dead', 'inbus');
     if (opts.off) opts.off();
-    if (opts.replay) for (const m of opts.replay) this.game.onMessage(m);
+    // (a handler may swap the party again while replaying, e.g. a version mismatch)
+    if (opts.replay) for (const m of opts.replay) { if (game.disposed) break; game.onMessage(m); }
+    if (game.disposed) return this.game;
     if (net.kind !== 'solo') net.onClose = (msg) => this.onPartyLost(net, msg);
     if (net.kind === 'solo') {
       this.saveResume(true);
@@ -307,7 +310,7 @@ class App {
     }
     this.updateWake();
     if (this.lobby) this.lobby.render();
-    return this.game;
+    return game;
   }
 
   /** A party of one again (after leaving, a kick, or a lost party), keeping the mode you had picked. */

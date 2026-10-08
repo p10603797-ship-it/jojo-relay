@@ -7,8 +7,8 @@
 //   - roster changes rebuild remote players whose skin changed (Locker changes in the lobby)
 //   - party messages: countdown, kicked, suggest, emote, partyend, rejoin ('resumed') and the
 //     transport's '_net' events
+// (no three.js / Rapier imports here: game plugins load in Node too, for the contract tests)
 import { MatchStats } from '../game/matchStats.js';
-import { Character } from '../actors/character.js';
 import { rulesFromSettings } from '../../shared/modes/rules.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -172,7 +172,7 @@ export class PartyBridge {
     const me = g.me, row = g.roster.get(g.myId);
     if (me && row && g.phase === 'lobby' && typeof row.skin === 'number' && row.skin !== me.char.skin && !me.char.ragdoll) {
       const old = me.char;
-      const c = new Character(row.skin, '', {});
+      const c = new old.constructor(row.skin, '', {}); // a Character, like the one it replaces
       c.group.position.copy(old.group.position);
       c.group.rotation.copy(old.group.rotation);
       c.setVisible(old.visible);

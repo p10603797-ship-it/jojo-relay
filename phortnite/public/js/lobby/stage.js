@@ -355,7 +355,8 @@ export class LobbyStage {
     const shift = portrait ? 0 : -tanH * this.camDist * 0.12;
     const cx = (minX + maxX) / 2 + shift;
     this.camX += (cx - this.camX) * k;
-    const cy = portrait ? 1.3 : 1.05;
+    // portrait: the squad sits lower, under the party list
+    const cy = portrait ? 2.15 : 1.05;
     this.camY += (cy - this.camY) * k;
     const sway = Math.sin(t * 0.15) * 0.25;
     const cam = this.camera;
