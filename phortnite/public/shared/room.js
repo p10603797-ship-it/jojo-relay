@@ -234,9 +234,15 @@ export class Room {
     return n;
   }
 
-  /** Is any human of the match still in it (alive or respawning)? */
+  /**
+   * Is a human's team still in the match (anyone on it alive or respawning)? A human whose bot
+   * teammate fights on is still in it, spectating their team.
+   */
   humansInGame() {
-    for (const p of this.players.values()) if (!p.bot && p.inMatch && (p.alive || p.respawnAt > 0)) return true;
+    let teams = null;
+    for (const p of this.players.values()) if (!p.bot && p.inMatch) (teams || (teams = new Set())).add(p.team);
+    if (!teams) return false;
+    for (const p of this.players.values()) if (p.inMatch && (p.alive || p.respawnAt > 0) && teams.has(p.team)) return true;
     return false;
   }
 
@@ -842,9 +848,13 @@ export class Room {
     for (const p of this.players.values()) if (!p.bot && p.inMatch) { humans = true; break; }
     const humansIn = this.humansInGame();
     if (res) {
-      // (in a best-of-N series a round simply goes to whoever is left)
-      if (humans && !humansIn && !this.round && (res.reason === 'last' || !res.reason)) this.endMatch({ id: 0, reason: 'humans-out' });
-      else this.endMatch(res);
+      // the humans' teams are all out: a bot is never crowned (in a best-of-N series a round
+      // simply goes to whoever is left)
+      if (humans && !humansIn && !this.round) {
+        const face = res.id ? this.players.get(res.id) : res.team !== undefined && res.team !== null ? this.teamFace(res.team) : null;
+        if (!face || face.bot) { this.endMatch({ id: 0, reason: 'humans-out' }); return; }
+      }
+      this.endMatch(res);
       return;
     }
     if (humans && !humansIn && !this.humansOutAt) this.humansOutAt = this.now() + HUMANS_OUT_MS;

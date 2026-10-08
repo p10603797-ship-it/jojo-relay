@@ -697,6 +697,24 @@ test('humans out: the bots play on for 20 s of spectating, then win.id 0 and no 
   m2.room.eliminate(b1, null, { c: 'storm' });
   const w2 = m2.H.last(m2.cs[0], 'win');
   assert.deepEqual([w2.id, w2.reason, w2.bot], [0, 'humans-out', false]);
+  // duos: a human whose bot teammate fights on is not out, and their team can still win
+  const m4 = match({ teams: 2, bots: 3 }, { humans: 1, solo: true });
+  const me = m4.cs[0].p;
+  const [mate, ...foes] = [...m4.room.players.values()].filter((p) => p.bot).sort((x, y) => (x.team === me.team ? -1 : 1));
+  assert.equal(mate.team, me.team);
+  m4.H.send(m4.cs[0], { t: 'fall', d: 500 });
+  m4.H.advance(25000);
+  assert.equal(m4.room.phase, 'match', 'spectating the teammate, no cut-off');
+  for (const f of foes) m4.room.eliminate(f, mate, { w: 'ar' });
+  const w4 = m4.H.last(m4.cs[0], 'win');
+  assert.deepEqual([w4.id, w4.team, w4.reason, w4.name], [me.id, me.team, 'last', 'Blue Team'], 'the team wins, shown by its human');
+  // a party game's own "last standing" reason with only a bot left still names nobody
+  const m6 = match({ bots: 2 }, { humans: 1, solo: true });
+  const bot6 = [...m6.room.players.values()].find((p) => p.bot);
+  m6.room.runtime.game = { key: 'stub', checkWin: (ctx) => (ctx.players().some((p) => !p.bot && !p.alive) ? { team: bot6.team, reason: 'lava' } : null) };
+  m6.H.send(m6.cs[0], { t: 'fall', d: 500 });
+  const w6 = m6.H.last(m6.cs[0], 'win');
+  assert.deepEqual([w6.id, w6.reason, w6.bot], [0, 'humans-out', false]);
   // a human still respawning is not out
   const m3 = match({ bots: 2, respawn: 3, lives: 0 }, { humans: 1, solo: true });
   m3.H.send(m3.cs[0], { t: 'fall', d: 500 });
