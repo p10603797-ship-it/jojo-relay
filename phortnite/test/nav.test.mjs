@@ -191,6 +191,8 @@ test('nav: A* queries average at most 3 ms (synthetic island and today\'s world)
     console.log(`  ${world === SYN ? 'synthetic' : 'today'}: ${n} queries, ${(ms / n).toFixed(3)} ms average, max ${nav.stats.maxMs.toFixed(2)} ms`);
     assert.ok(n > 20);
     assert.ok(ms / n <= 3, `average ${(ms / n).toFixed(2)} ms`);
+    // a search only runs when it will find a way (no whole-island searches that come back empty)
+    assert.equal(nav.stats.fails, 0, 'canReach is exact');
   }
 });
 

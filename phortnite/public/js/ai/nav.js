@@ -507,12 +507,45 @@ export class Nav {
       if (comp[u] >= 0) this.exits[comp[u]] = 1;
       for (const [v] of list) if (comp[v] >= 0) this.entries[comp[v]] = 1;
     }
+    // the one-way links between components (drops, cliffs, pads), for canReach
+    const adj = [];
+    for (let k = 0; k < c; k++) adj.push(new Set());
+    for (let u = 0; u < this.nn; u++) {
+      const cu = comp[u];
+      if (cu < 0 || !this.exits[cu]) continue;
+      for (let d = 0; d < 8; d++) {
+        if (!(ec[u * 8 + d] < Infinity)) continue;
+        const cv = comp[u + DZ[d] * cnx + DX[d]];
+        if (cv >= 0 && cv !== cu) adj[cu].add(cv);
+      }
+    }
+    this.cadjG = adj.map((set) => Int32Array.from(set)); // on foot
+    for (const [u, list] of this.extra) for (const [v] of list) if (comp[u] >= 0 && comp[v] >= 0 && comp[u] !== comp[v]) adj[comp[u]].add(comp[v]);
+    this.cadjP = adj.map((set) => Int32Array.from(set)); // and the pads
+    this.creach = new Map();
   }
 
-  /** Could a route from node s ever reach node g (same component, or one-way links out and in)? */
+  /**
+   * Could a route from node s ever reach node g? The same component (two-way links), or one
+   * reachable from it through one-way links (computed once per starting component, then kept).
+   */
   canReach(s, g) {
     const a = this.comp[s], b = this.comp[g];
-    return a >= 0 && b >= 0 && (a === b || (this.exits[a] === 1 && this.entries[b] === 1));
+    if (a < 0 || b < 0) return false;
+    if (a === b) return true;
+    if (!this.exits[a] || !this.entries[b]) return false;
+    // (pads count while they work: one that didn't throw us turns them off, see PathFollower)
+    const adj = this.padsOn ? this.cadjP : this.cadjG, key = this.padsOn ? a : a + this.ncomp;
+    let r = this.creach.get(key);
+    if (!r) {
+      r = new Uint8Array(this.ncomp);
+      const q = [a];
+      r[a] = 1;
+      while (q.length) for (const v of adj[q.pop()]) if (!r[v]) { r[v] = 1; q.push(v); }
+      if (this.creach.size >= 256) this.creach.delete(this.creach.keys().next().value);
+      this.creach.set(key, r);
+    }
+    return r[b] === 1;
   }
 
   // ------------------------------------------------------------------ queries
@@ -812,6 +845,7 @@ export class Nav {
     for (const f of this.flows) b += f.dist.byteLength;
     for (const v of this.cache.values()) if (v) b += v.byteLength + 48;
     for (const v of this.vias.values()) b += v.byteLength + 64;
+    for (const v of this.creach.values()) b += v.byteLength + 48;
     return b;
   }
 
