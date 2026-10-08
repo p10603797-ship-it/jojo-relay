@@ -6,6 +6,8 @@
 // requires: the GAMES key (rules.win) a mode needs; Discover hides the mode while that game is
 // missing from GAMES (see modeAvailable).
 //
+import { ruleField } from './rules.js';
+
 // Categories: 'br' Battle Royale, 'team' Team Up, 'party' Party Games, 'mutators' Crazy Mutators,
 // 'builders' Builders, 'practice' Practice, 'places' Places.
 
@@ -345,6 +347,17 @@ export const CATALOG = [
     rules: { win: 'gungame', ...ARENA, storm: 'none', area: 'poi:Pirate Cove', timeLimit: 600, floorLoot: false, chests: false, ammo: 'infinite', mats: 100, bots: 9 },
   },
 ];
+
+// Hide & Seek joins the Party Games as soon as 'hideseek' is a win option in rules.js
+// (option lists are append-only, so it is added at the end there).
+if (ruleField('win').options.includes('hideseek')) {
+  CATALOG.splice(CATALOG.findIndex((m) => m.id === 'one-shot'), 0, {
+    id: 'hide-and-seek', name: 'Hide & Seek', emoji: '🙈', color: '#ff9a1c', cat: 'party', players: '2-16', requires: 'hideseek',
+    tags: ['Seekers', 'Hide!'],
+    desc: 'The seekers count to 30 while everyone hides. One tap of a seeker\'s pickaxe finds you, and then you seek too!',
+    rules: { win: 'hideseek', teams: 'two', ...ARENA, storm: 'none', timeLimit: 300, area: 'center', loadout: 'pickaxe', floorLoot: false, chests: false, build: 'off', bots: 7 },
+  });
+}
 
 /** Can this mode be played with these games (GAMES, or an array of its keys)? */
 export function modeAvailable(mode, games) {

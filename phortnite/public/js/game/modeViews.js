@@ -61,6 +61,8 @@ export class ModeHud {
     this.respB = this.resp.querySelector('b');
     this.respFg = this.resp.querySelector('.fg');
     this.respSub = this.resp.querySelector('.mh-rsub');
+    this.blind = el('div', 'mh-blind hidden', hud, '<div>🙈</div><b></b><span>The others are hiding… no peeking!</span>');
+    this.blindB = this.blind.querySelector('b');
     this.arrow = el('div', 'mh-arrow hidden', hud, '<i>➤</i><span></span>');
     this.arrow.id = 'hillarrow';
     this.arrowI = this.arrow.querySelector('i');
@@ -156,22 +158,38 @@ export class ModeHud {
     this.set('respS', sub, (v) => { this.respSub.textContent = v; });
   }
 
-  /** Off-screen arrow toward a point: screen x, y (px), angle (rad, 0 = right), distance text; null hides. */
-  pointTo(x, y, ang, text) {
+  /** Hide & Seek: the seeker's closed eyes with the seconds left (< 0 hides). */
+  blindfold(secs) {
+    const on = secs >= 0;
+    this.set('blind', on, (v) => this.blind.classList.toggle('hidden', !v));
+    if (on) this.set('blindN', secs, (v) => { this.blindB.textContent = v; });
+  }
+
+  /** Off-screen arrow: screen x, y (px), angle (rad, 0 = right), metres away; x null hides. Runs every frame: no allocations unless something moved. */
+  pointTo(x, y, ang, metres) {
     const on = x !== null;
     this.set('arrow', on, (v) => this.arrow.classList.toggle('hidden', !v));
     if (!on) return;
-    this.set('arrowP', `${Math.round(x)},${Math.round(y)},${Math.round(ang * 30)}`, () => {
-      this.arrow.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
-      this.arrowI.style.transform = `rotate(${(Math.round(ang * 30) / 30).toFixed(3)}rad)`;
-    });
-    this.set('arrowT', text, (v) => { this.arrowT.textContent = v; });
+    const px = Math.round(x), py = Math.round(y), pa = Math.round(ang * 30), m = Math.round(metres);
+    if (px !== this.ax || py !== this.ay) {
+      this.ax = px; this.ay = py;
+      this.arrow.style.transform = `translate(${px}px, ${py}px)`;
+    }
+    if (pa !== this.aa) {
+      this.aa = pa;
+      this.arrowI.style.transform = `rotate(${(pa / 30).toFixed(3)}rad)`;
+    }
+    if (m !== this.am) {
+      this.am = m;
+      this.arrowT.textContent = `${m} m`;
+    }
   }
 
   dispose() {
     this.root.remove();
     this.mates.remove();
     this.resp.remove();
+    this.blind.remove();
     this.arrow.remove();
   }
 }
@@ -214,17 +232,17 @@ export class HillView {
     for (const m of [this.wall, this.beam]) { m.renderOrder = 5; m.castShadow = false; m.receiveShadow = false; this.group.add(m); }
     scene.add(this.group);
     this.color = new THREE.Color();
-    this.key = '';
+    this.cx = NaN; this.cz = NaN; this.cr = NaN; this.cc = '';
     this.t = 0;
   }
 
   /** Place the hill (x, z, ground y, radius) in a colour; null hides it. */
   set(h, y, color) {
-    if (!h) { this.group.visible = false; this.key = ''; return; }
-    const key = `${h.x},${h.z},${h.r},${color}`;
+    if (!h) { this.group.visible = false; this.cx = NaN; return; }
     this.group.visible = true;
-    if (key === this.key) return;
-    this.key = key;
+    // numbers and the (shared) colour string: nothing is allocated while the hill stays put
+    if (h.x === this.cx && h.z === this.cz && h.r === this.cr && color === this.cc) return;
+    this.cx = h.x; this.cz = h.z; this.cr = h.r; this.cc = color;
     this.group.position.set(h.x, y, h.z);
     this.wall.scale.set(h.r, 1, h.r);
     this.color.set(color);

@@ -17,7 +17,7 @@ const LOOK_EVERY = 0.25; // s between checks that every character wears the righ
 const HUD_EVERY = 0.1; // s between mode HUD refreshes (writes are cached on top of that)
 const BIG_HEAD = 2.2; // matches the Big Head hitbox (combatant.js / remote.js)
 /** Games that dress players up, and the looks they use. */
-const ROLE_GAMES = { infection: ['zombie'], juggernaut: ['jugg'] };
+const ROLE_GAMES = { infection: ['zombie'], juggernaut: ['jugg'], hideseek: ['seeker'] };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
 const _p = new THREE.Vector3();
@@ -33,6 +33,7 @@ export function objective(r) {
     case 'koth': return `Stand in the glowing hill. First to ${r.target || 100} wins!`;
     case 'juggernaut': return `Take down the Juggernaut to become it. ${r.target || 100} points wins!`;
     case 'lava': return 'The floor is lava! Climb high and build up!';
+    case 'hideseek': return `Hide from the seekers for ${clock(r.timeLimit || 300)}!`;
     default: return r.teams === 1 ? 'Be the last one standing!' : 'Be the last team standing!';
   }
 }
@@ -57,9 +58,11 @@ export class ModeClient {
     this.busTimer = 0;
     this.cls = {};
     this.seaY = null;
-    this.hillY = { key: '', y: 0 };
+    this.hillY = { x: NaN, z: NaN, y: 0 };
+    this.sea = undefined; // world / water setSeaLevel (map-engine), looked up once
     this.koth = null; // game.mapExtras.koth while there is a hill
     this.warmed = false;
+    this.blind = false; // Hide & Seek: the local seeker's head start (input blanked, eyes closed)
   }
 
   get rules() { return this.game.rules || {}; }
@@ -92,6 +95,15 @@ export class ModeClient {
     if (phase === 'ended') {
       this.deadAt = 0;
       if (this.view) { this.view.respawn(-1); this.view.pointTo(null); }
+    }
+  }
+
+  /** Hide & Seek: a seeker waits, eyes closed, while the others hide. */
+  filterInput(s) {
+    if (!this.blind) return;
+    for (const k in s) {
+      if (typeof s[k] === 'number') s[k] = 0;
+      else if (typeof s[k] === 'boolean') s[k] = false;
     }
   }
 
@@ -172,7 +184,9 @@ export class ModeClient {
     this.deadAt = 0;
     clearTimeout(this.busTimer);
     if (typeof document !== 'undefined') this.applyClasses();
+    this.blind = false;
     if (this.view) {
+      this.view.blindfold(-1);
       this.view.show(false);
       this.view.teammates(null);
       this.view.respawn(-1);
@@ -223,8 +237,10 @@ export class ModeClient {
   }
 
   // ------------------------------------------------------------------ messages
+  /** Keep the latest mode state; a message may carry only the fields that changed. */
   setMs(m) {
-    this.ms = m;
+    if (!this.ms) this.ms = {};
+    for (const k in m) if (k !== 't') this.ms[k] = m[k];
     this.msAt = performance.now();
     this.hudT = 0;
   }
@@ -309,13 +325,13 @@ export class ModeClient {
   }
 
   groundY(x, z) {
-    const key = `${x},${z}`;
-    if (this.hillY.key !== key) {
+    const c = this.hillY;
+    if (c.x !== x || c.z !== z) {
       const d = this.game.world && this.game.world.data;
-      this.hillY.key = key;
-      this.hillY.y = d && d.heightAt ? d.heightAt(x, z) : 0;
+      c.x = x; c.z = z;
+      c.y = d && d.heightAt ? d.heightAt(x, z) : 0;
     }
-    return this.hillY.y;
+    return c.y;
   }
 
   mapHill(h, color) {
@@ -336,10 +352,14 @@ export class ModeClient {
   }
 
   setLava(level, dt) {
+    if (level === null && this.seaY === null && !(this.lava && this.lava.mesh.visible)) return;
     const g = this.game;
-    const water = g.world && g.world.water;
-    const sea = g.world && typeof g.world.setSeaLevel === 'function' ? g.world.setSeaLevel.bind(g.world)
-      : water && typeof water.setSeaLevel === 'function' ? water.setSeaLevel.bind(water) : null;
+    if (this.sea === undefined) {
+      const w = g.world, water = w && w.water;
+      this.sea = w && typeof w.setSeaLevel === 'function' ? w.setSeaLevel.bind(w)
+        : water && typeof water.setSeaLevel === 'function' ? water.setSeaLevel.bind(water) : null;
+    }
+    const sea = this.sea;
     if (sea) {
       // map-engine's water can rise and glow itself
       const y = level === null ? null : Math.round(level * 20) / 20;
@@ -429,11 +449,19 @@ export class ModeClient {
       line = j === myId ? `🦾 <b>YOU</b> are the Juggernaut! · ${score}/${goal || 100}`
         : j ? `🦾 <b>${esc(g.nameOf ? g.nameOf(j) : j)}</b> is the Juggernaut · ${score}/${goal || 100}` : '🦾 Picking a new Juggernaut…';
       cls = j === myId ? 'jugg' : '';
+    } else if (win === 'hideseek') {
+      const seeker = g.roleOf && g.roleOf(myId) === 'seeker';
+      const hs = (gh.hs | 0) > 0 ? Math.max(0, Math.ceil(gh.hs - (performance.now() - this.msAt) / 1000)) : 0;
+      line = `🙈 <b>${gh.h ?? '–'}</b> HIDING · 👀 <b>${gh.s ?? '–'}</b> SEEKING<br><small>${hs > 0 ? `Seekers come out in ${hs}…` : seeker ? 'Find them! One tap is enough.' : 'Stay hidden!'}</small>`;
+      cls = seeker ? 'seeker' : '';
+      this.blind = seeker && hs > 0 && !!(me && me.alive);
+      if (this.view) this.view.blindfold(this.blind ? hs : -1);
     } else if (win === 'lava' && typeof gh.lava === 'number') {
       const above = me && me.alive && me.pos ? me.pos.y - gh.lava : null;
       line = `🌋 LAVA <b>${gh.lava.toFixed(1)} m</b>${above !== null ? `<br><small>${above < 0.2 ? 'YOU\'RE IN THE LAVA! CLIMB!' : `you are ${above.toFixed(1)} m above it`}</small>` : ''}`;
       cls = above !== null && above < 2.5 ? 'danger' : '';
     }
+    if (win !== 'hideseek' && this.blind) { this.blind = false; v.blindfold(-1); }
     v.ladder(GUN_LADDER, lv);
     v.line(line, cls);
 
@@ -498,6 +526,6 @@ export class ModeClient {
     const W = innerWidth, H = innerHeight;
     const rx = W / 2 - 70, ry = H / 2 - 90;
     const d = Math.hypot(me.pos.x - h.x, me.pos.z - h.z);
-    v.pointTo(W / 2 + Math.cos(ang) * rx, H / 2 + Math.sin(ang) * ry, ang, `${Math.round(d)} m`);
+    v.pointTo(W / 2 + Math.cos(ang) * rx, H / 2 + Math.sin(ang) * ry, ang, d);
   }
 }

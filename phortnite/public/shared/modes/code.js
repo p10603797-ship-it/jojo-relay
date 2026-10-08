@@ -234,6 +234,7 @@ const TEAM_NOUN = { 1: 'Solo', 2: 'Duos', 3: 'Trios', 4: 'Squads', two: 'Team', 
 const TEAM_TAG = { 1: 'Solo', 2: 'Duos', 3: 'Trios', 4: 'Squads', two: '2 Teams', humans: 'Squad vs Bots' };
 const GAME_NAME = {
   gungame: 'Gun Game', infection: 'Infection', koth: 'King of the Hill', juggernaut: 'Juggernaut', lava: 'Floor is Lava',
+  hideseek: 'Hide & Seek',
 };
 const LOOT_ADJ = {
   ars: 'AR', smgs: 'SMG', shotguns: 'Shotgun', snipers: 'Sniper', pistols: 'Pistol', rockets: 'Rocket', explosive: 'Boom', pickaxe: 'Pickaxe',
@@ -244,7 +245,7 @@ const LOOT_TAG = {
 };
 const STORM_TAG = { fast: 'Fast Storm', slow: 'Slow Storm', none: 'No Storm', final: 'Final Circle', zonewars: 'Zone Wars' };
 // games where coming back is part of the game (no 'with Respawn' in the name)
-const RESPAWN_GAMES = new Set(['elims', 'teamelims', 'time', 'gungame', 'infection', 'koth', 'juggernaut']);
+const RESPAWN_GAMES = new Set(['elims', 'teamelims', 'time', 'gungame', 'infection', 'koth', 'juggernaut', 'hideseek']);
 
 function titleCase(s) { return s.replace(/(^|[\s-])([a-z])/g, (m, a, b) => a + b.toUpperCase()); }
 

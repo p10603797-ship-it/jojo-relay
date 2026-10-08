@@ -48,6 +48,7 @@ const LABELS = {
   win: {
     last: 'Last Standing', elims: 'Most Elims', teamelims: 'Team Elims', time: 'Most Points',
     gungame: '🔫 Gun Game', infection: '🧟 Infection', koth: '👑 King of the Hill', juggernaut: '🦾 Juggernaut', lava: '🌋 Floor is Lava',
+    hideseek: '🙈 Hide & Seek',
   },
   target: (v) => String(v),
   timeLimit: (v) => (v ? `${v / 60} min` : 'None'),

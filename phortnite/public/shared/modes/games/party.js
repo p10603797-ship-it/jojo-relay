@@ -1,9 +1,10 @@
-// Party games: gungame, infection, koth, juggernaut, lava. See shared/modes/api.js for the Game
+// Party games: gungame, infection, koth, juggernaut, lava (+ hideseek, once rules.js lists it as a
+// win option). See shared/modes/api.js for the Game
 // plugin API. They run inside the shared Room (solo, Node server and P2P host alike), so they only
 // use ctx: ctx.rng() for randomness and ctx.now() (ms) for time; no Math.random, Date or DOM.
 // Their hud(ctx) answers reach clients as ms.g (js/game/modeClient.js draws them):
 //   gungame {lv: [id, level, …]}   infection {s, z}   koth {hill: {x, z, r, owner, prog, ct}}
-//   juggernaut {j}   lava {lava}
+//   juggernaut {j}   lava {lava}   hideseek {h, s, hs (head start seconds left)}
 import { WEAPONS, clampRarity } from '../../constants.js';
 
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -406,4 +407,96 @@ const lava = {
   hud(ctx) { return { lava: r1(ctx.state.level) }; },
 };
 
-export const PARTY_GAMES = { gungame, infection, koth, juggernaut, lava };
+// ------------------------------------------------------------------ Hide & Seek (stretch)
+// Playable once 'hideseek' is one of the win options in shared/modes/rules.js (append-only).
+export const HIDE_MS = 30000;
+const HIDERS = 1, SEEKERS = 2;
+const isSeeker = (ctx, p) => ctx.roleOf(p) === 'seeker';
+
+function hiders(ctx) {
+  const ids = ctx.state.ids || [];
+  return ctx.players().filter((p) => ids.includes(p.id) && !isSeeker(ctx, p));
+}
+
+function makeSeeker(ctx, p) {
+  ctx.setTeam(p, SEEKERS);
+  ctx.setRole(p, 'seeker');
+  ctx.setArmor(p, 1);
+}
+
+const hideseek = {
+  key: 'hideseek',
+  label: 'Hide & Seek',
+  teamGame: true,
+  defaults: {
+    teams: 'two', respawn: 3, lives: 0, storm: 'none', timeLimit: 300, spawn: 'ground', area: 'center', loadout: 'pickaxe',
+    floorLoot: false, chests: false, build: 'off',
+  },
+
+  setup(ctx) {
+    const st = ctx.state;
+    const ps = ctx.players();
+    st.ids = ps.map((p) => p.id);
+    st.t0 = ctx.now();
+    st.seekAt = st.t0 + HIDE_MS;
+    st.endAt = st.t0 + (ctx.rules.timeLimit || 300) * 1000;
+    st.nextScore = st.seekAt + 1000;
+    const n = ps.length;
+    const first = n < 2 ? [] : pick(ctx, ps, Math.min(n - 1, Math.max(1, Math.ceil(n / 5))));
+    for (const p of ps) {
+      if (first.includes(p)) makeSeeker(ctx, p);
+      else { ctx.setTeam(p, HIDERS); ctx.setArmor(p, 1); }
+    }
+    if (first.length) ctx.note(`🙈 ${first.map((p) => p.name).join(', ')} ${first.length > 1 ? 'are' : 'is'} seeking! Hide!`);
+  },
+
+  /** Everyone has just a pickaxe. */
+  loadout(ctx) { return kit(ctx.rules, []); },
+
+  /** Nobody gets hurt during the head start; afterwards only seekers can tag (one hit finds you). */
+  allowDamage(ctx, attacker, target) {
+    if (!attacker || attacker === target) return true;
+    if (ctx.now() < ctx.state.seekAt) return false;
+    return isSeeker(ctx, attacker) && !isSeeker(ctx, target);
+  },
+
+  scaleDamage(ctx, attacker, target, amount) { return attacker && isSeeker(ctx, attacker) ? 999 : amount; },
+
+  onKill(ctx, victim, killer, info = {}) {
+    if (info.c === 'left') return;
+    if (!isSeeker(ctx, victim)) {
+      makeSeeker(ctx, victim);
+      if (killer && killer !== victim) ctx.addScore(SEEKERS, 1);
+      ctx.note(`👀 ${victim.name} was found!`);
+    }
+    ctx.respawn(victim, 3, { keepLoot: false });
+  },
+
+  tick(ctx) {
+    const st = ctx.state;
+    const now = ctx.now();
+    while (now >= st.nextScore) {
+      st.nextScore += 1000;
+      if (hiders(ctx).some((p) => p.alive)) ctx.addScore(HIDERS, 1);
+    }
+    if (!st.over && now >= st.endAt - 150) {
+      st.over = true;
+      ctx.end({ team: HIDERS, reason: 'time' });
+    }
+  },
+
+  checkWin(ctx) {
+    return hiders(ctx).length === 0 ? { team: SEEKERS, reason: 'hideseek' } : null;
+  },
+
+  hud(ctx) {
+    let h = 0, s = 0;
+    for (const p of ctx.players()) {
+      if (isSeeker(ctx, p)) s++;
+      else if (p.alive && (ctx.state.ids || []).includes(p.id)) h++;
+    }
+    return { h, s, hs: Math.max(0, Math.ceil((ctx.state.seekAt - ctx.now()) / 1000)) };
+  },
+};
+
+export const PARTY_GAMES = { gungame, infection, koth, juggernaut, lava, hideseek };

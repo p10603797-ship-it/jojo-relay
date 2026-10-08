@@ -2,13 +2,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeCtx, makePlayers } from './helpers/fakectx.mjs';
-import { PARTY_GAMES, GUN_LADDER, HILL_MOVE_MS, LAVA_START } from '../public/shared/modes/games/party.js';
-import { normalizeRules } from '../public/shared/modes/rules.js';
-import { modeRules } from '../public/shared/modes/index.js';
+import { PARTY_GAMES, GUN_LADDER, HILL_MOVE_MS, LAVA_START, HIDE_MS } from '../public/shared/modes/games/party.js';
+import { normalizeRules, ruleField } from '../public/shared/modes/rules.js';
+import { findMode, modeRules } from '../public/shared/modes/index.js';
 import { WEAPONS } from '../public/shared/constants.js';
 import { getWorld } from '../public/shared/room.js';
 
-const { gungame, infection, koth, juggernaut, lava } = PARTY_GAMES;
+const { gungame, infection, koth, juggernaut, lava, hideseek } = PARTY_GAMES;
+const WIN = ruleField('win').options;
 const slotKeys = (lo) => lo.slots.map((s) => s.k);
 
 test('party games: every game has its key, a label and only API hooks', () => {
@@ -17,7 +18,10 @@ test('party games: every game has its key, a label and only API hooks', () => {
     assert.equal(g.key, k);
     assert.ok(typeof g.label === 'string' && g.label);
     for (const h of Object.keys(g)) assert.ok(HOOKS.includes(h), `${k}.${h} is not a Game hook`);
-    if (g.defaults) assert.deepEqual(normalizeRules({ ...g.defaults, win: k }).win, k);
+    // every game is a win option, except Hide & Seek until rules.js lists it (append-only)
+    assert.ok(WIN.includes(k) || k === 'hideseek', `${k} is a win option`);
+    if (g.defaults && WIN.includes(k)) assert.deepEqual(normalizeRules({ ...g.defaults, win: k }).win, k);
+    if (g.defaults) for (const key of Object.keys(g.defaults)) assert.ok(ruleField(key), `${k}.defaults.${key}`);
   }
   assert.deepEqual(GUN_LADDER, ['rocket', 'sniper', 'shotgun', 'tactical', 'ar', 'burst', 'smg', 'pistol', 'pickaxe']);
 });
@@ -295,6 +299,47 @@ test('lava: the top comes from the real island inside the area', () => {
   assert.ok(ctx.state.top > 3 && ctx.state.top < 60, `top ${ctx.state.top}`);
   ctx.advance(300000);
   assert.ok(Math.abs(ctx.hud().lava - Math.round(ctx.state.top * 10) / 10) < 0.11);
+});
+
+// ------------------------------------------------------------------ Hide & Seek (stretch)
+test('hide & seek: seekers wait 30 s, then one tap finds a hider, who seeks too', () => {
+  const rules = { ...hideseek.defaults, win: 'hideseek' };
+  const ctx = new FakeCtx({ game: hideseek, rules, players: 10, seed: 5 });
+  ctx.start();
+  const seekers = ctx.players().filter((p) => p.role === 'seeker');
+  assert.equal(seekers.length, 2, 'ceil(10 / 5)');
+  for (const p of ctx.players()) assert.equal(p.team, p.role === 'seeker' ? 2 : 1);
+  assert.ok(ctx.loadouts.every((l) => l.lo.slots.length === 0), 'pickaxes only');
+  assert.ok(ctx.notes[0].includes('seeking'));
+  const sk = seekers[0], hider = ctx.players().find((p) => p.role !== 'seeker');
+  assert.deepEqual(ctx.hud(), { h: 8, s: 2, hs: 30 });
+  assert.equal(ctx.hit(sk, hider, 20, { w: 'pickaxe' }), 0, 'no tagging during the head start');
+  ctx.advance(HIDE_MS);
+  assert.equal(ctx.hud().hs, 0);
+  assert.equal(ctx.hit(hider, sk, 20, { w: 'pickaxe' }), 0, 'hiders cannot hurt seekers');
+  ctx.hit(sk, hider, 20, { w: 'pickaxe' });
+  assert.equal(hider.alive, false, 'one tap finds you');
+  assert.equal(hider.role, 'seeker');
+  assert.equal(hider.team, 2);
+  assert.ok(ctx.notes.some((n) => n.includes('found')));
+  ctx.advance(3000);
+  assert.equal(hider.alive, true);
+  assert.deepEqual(ctx.hud(), { h: 7, s: 3, hs: 0 });
+  // the seekers win when everyone is found
+  for (const p of ctx.players()) if (p.role !== 'seeker' && !ctx.ended) ctx.hit(sk, p, 20, { w: 'pickaxe' });
+  assert.deepEqual(ctx.result, { team: 2, reason: 'hideseek' });
+});
+
+test('hide & seek: the hiders win at the time limit', () => {
+  const ctx = new FakeCtx({ game: hideseek, rules: { ...hideseek.defaults, win: 'hideseek' }, players: 6 });
+  ctx.start();
+  ctx.advance(299700);
+  assert.equal(ctx.result, null);
+  ctx.advance(300);
+  assert.deepEqual(ctx.result, { team: 1, reason: 'time' });
+  // its catalogue entry appears once rules.js lists the game (and normalizes to itself then)
+  const entry = findMode('hide-and-seek');
+  assert.equal(!!entry, WIN.includes('hideseek'));
 });
 
 test('party games: deterministic for a seed (same picks on every device)', () => {
