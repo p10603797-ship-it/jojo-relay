@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Discover demo</title>
+  <!-- The Discover screen and the mode creator on a mock app (no WebGL), for design work and
+       Playwright checks. Serve the phortnite/ folder (e.g. npx http-server phortnite) and open
+       /tools/discover-demo.html. ?open=member opens it as a party member, ?open=creator the creator. -->
+  <link rel="stylesheet" href="../public/css/style.css">
+  <link rel="stylesheet" href="../public/css/modes.css">
+  <style>
+    body { background: linear-gradient(180deg, #5bb6ff, #a9e1ff 55%, #6cc04a 56%, #3f8f3a); }
+    #demo { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap; z-index: 1; }
+    #log { position: fixed; right: 16px; bottom: 16px; width: 360px; max-height: 40vh; overflow: auto; font: 12px/1.4 monospace; background: rgba(0, 0, 0, 0.6); padding: 8px; border-radius: 8px; white-space: pre-wrap; z-index: 1; }
+  </style>
+</head>
+<body>
+  <div id="demo">
+    <button class="btn yellow" data-open="leader">DISCOVER (leader)</button>
+    <button class="btn" data-open="member">DISCOVER (member)</button>
+    <button class="btn blue" data-open="creator">CREATOR</button>
+  </div>
+  <div id="log"></div>
+  <script type="module">
+    import { openDiscover, openCreator } from '../public/js/ui/discover.js';
+    import { getWorld } from '../public/shared/room.js';
+    import { modeInfo, findMode } from '../public/shared/modes/index.js';
+    import { describeRules } from '../public/shared/modes/code.js';
+
+    const data = getWorld();
+    // a quick height-shaded map, like World.buildMinimap
+    const S = 256;
+    const mapCanvas = document.createElement('canvas');
+    mapCanvas.width = mapCanvas.height = S;
+    const g = mapCanvas.getContext('2d');
+    const img = g.createImageData(S, S);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const h = data.heightAt(-data.half + (x + 0.5) / S * data.size, -data.half + (y + 0.5) / S * data.size);
+        const i = (y * S + x) * 4;
+        if (h < 0) { img.data[i] = 50; img.data[i + 1] = 150; img.data[i + 2] = 200; } else if (h < 3) { img.data[i] = 226; img.data[i + 1] = 208; img.data[i + 2] = 150; } else { const k = 0.8 + Math.min(0.4, h / 120); img.data[i] = 96 * k; img.data[i + 1] = 168 * k; img.data[i + 2] = 70 * k; }
+        img.data[i + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+
+    const events = [];
+    const log = (t, v) => { events.push({ t, v }); document.querySelector('#log').textContent = events.map((e) => `${e.t} ${JSON.stringify(e.v)}`).join('\n'); };
+    const app = { world: { data, mapCanvas }, sfx: { ui() {} }, input: { enabled: false, exitLock() {} }, game: null };
+    let settings = { modeId: 'solo', rules: {}, info: modeInfo(findMode('solo')), custom: false };
+    const open = (who) => {
+      if (who === 'creator') return openCreator(app, { initial: {}, onPlay: (p) => log('play', p), onSave: (m) => log('save', m) });
+      return openDiscover(app, {
+        isLeader: who !== 'member', current: settings,
+        onPick: (p) => {
+          log('pick', p);
+          settings = p.id ? { modeId: p.id, rules: findMode(p.id).rules, info: modeInfo(findMode(p.id)), custom: false }
+            : { modeId: '', rules: p.custom, info: { name: p.name, ...describeRules(p.custom) }, custom: true };
+        },
+        onSuggest: (id) => log('suggest', id),
+        onClose: () => log('close', true),
+      });
+    };
+    for (const b of document.querySelectorAll('[data-open]')) b.addEventListener('click', () => { window.__h = open(b.dataset.open); });
+    window.__demo = { open, events, app, get settings() { return settings; } };
+    const q = new URLSearchParams(location.search).get('open');
+    if (q) window.__h = open(q);
+    window.__ready = true;
+  </script>
+</body>
+</html>

@@ -331,7 +331,7 @@ export function describeRules(input) {
   }
 
   const game = GAME_NAME[r.win];
-  const tags = [TEAM_TAG[r.teams]];
+  const tags = [r.teams === 1 && r.win !== 'last' ? 'Free for All' : TEAM_TAG[r.teams]];
   if (game) tags.push(game);
   else if (r.win === 'elims') tags.push(`First to ${r.target}`);
   else if (r.win === 'teamelims') tags.push(`Team to ${r.target}`);
