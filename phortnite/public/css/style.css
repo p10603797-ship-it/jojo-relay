@@ -162,6 +162,8 @@ button { font-family: inherit; }
 #crosshair.pick b { width: 8px; height: 8px; left: -4px; top: -4px; background: none; border: 2px solid #fff; }
 #crosshair.hide { display: none; }
 #crosshair.lock i, #crosshair.lock b { background: #ff4040; }
+/* keyboard: one of your pieces is under the crosshair */
+body.ctx-canedit:not(.touch):not(.ctx-editing) #crosshair::after { content: 'G  EDIT'; position: absolute; left: 18px; top: 14px; font-size: 12px; letter-spacing: 1px; white-space: nowrap; color: #ffe14d; text-shadow: 0 1px 2px #000; }
 
 /* hit confirm: four 4 x 14 px lines; a kill is a red X with an expanding ring */
 #hitmarker { position: absolute; left: 50%; top: 50%; width: 0; height: 0; opacity: 0; }
@@ -410,6 +412,9 @@ body.ctx-heal .tb-fire { background: rgba(60, 200, 90, 0.35); }
 body.ctx-build .tb-fire { background: rgba(47, 140, 255, 0.45); }
 body.ctx-full .tb-reload { opacity: calc(var(--tb-alpha) * 0.35); }
 body.ctx-canedit .tb-edit, body.ctx-editing .tb-edit { display: flex; }
+/* modes without building (mode engine / mode catalogue body classes) */
+body.nobuild .tb-build, body.nobuild .tbtn.bonly, body.nobuild .tb-edit, body.nobuild #buildbar,
+body.mode-nobuild .tb-build, body.mode-nobuild .tbtn.bonly, body.mode-nobuild .tb-edit, body.mode-nobuild #buildbar { display: none !important; }
 body.ctx-editing .tb-edit { background: rgba(255, 196, 40, 0.9); color: #2a1a00; }
 /* emote: left of the minimap */
 .tb-emote { --w: 52px; right: calc(var(--sar) + 10px + var(--mm) + 10px); bottom: auto; top: calc(var(--sat) + 10px); transform: scale(var(--tb-scale)); transform-origin: top right; background: rgba(0, 0, 0, 0.25); }

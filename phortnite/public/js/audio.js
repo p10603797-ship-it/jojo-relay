@@ -14,6 +14,7 @@ const MAKEUP = 5.012; // +14 dB
 const CEILING = 0.84; // -1.5 dB after the limiter: WebAudio compressors add their own make-up gain
 const MUSIC_TRIM = 0.2; // -14 dB
 const HRTF_DIST = 40; // m: HRTF panning up to here, equal-power beyond
+const MAX_HRTF = 10; // HRTF panners at once (each is a small convolution on the audio thread)
 const AIR_DIST = 60; // m: beyond this shots arrive late and dull
 const SPEED_OF_SOUND = 343;
 const REF_DIST = 6; // m: full volume up to here
@@ -191,7 +192,8 @@ export class Sfx {
     if (!this.claimVoice(att, this.t0 + dur)) return null;
     const g = ctx.createGain();
     g.gain.value = att;
-    this.voices[this.voices.length - 1].g = g;
+    const voice = this.voices[this.voices.length - 1];
+    voice.g = g;
     if (!pos) {
       g.connect(this.master);
       return g;
@@ -207,7 +209,14 @@ export class Sfx {
     let tail = f;
     if (ctx.createPanner && d > 0.3) {
       const pn = ctx.createPanner();
-      pn.panningModel = d <= HRTF_DIST ? 'HRTF' : 'equalpower';
+      let hrtf = d <= HRTF_DIST;
+      if (hrtf) {
+        let n = 0;
+        for (const v of this.voices) if (v.hrtf) n++;
+        hrtf = n < MAX_HRTF;
+      }
+      voice.hrtf = hrtf;
+      pn.panningModel = hrtf ? 'HRTF' : 'equalpower';
       pn.distanceModel = 'linear';
       pn.refDistance = 1;
       pn.maxDistance = 100000;
@@ -242,7 +251,7 @@ export class Sfx {
       try { q.g.gain.cancelScheduledValues(now); q.g.gain.setValueAtTime(0, now); q.g.disconnect(); } catch (e) { /* gone */ }
       vs.splice(qi, 1);
     }
-    vs.push({ g: null, v, end });
+    vs.push({ g: null, v, end, hrtf: false });
     return true;
   }
 
