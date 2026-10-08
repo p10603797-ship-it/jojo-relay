@@ -9,7 +9,7 @@ import { BIOMES, SURFACES, SPECIES, SPECIES_TYPE, LOOKS, LOOK_ALIASES, PADS, TIE
 import { ARCHETYPES } from '../public/shared/world/buildings.js';
 import { PROP_TYPES, DECOR_TYPES } from '../public/shared/world/props.js';
 
-const CHECKSUM = 341022309;   // pinned: the island everyone plays on (update deliberately with the map)
+const CHECKSUM = 371926729;   // pinned: the island everyone plays on (update deliberately with the map)
 
 const worlds = new Map();
 const world = (size = MAP.size) => {
@@ -332,10 +332,13 @@ test('world v2: lookups and indexes', () => {
   for (const k of BIOMES) assert.ok(bio.has(BIOMES.indexOf(k)), `biome ${k}`);
   // the roads mask: paved roads and dirt roads both exist; bridges sit over water
   assert.ok(w.roadMask.includes(1) && w.roadMask.includes(2));
-  assert.ok(w.roads.some((r) => r.bridge), 'at least one bridge');
+  assert.ok(new Set(w.roads.filter((r) => r.bridge).map((r) => r.house)).size >= 3, 'at least three bridges over the river');
   for (const r of w.roads.filter((rr) => rr.bridge)) {
     const [[ax, az], [bx, bz]] = r.pts;
     assert.ok(w.heightAt((ax + bx) / 2, (az + bz) / 2) < 0.6, 'a bridge crosses water');
+    assert.ok(ax === bx || az === bz, 'bridges run straight along x or z');
+    const h = w.houses[r.house];
+    assert.ok(Math.abs(h.x - (ax + bx) / 2) < 2.1 && Math.abs(h.z - (az + bz) / 2) < 2.1 && Math.max(h.hx, h.hz) * 2 >= Math.hypot(bx - ax, bz - az), 'its deck spans the crossing');
   }
 });
 

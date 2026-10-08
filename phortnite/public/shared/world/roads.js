@@ -8,8 +8,8 @@ import { OCC } from './grid.js';
 
 const STEP = 16;
 
-/** Which place pairs get a road: MST over all places, plus loops where the MST detour is long. */
-export function roadEdges(regions, plans) {
+/** Which place pairs get a road: MST over all places, loops where the MST detour is long, and the layout's links. */
+export function roadEdges(regions, plans, links = []) {
   const n = regions.length;
   const hub = (i) => plans[i].hub;
   const dist = (a, b) => {
@@ -58,7 +58,13 @@ export function roadEdges(regions, plans) {
     }
   }
   extra.sort((p, q) => p[2] - q[2]);
-  return [...edges, ...extra.slice(0, 10)];
+  const out = [...edges, ...extra.slice(0, 10)];
+  for (const [na, nb] of links) {
+    const a = regions.findIndex((g) => g.name === na), b = regions.findIndex((g) => g.name === nb);
+    if (a < 0 || b < 0 || out.some((e) => (e[0] === a && e[1] === b) || (e[0] === b && e[1] === a))) continue;
+    out.push([a, b, dist(a, b)]);
+  }
+  return out;
 }
 
 /** The A* grid: node heights, water and blocked flags, place membership. */
@@ -157,8 +163,12 @@ export function routeRoad(RG, ax, az, bx, bz, ends) {
       const v = vz * n + vx;
       if (closed[v] || (blocked[v] && v !== t)) continue;
       const wv = water[v], wu = water[u];
-      // water only straight along x or z (bridges), never diagonal
+      // water only straight along x or z (bridges), never diagonal, and never turning on the water
       if ((wv || wu) && len > 1) continue;
+      if (wu && came[u] >= 0) {
+        const p = came[u];
+        if (dx !== ux - (p % n) || dz !== uz - ((p / n) | 0)) continue;
+      }
       const L = len * STEP;
       const dh = Math.abs(h[v] - h[u]);
       const slope = dh / L;

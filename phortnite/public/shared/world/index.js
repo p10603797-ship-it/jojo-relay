@@ -85,7 +85,7 @@ export function generateWorld(seed = MAP.seed, opts = {}) {
     const out = [[g.x + d, g.z], [g.x - d, g.z], [g.x, g.z + d], [g.x, g.z - d]].filter(([x, z]) => G.heightAt(x, z) > 1.2);
     return out.length ? out : [p.hub];
   });
-  for (const [a, b] of roadEdges(regions, plans)) {
+  for (const [a, b] of roadEdges(regions, plans, L.links)) {
     let A = null, B = null, best = Infinity;
     for (const ga of gates[a]) for (const gb of gates[b]) {
       const d = (ga[0] - gb[0]) * (ga[0] - gb[0]) + (ga[1] - gb[1]) * (ga[1] - gb[1]);

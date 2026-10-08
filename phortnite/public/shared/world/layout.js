@@ -29,7 +29,7 @@ export const FEATURES = {
   // the snow massif: a ridged dome peaking near 170 m
   peak: { x: -80, z: -470, r: 270, h: 128 },
   // the volcano: a 105 m cone with a 38 m crater (lava pool on its floor)
-  volcano: { x: -410, z: 345, r: 215, h: 105, crater: 38, depth: 38 },
+  volcano: { x: -410, z: 345, r: 215, h: 105, crater: 38, depth: 50 },
   // the river: from the snow foothills down to a delta on the south coast, carved below sea level
   river: {
     pts: [[-30, -330], [30, -250], [100, -150], [140, -50], [132, 60], [160, 180], [205, 300], [238, 420], [252, 540], [262, 700]],
@@ -86,6 +86,12 @@ export const LANDMARKS = [
   { name: 'Junkyard', x: -110, z: -135, r: 26, recipe: 'junkyard' },
 ];
 
+/** Roads that must exist (besides the spanning tree): mostly bridges over the river. */
+export const LINKS = [
+  ['Tilty Towers', 'Phun Stadium'], ['Breezy Bluffs', 'Junkyard'], ['Treetop Town', 'Cactus Canyon'],
+  ['Retail Rumble', 'Roadside Motel'], ['Pinewood Plaza', 'Polar Palace'],
+];
+
 /** The layout for a map of this size (scaled copies; the 1.6 km layout when size is 1600). */
 export function layoutFor(size) {
   const k = size / 1600;
@@ -101,5 +107,6 @@ export function layoutFor(size) {
     lake: { ...f.lake, x: f.lake.x * k, z: f.lake.z * k, r: f.lake.r * (0.5 + 0.5 * k), island: f.lake.island },
     places: PLACES.map((p) => ({ ...P(p), r: p.r * (0.55 + 0.45 * k) })),
     landmarks: LANDMARKS.map((p) => ({ ...P(p), r: p.r * (0.7 + 0.3 * k) })),
+    links: LINKS,
   };
 }
