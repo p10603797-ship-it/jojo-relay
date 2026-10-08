@@ -354,6 +354,12 @@ export class ModeRuntime {
     if (p.team === id) return;
     p.team = id;
     this.room.rosterDirty = true;
+    // a team the match did not start with (infection's zombies): list it, so clients can show it
+    if (id > 0 && id < 1000 && !this.teamList.some((t) => t.id === id)) {
+      this.teamList.push(teamInfo(id));
+      this.teamList.sort((a, b) => a.id - b.id);
+      if (this.started) this.room.teamsDirty = true;
+    }
   }
 
   giveLoadout(p, lo) {
@@ -418,6 +424,8 @@ export class ModeRuntime {
   /** After the elimination bookkeeping: the game's onKill, then the core respawn rules. */
   onKill(victim, killer, info) {
     victim.respawnAt = 0;
+    // left the match (also a rejoin hold that ran out): gone for good, never respawned
+    if (info && info.c === 'left') victim.leaving = true;
     this.call('onKill', victim, killer, info);
     const R = this.rules;
     const out = R.lives > 0 && victim.lives <= 0;

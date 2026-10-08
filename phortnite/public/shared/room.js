@@ -166,6 +166,7 @@ export class Room {
     this.elimDepth = 0;
     this.pendingEnd = null;
     this.rosterDirty = false;
+    this.teamsDirty = false;
     this.round = null;        // best-of-N series: {n, series: {team: wins}, need}
     this.mystery = null;      // {at, key}: the mystery mutator running
     this.lastTick = now();
@@ -512,6 +513,7 @@ export class Room {
     p.alive = true;
     p.spectator = false;
     p.inMatch = true;
+    p.leaving = false;
     p.maxHp = R.hp;
     p.hp = R.hp;
     p.sh = R.shield;
@@ -1224,6 +1226,10 @@ export class Room {
 
     if (this.phase === 'round' && now >= this.phaseEnds) this.nextRound();
     if (this.phase === 'ended' && now >= this.phaseEnds) this.returnToLobby();
+    if (this.teamsDirty) {
+      this.teamsDirty = false;
+      this.broadcast({ t: 'teams', teams: this.teamList });
+    }
     if (this.rosterDirty) {
       this.rosterDirty = false;
       this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader });

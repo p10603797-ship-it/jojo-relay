@@ -394,6 +394,9 @@ export class Game {
 
   on_lootall(m) { if (Array.isArray(m.loot)) this.loot.set(m.loot); }
 
+  /** The team list changed mid-match (a game made a new team, e.g. infection's zombies). */
+  on_teams(m) { this.setTeams(m.teams); }
+
   /** Team list {id, name, color} from the room (start / welcome / round). */
   setTeams(list) {
     this.teams.clear();

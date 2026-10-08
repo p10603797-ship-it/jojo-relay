@@ -290,6 +290,12 @@ test('respawn: a player who leaves never comes back and does not keep the match 
   H.leave(c); // only Ann left
   assert.equal(H.room.phase, 'ended');
   assert.equal(H.last(a, 'win').id, a.pid);
+  // a room plugin that held a player for a rejoin and then gives up eliminates them with c 'left'
+  const m2 = match({ respawn: 3, lives: 0 }, { humans: 3 });
+  m2.room.eliminate(m2.cs[1].p, null, { c: 'left' });
+  assert.equal(m2.cs[1].p.respawnAt, 0);
+  m2.H.advance(4000);
+  assert.equal(m2.cs[1].p.alive, false, 'never respawned');
 });
 
 // ------------------------------------------------------------------ win types
@@ -744,6 +750,7 @@ test('the Game plugin ctx on the Room: roles, armor, loadouts, team changes, not
   assert.deepEqual(H.last(c, 'role'), { t: 'role', id: b.pid, role: 'zombie' });
   H.advance(100);
   assert.equal(H.last(c, 'roster').players.find((p) => p.id === b.pid).team, 99, 'team changes reach everyone');
+  assert.ok(H.last(c, 'teams').teams.some((t) => t.id === 99 && t.color), 'and the new team is listed');
   H.advance(1000);
   assert.ok(b.p.alive && calls.some((e) => e[0] === 'respawn'));
   const lo = H.last(b, 'lo');
