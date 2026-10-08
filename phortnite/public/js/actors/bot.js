@@ -226,6 +226,7 @@ export class Bot extends Combatant {
       progT: 0, progD: 0, progX: 0, progZ: 0, noProg: 0, detourT: 0, detourX: 0, detourZ: 0,
       glance: 0, glanceT: 1,
       goal: null, goalT: 0, goalKind: '', dest: new THREE.Vector3(), destKind: '', lootRef: null, lootT: 0, badLoot: new Set(), badChest: new Set(),
+      badTree: new Set(), harvestT: -1, harvestM: 0, wdT: 0, wdX: 0, wdZ: 0, wdMove: 0,
       chestI: -1, harvest: null, treeT: 0,
       urgent: 0, safeKey: 0, safeX: 0, safeZ: 0,
       holdX: 0, holdZ: 0, holdSet: false, holdUntil: 0, campCool: 0, lookYaw: 0, lookT: 0,
@@ -240,7 +241,7 @@ export class Bot extends Combatant {
       landAt: null, landRegion: -1, dropPlan: null, skyT: -99, spread: false,
       lastHp: 100,
       // far simulation (js/ai/farsim.js)
-      farChkT: Math.random() * 0.5, farWant: false, farThinkT: 0, farHealT: -1, farHealSlot: -1, farTarget: null, farCoverT: -99, wakeT: -99,
+      farChkT: Math.random() * 0.5, farWant: false, farThinkT: 0, farHealT: -1, farHealSlot: -1, farTarget: null, farChase: false, farCoverT: -99, wakeT: -99,
     };
     // Game sets brain.dropAt (seconds into the bus ride) to a random moment when the bus leaves;
     // we read back our own: the moment the bus passes the place we want to land.
@@ -360,7 +361,7 @@ export class Bot extends Combatant {
     const b = this.brain;
     if (this.build.busy || this.time - b.boxT < 20 || (this.totalMats() < 50 && !this.infMats)) return false;
     b.boxT = this.time; // (one try per fight)
-    if (Math.random() > (0.2 + 0.7 * Math.max(b.persona.build, b.persona.camp)) * b.buildK) return false;
+    if (Math.random() > (0.4 + 0.6 * Math.max(b.persona.build, b.persona.camp)) * b.buildK) return false;
     const yaw = r ? Math.atan2(-(r.x - this.pos.x), -(r.z - this.pos.z)) : this.yaw;
     if (!this.build.start('box', yaw)) return false;
     b.lowPlan = 'box';
@@ -785,7 +786,6 @@ export class Bot extends Combatant {
       }
       // the infected only have claws: run them down
       if (hunter) mode = d < 30 || threat ? 'melee' : 'travel';
-      // no gun yet: swing at someone in our face, back off from someone close, else keep looting
       // no gun yet: grab one (there's usually one close by after landing); swing back only at
       // someone hitting us when there's nothing to grab
       else if (!gun) mode = d < 5 && threat && !this.gunNear(12) ? 'melee' : d < 25 && threat ? 'flee' : 'travel';
@@ -893,6 +893,7 @@ export class Bot extends Combatant {
     if (!far && !urg && gun && b.harvest === null && this.totalMats() < 30 && now > b.treeT && buildRule(g) === 'on' && !this.infMats && !passive(g)) {
       b.treeT = now + 4;
       b.harvest = this.nearestTree(20);
+      b.harvestT = -1;
       if (b.harvest !== null) {
         const o = g.world.objs[b.harvest];
         if (o && o.alive) { b.destKind = 'tree'; b.dest.set(o.o.x, o.o.y, o.o.z); return; }
@@ -922,6 +923,7 @@ export class Bot extends Combatant {
     if (!far && !urg && !matsOk && b.harvest === null && this.totalMats() < b.matsWant * 0.6 && now > b.treeT && (gun || !loot)) {
       b.treeT = now + 4;
       b.harvest = this.nearestTree(P.build > 0.6 ? 40 : 28);
+      b.harvestT = -1;
     }
     if (!far && !urg && b.harvest !== null) {
       const o = g.world.objs[b.harvest];
@@ -943,7 +945,7 @@ export class Bot extends Combatant {
     if (typeof data.objectsNear !== 'function') return g.nearestTree(p, r);
     let best = null, bd = r * r;
     data.objectsNear(p.x, p.z, r, (o) => {
-      if ((o.kind !== 'tree' && o.kind !== 'rock') || !(o.hp > 0) || Math.abs(o.y - p.y) > 3) return false;
+      if ((o.kind !== 'tree' && o.kind !== 'rock') || !(o.hp > 0) || Math.abs(o.y - p.y) > 3 || this.brain.badTree.has(o.id)) return false;
       const dx = o.x - p.x, dz = o.z - p.z, d = dx * dx + dz * dz;
       if (d < bd && g.world.isAlive(o.id)) { bd = d; best = o.id; }
       return false;
@@ -1300,6 +1302,22 @@ export class Bot extends Combatant {
     } else if (moved > 1.5) b.stuckN = 0;
     b.lastPos.copy(this.pos);
     b.stuckT = 0;
+    // the last resort: wanting to go somewhere for 8 s and still within 2 m of where we were
+    // (going back and forth, a destination nothing else gave up on): drop it and pick another
+    if (b.moving) b.wdMove++;
+    if ((b.wdT += 1) >= 8) {
+      const far = Math.hypot(this.pos.x - b.wdX, this.pos.z - b.wdZ);
+      if (b.wdMove >= 7 && far < 2) {
+        if (b.lootRef) { b.badLoot.add(b.lootRef.id); if (b.badLoot.size > 24) b.badLoot.clear(); }
+        if (b.destKind === 'chest') b.badChest.add(b.chestI);
+        if (b.harvest !== null) { b.badTree.add(b.harvest); b.harvest = null; }
+        b.destKind = ''; b.planT = 0; b.goalT = 0; b.safeKey = 0;
+        this.follow.reset();
+        b.avoid = Math.random() < 0.5 ? 1 : -1; b.avoidT = 1.5;
+        if (b.mode !== 'travel' && b.mode !== 'fight') this.enterMode('travel');
+      }
+      b.wdT = 0; b.wdMove = 0; b.wdX = this.pos.x; b.wdZ = this.pos.z;
+    }
   }
 
   travel(dt) {
@@ -1327,6 +1345,11 @@ export class Bot extends Combatant {
         if (!o || !o.alive) { b.harvest = null; b.destKind = ''; b.planT = 0; break; }
         const rock = o.o.kind === 'rock', reach = rock ? 1.7 + (o.o.s || 1) * 0.6 : 2.2;
         if (Math.hypot(d.x - this.pos.x, d.z - this.pos.z) < reach) {
+          // swinging away and nothing comes of it (can't reach it from here): another one
+          if (b.harvestT < 0) { b.harvestT = now; b.harvestM = this.totalMats(); } else if (now - b.harvestT > 5) {
+            if (this.totalMats() <= b.harvestM) { b.badTree.add(b.harvest); b.harvest = null; b.destKind = ''; b.planT = 0; b.harvestT = -1; break; }
+            b.harvestT = now; b.harvestM = this.totalMats();
+          }
           if (this.inv.sel !== 0) this.select(0);
           this.faceToward(_v.set(o.o.x, rock ? Math.min(this.pos.y + 1.2, o.o.y + Math.max(0.5, (o.o.s || 1) * 0.5)) : this.pos.y + 1.2, o.o.z), dt, 8);
           ctl.fire = true;
@@ -1347,6 +1370,7 @@ export class Bot extends Combatant {
       if (r < 0) {
         if (b.lootRef) b.badLoot.add(b.lootRef.id);
         if (b.destKind === 'chest') { b.badChest.add(b.chestI); if (b.badChest.size > 24) b.badChest.clear(); b.chestI = -1; }
+        if (b.destKind === 'tree' && b.harvest !== null) { b.badTree.add(b.harvest); if (b.badTree.size > 32) b.badTree.clear(); }
         b.harvest = null;
         b.goalT = 0;
         b.safeKey = 0;
@@ -1655,9 +1679,12 @@ export class Bot extends Combatant {
     else if (P.aggro > 0.85) want = Math.min(want, Math.max(rg[0], 8));
     // the keen take a shotgun to them (and swap to it on the way in)
     if (P.aggro >= 0.7 && this.hasShotgun() && dist < 45) want = 6;
+    // no shotgun on us: up close is their game, keep a few steps further out
+    const noSg = !this.hasShotgun();
+    if (noSg) want = Math.max(want, 13);
     let fwd = 0;
     if (dist > want + 4 + 10 * (1 - P.aggro)) fwd = 1;
-    else if (dist < Math.max(rg[0], want * 0.5) - 1) fwd = -1;
+    else if (dist < Math.max(rg[0], want * 0.5) - 1 || (noSg && dist < SHOTGUN_NEAR)) fwd = -1;
     // ADAD: flip direction every fraction of a second; casuals often just stand and shoot
     b.strafeT -= dt;
     if (b.strafeT <= 0) {
@@ -1694,7 +1721,11 @@ export class Bot extends Combatant {
     if (above > 3 && dist < 35 && b.rampT <= 0 && Math.random() < (0.35 + 0.6 * P.build) * b.buildK) {
       b.rampT = rnd(3, 6);
       this.build.start('ramp', yawT);
-    } else if (P.build > 0.6 && dist < 25 && b.ninetyT <= 0 && this.totalMats() >= 60 && Math.random() < 0.5 * b.buildK) {
+    } else if (fwd > 0 && dist > 12 && dist < 40 && b.rampT <= 0 && P.build >= 0.45 && this.totalMats() >= 40 && Math.random() < 0.5 * b.buildK) {
+      // pushing in: ramp rush (cover and height on the way)
+      b.rampT = rnd(5, 9);
+      this.build.start('ramp', yawT);
+    } else if (P.build > 0.6 && dist < 30 && b.ninetyT <= 0 && this.totalMats() >= 60 && Math.random() < 0.5 * b.buildK) {
       b.ninetyT = rnd(6, 12) * (1.5 - b.skill);
       this.build.start('nineties', yawT);
     }
@@ -1849,7 +1880,7 @@ export class Bot extends Combatant {
     const d = Math.hypot(dx, dz);
     if (d < 2.5 || d > 160) return;
     const ramp = hy - this.pos.y > 3 && d < 30 && P.build > 0.5;
-    if (this.build.start(ramp ? 'ramp' : 'wall', Math.atan2(-dx, -dz))) b.buildT = rnd(0.6, 1.6) * (1.5 - b.skill);
+    if (this.build.start(ramp ? 'ramp' : 'wall', Math.atan2(-dx, -dz))) b.buildT = rnd(0.4, 1.2) * (1.5 - b.skill);
   }
 
   melee(dt) {

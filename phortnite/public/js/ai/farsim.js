@@ -133,6 +133,22 @@ export function farUpdate(bot, dt) {
   }
   // standing still while fighting or healing, otherwise along the route
   let moving = false;
+  // closing in on someone out of our gun's range (straight at them: it's a short way)
+  const ft = b.farTarget;
+  if (ft && b.farChase && b.farHealT < 0) {
+    const dx = ft.pos.x - bot.pos.x, dz = ft.pos.z - bot.pos.z, l = Math.hypot(dx, dz);
+    if (l > 1) {
+      const sp = PLAYER.run * (bot.mover.mods ? bot.mover.mods.speed : 1);
+      const nx = bot.pos.x + (dx / l) * sp * dt, nz = bot.pos.z + (dz / l) * sp * dt;
+      if (bot.nav.walkable(nx, nz)) {
+        const ny = bot.nav.groundY(nx, nz);
+        bot.mover.vel.set((nx - bot.pos.x) / dt, (ny - bot.pos.y) / dt, (nz - bot.pos.z) / dt);
+        bot.mover.pos.set(nx, ny, nz);
+        bot.speed = sp; bot.anim = ANIM.RUN;
+        moving = true;
+      }
+    }
+  }
   // an item we can't get (no room for it, gone, somewhere we can't reach): forget it
   if (b.destKind === 'loot' && b.lootRef && bot.time - b.lootT > 10) {
     b.badLoot.add(b.lootRef.id); if (b.badLoot.size > 24) b.badLoot.clear();
@@ -166,6 +182,7 @@ export function farUpdate(bot, dt) {
       if (r === -1) b.goalT = 0;
     }
   }
+  b.moving = moving;
   if (!moving) {
     bot.mover.vel.set(0, 0, 0);
     bot.speed = 0;
@@ -291,7 +308,7 @@ export function farFights(g) {
       }
     }
     ab.farTarget = t;
-    if (!t) continue;
+    if (!t) { ab.farChase = false; continue; }
     const dx = t.pos.x - a.pos.x, dz = t.pos.z - a.pos.z;
     const d = Math.hypot(dx, dz);
     a.yaw = Math.atan2(-dx, -dz);
@@ -320,6 +337,7 @@ export function farFights(g) {
     if (!cur || !has(WEAPONS, cur.k) || WEAPONS[cur.k].melee) continue;
     const w = WEAPONS[cur.k];
     const rg = a.rangeOf(cur.k);
+    ab.farChase = d > rg[2] * 1.1;
     if (d > rg[2] * 1.3) continue; // out of this gun's range: closing in
     // hit chance: skill, how well the gun suits the range; easy bots miss a lot more
     let p = (0.12 + 0.35 * ab.skill) * 0.75;

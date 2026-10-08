@@ -124,7 +124,7 @@ function pageSetup(cfg) {
     pieces: 0, piecesBy: {}, heals: {}, chests: 0, picks: 0, land: {}, landT: {}, samples: 0, stuckSamples: 0,
     hist: {}, modeHist: {}, farSamples: 0, botSamples: 0, alive120: null, alive60: null, frames: 0, botMs: 0, botMax: 0,
     updMs: 0, perBot: 0, errors: 0, followId: 0, followT: 0, farHits: 0, skills: {}, regionsUsed: [], navStats: null,
-    shotgunHeld: 0, timeline: [],
+    shotgunHeld: 0, timeline: [], nearBy: {},
   });
   const isBot = (id) => g.bots.has(id);
   const simT = () => g.time - M.t0;
@@ -198,7 +198,11 @@ function pageSetup(cfg) {
       M.shots++;
       M.shotsBy[a.id] = (M.shotsBy[a.id] || 0) + 1;
       const t = a.brain && a.brain.target;
-      if (t && Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z) < 10) { M.nearShots++; if ((w.pellets || 1) > 1) M.nearShotgun++; }
+      if (t && Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z) < 10) {
+        M.nearShots++;
+        if ((w.pellets || 1) > 1) M.nearShotgun++;
+        else M.nearBy[a.hasShotgun && a.hasShotgun() ? `${cur.k}+sg` : cur.k] = (M.nearBy[a.hasShotgun && a.hasShotgun() ? `${cur.k}+sg` : cur.k] || 0) + 1;
+      }
     }
     return oShot(a, cur, w, o, d, s);
   };
@@ -211,6 +215,7 @@ function pageSetup(cfg) {
     }
     return oDmg.call(this, m);
   };
+  if (g.on_win) { const oW = g.on_win; g.on_win = function (m) { M.win = { id: m.id, team: m.team, reason: m.reason, name: m.name, t: +simT().toFixed(0) }; return oW.call(this, m); }; }
   const oElim = g.on_elim;
   g.on_elim = function (m) {
     const V = g.bots.get(m.v), K = g.bots.get(m.k);
@@ -231,6 +236,9 @@ function pageSetup(cfg) {
   g.openChest = (a, i) => { if (isBot(a.id) && !g.world.chestOpen.has(i)) M.chests++; return oChest(a, i); };
   const oGot = g.on_got;
   g.on_got = function (m) { if (isBot(m.id)) M.picks++; return oGot.call(this, m); };
+  // modes: respawns, and what the mode's state says (scores, the hill, the lava, ...)
+  M.respawns = 0; M.onHill = 0; M.hillSamples = 0; M.lavaGap = []; M.zombies = [];
+  if (g.on_respawn) { const oR = g.on_respawn; g.on_respawn = function (m) { if (isBot(m.id)) M.respawns++; return oR.call(this, m); }; }
   const regionOf = (x, z) => {
     const d = g.world.data;
     if (typeof d.regionAt === 'function') { const r = d.regionAt(x, z); return r ? r.name : ''; }
@@ -249,7 +257,7 @@ function pageSetup(cfg) {
       if (m === 'skydive' || m === 'glide') { h.length = 0; continue; }
       if (!M.land[b.id]) { M.land[b.id] = regionOf(b.pos.x, b.pos.z) || '(open)'; M.landT[b.id] = t; }
       const bm = b.brain.mode;
-      const moving = (bm === 'travel' || bm === 'investigate' || bm === 'flee') && (b.far ? !!b.brain.destKind && !b.brain.farTarget && b.brain.farHealT < 0 : b.brain.moving);
+      const moving = (bm === 'travel' || bm === 'investigate' || bm === 'flee') && b.brain.moving;
       h.push([b.pos.x, b.pos.z, moving ? 1 : 0]);
       if (h.length > 11) h.shift();
       M.botSamples++;
@@ -280,6 +288,20 @@ function pageSetup(cfg) {
     const everyone = landed >= [...g.bots.values()].filter((b) => b.alive || M.landT[b.id] !== undefined).length;
     if (M.alive60 === null && everyone && lastLand >= 0 && t >= lastLand + 60) M.alive60 = { t: +t.toFixed(0), lastLand: +lastLand.toFixed(1), alive, of: g.bots.size };
     if (Math.floor(t) % 15 === 0) M.timeline.push([Math.floor(t), alive, M.pieces, M.shots, M.elims.length]);
+    const gs = g.modeState && g.modeState.g;
+    if (gs && gs.hill) {
+      for (const b of g.bots.values()) {
+        if (!b.alive) continue;
+        M.hillSamples++;
+        if (Math.hypot(b.pos.x - gs.hill.x, b.pos.z - gs.hill.z) < gs.hill.r) M.onHill++;
+      }
+    }
+    if (gs && Number.isFinite(gs.lava)) {
+      let lo = Infinity;
+      for (const b of g.bots.values()) if (b.alive) lo = Math.min(lo, b.pos.y - gs.lava);
+      if (lo < Infinity) M.lavaGap.push(+lo.toFixed(1));
+    }
+    if (g.roles && g.roles.size) M.zombies.push([...g.roles.values()].filter((r) => r === 'zombie').length);
   };
   M.summary = () => {
     const nav = [...g.bots.values()][0]?.nav;
@@ -292,7 +314,7 @@ function pageSetup(cfg) {
       stuckPct: +(100 * M.stuckSamples / Math.max(1, M.samples)).toFixed(2),
       pieces: M.pieces, piecesBots: Object.keys(M.piecesBy).length,
       shots: M.shots, nearShots: M.nearShots, shotgunNearPct: +(100 * M.nearShotgun / Math.max(1, M.nearShots)).toFixed(1),
-      shotgunHeldPct: +(100 * M.shotgunHeld / Math.max(1, M.samples)).toFixed(1),
+      shotgunHeldPct: +(100 * M.shotgunHeld / Math.max(1, M.samples)).toFixed(1), nearBy: M.nearBy,
       heals: Object.values(M.heals).reduce((s, x) => s + x, 0),
       alive120: heals120.length, healsPerSurvivor: heals120.length ? +(heals120.reduce((s, x) => s + x, 0) / heals120.length).toFixed(2) : null,
       survivorsHealed: heals120.filter((x) => x > 0).length,
@@ -312,6 +334,11 @@ function pageSetup(cfg) {
       })),
       nav: nav ? { buildMs: +nav.buildMs.toFixed(1), queries: nav.stats.queries, cacheHits: nav.stats.hits, avgMs: +(nav.stats.ms / Math.max(1, nav.stats.queries)).toFixed(3), maxMs: +nav.stats.maxMs.toFixed(2), fails: nav.stats.fails, flows: nav.stats.flows, flowMs: +nav.stats.flowMs.toFixed(1), padsOn: nav.padsOn, kb: Math.round(nav.bytes() / 1024) } : null,
       hitsBy: M.hitsBy, shotsBy: M.shotsBy, skillOf, ids, timeline: M.timeline,
+      mode: g.rules ? { win: g.rules.win, build: g.rules.build, pvp: g.rules.pvp, botSkill: g.rules.botSkill, teams: g.rules.teams, modeId: g.settingsState && g.settingsState.modeId } : null,
+      modeState: g.modeState ? { sc: g.modeState.sc, g: g.modeState.g, tl: g.modeState.tl } : null,
+      respawns: M.respawns, onHillPct: M.hillSamples ? +(100 * M.onHill / M.hillSamples).toFixed(1) : null,
+      lavaGapMin: M.lavaGap.length ? Math.min(...M.lavaGap) : null, zombies: M.zombies.length ? M.zombies.filter((_, i) => i % 15 === 0) : null,
+      winner: M.win || null,
     };
   };
 }
