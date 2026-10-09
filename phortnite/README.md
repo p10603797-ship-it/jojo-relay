@@ -74,9 +74,13 @@ otherwise the iPads can't reach the server.
 
 ## What's in it
 
-* **Real 3D world** — a 640 m procedurally generated island (always the same island, like the
-  real thing) with six named towns, ~46 enterable houses, a container yard, a mountain, beaches,
-  dirt roads, ~650 trees, rocks, cars, crates, barrels and loot chests.
+* **Real 3D world** — a 1.6 km procedurally generated island (always the same island, like the
+  real thing) with 11 biomes (snowy mountains, desert, striped mesas, jungle, swamp, a volcano
+  with a lava lake, a city, farms, forest, meadow, beaches), 26 named places and 15 landmarks,
+  285 enterable buildings of 32 types, roads and bridges, a river and a lake, launch pads,
+  geysers and bounce mushrooms, ~6,000 trees, props, and 290 chests. Terrain LOD, vegetation
+  rings, batched buildings and collider streaming keep it fast on an iPad; the map and full map
+  show every place, and a tap drops a marker for your team.
 * **Textures** — every texture (grass, sand, rock, dirt, planks, brick, metal, siding, roof
   shingles, concrete, bark, leaves) is painted procedurally at load time with matching normal
   maps, blended on the terrain with a custom splat shader. Stylised sky with clouds, image-based
@@ -98,16 +102,23 @@ otherwise the iPads can't reach the server.
   which fires for you while your crosshair is on an enemy. Both are on by default.
 * **Characters** — smooth, fully skinned humans with faces, hands, clothes and a different hair
   style and look for each of the eight skins; full animation set and ragdolls.
-* **Building** — walls, floors and ramps on a 4 m grid in wood/brick/metal; pieces grow in
-  health while building, can be shot down, and anything left floating collapses.
+* **Building** — walls, floors, ramps and cones (roofs) on a 4 m grid in wood/brick/metal; one
+  tap places a piece on touch (hold and turn to keep building); edits: door, window, arch, half
+  wall and floor holes. Pieces grow in health while building, can be shot down, and anything
+  left floating collapses.
+* **Game modes** — about 60 curated modes in **Discover** (Battle Royale solo to squads, Zero
+  Build, Team Rumble, Gun Game, Infection, King of the Hill, Juggernaut, Floor is Lava, Hide &
+  Seek, Box Fight, Zone Wars, crazy mutators like Moon gravity and Big Heads, Playground, …),
+  plus a **creator** for your own rules with a shareable mode code. The rules run in the shared
+  room, so every mode works the same solo, on the server and in website parties.
 * **Lobby & parties** — a Fortnite-style lobby with your squad on a podium (its own little scene,
   far cheaper to draw than the island), ready-up, leader crown, kick / make leader, live skin
   changes, a 3-2-1 countdown, one invite flow for the website and the server (code, QR, share
   sheet, link), mode suggestions, back-to-lobby, a death card that shows who got you, a
   *#1 PHICTORY ROYALE* celebration with the winners dancing, results with XP and levels, rejoin
   after a dropped connection, and synthesized lobby music.
-* **Battle royale** — the bus, a shrinking storm with six phases, floor loot + chests, kill feed,
-  spectating, victory screen.
+* **Battle royale** — the bus, a shrinking storm (eight phases on the big island), floor loot +
+  chests, kill feed, spectating, victory screen.
 * **Bots that play like people** — they only see what is in front of them (a view cone, a sight
   range and line of sight, and it takes a moment to notice someone far away), hear gunshots,
   footsteps and building, remember where they last saw you, react and aim like humans (they
@@ -125,10 +136,11 @@ otherwise the iPads can't reach the server.
 | Move | left thumb anywhere on the left half | `WASD`, `Shift` sprint |
 | Look / aim | drag on the right half | mouse |
 | Shoot / aim down sights | red ✛ buttons / ◎ | left / right mouse |
-| Jump / crouch | ⤒ / ⤓ | `Space` / `Ctrl` (hold) or `V` |
+| Jump / crouch | ⤒ / ⤓ | `Space` / `Ctrl` (hold) or `X` |
 | Weapons | tap the hotbar | `1`–`5`, wheel, `F` pickaxe |
-| Build | ⚒ then Wall / Floor / Ramp, fire to place | `Q` wall, `Z` floor, `C` ramp, `B` toggle |
-| Material | Mat | `G` or right mouse while building |
+| Build | ⚒ then tap Wall / Ramp / Floor / Cone | `Q` wall, `Z` floor, `C` ramp, `V` cone, `B` toggle |
+| Edit your piece | ✎ EDIT, then DOOR / WINDOW / ARCH / HALF / RESET | `G`, then `1`–`5` |
+| Material | Mat | `G` (nothing to edit) or right mouse while building |
 | Reload / interact | ⟳ / yellow button | `R` / `E` |
 | Map / menu | tap minimap / ☰ | `M` / `Esc` |
 | Back to the lobby | ☰ → BACK TO LOBBY (or ↩ LOBBY while warming up) | `Esc` → BACK TO LOBBY |
@@ -146,6 +158,9 @@ public/shared/            code shared by browser and server
   buildgrid.js            build grid, structural support, collapse
   room.js                 authoritative match logic (runs on the server, or in the browser
                           for solo games and on the host's device for website parties)
+  modes/                  the mode rules, the catalogue, mode codes and the games (gun game,
+                          infection, king of the hill, …) the room plays
+  world/                  the 1.6 km island generator (biomes, places, buildings, roads)
 public/js/                the game client (three.js + Rapier)
 public/js/net/p2p.js      website parties over WebRTC (PeerJS)
 public/shared/plugins/party.js  party rules in the room: ready, kick, promote, countdown, rejoin

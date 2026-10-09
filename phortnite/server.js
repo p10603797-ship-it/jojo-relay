@@ -319,6 +319,6 @@ server.listen(PORT, HOST, async () => {
       console.log(qr.split('\n').map((l) => '   ' + l).join('\n'));
     } catch { /* ignore */ }
   }
-  console.log('  Everyone on the same Wi-Fi opens that address, then Play with Friends -> join the party.');
+  console.log('  Everyone on the same Wi-Fi opens that address: the leader taps + INVITE, friends tap JOIN A FRIEND (or scan the QR code).');
   console.log('');
 });

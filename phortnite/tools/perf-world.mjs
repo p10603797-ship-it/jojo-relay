@@ -11,7 +11,8 @@
 //   mainCalls / mainTris  the same frame without the shadow pass (shadow casters skipped)
 //   colliders             active Rapier colliders
 //   physMs / updMs        median physics.step and world.update times (the desktop proxy)
-//   heapMB / texMB        JS heap and an estimate of GPU texture memory
+//   heapMB / texMB        JS heap after a garbage collection over CDP (heapRawMB: before it) and an
+//                         estimate of GPU texture memory
 // Viewpoints (each only when the world has it): bus (bus height above the island), overhead,
 // city (the densest town), one per biome centre, forest (the densest trees), peak, beach, and
 // with --fight a match with 23 bots fast-forwarded until they have landed.
@@ -306,6 +307,12 @@ function pageSetup() {
 
 // ------------------------------------------------------------------ main
 const t00 = Date.now();
+let progressT = 0;
+/** Log the fight's progress every 30 s; false = keep waiting. */
+function fightProgress(st) {
+  if (Date.now() - progressT > 30000) { progressT = Date.now(); log('fight: progress', JSON.stringify(st)); }
+  return false;
+}
 const log = (...a) => console.log(`+${((Date.now() - t00) / 1000).toFixed(0)}s`, ...a);
 const server = await startServer();
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -317,6 +324,17 @@ const result = { label: LABEL, quality: QUALITY, size: `${VW}x${VH}`, when: new 
 try {
   const ctx = await browser.newContext({ viewport: { width: VW, height: VH } });
   const page = await ctx.newPage();
+  // heapMB is the live heap: a garbage collection (over CDP, from outside the page) first, so the
+  // boot's leftovers (the world build, texture painting) don't count; heapRawMB is the number before
+  const cdp = await ctx.newCDPSession(page);
+  const liveHeap = async (r) => {
+    try {
+      r.heapRawMB = r.heapMB;
+      await cdp.send('HeapProfiler.collectGarbage');
+      r.heapMB = await page.evaluate(() => (performance.memory ? +(performance.memory.usedJSHeapSize / 1e6).toFixed(1) : null));
+    } catch (e) { /* keep the raw number */ }
+    return r;
+  };
   await page.addInitScript((q) => {
     try { localStorage.setItem('phortnite.settings', JSON.stringify({ name: 'Perf', skin: 1, quality: q })); } catch (e) { /* ignore */ }
   }, QUALITY);
@@ -353,7 +371,7 @@ try {
   const want = VIEWS === 'all' ? Object.keys(all) : String(VIEWS).split(',');
   for (const name of want) {
     if (!all[name]) { log('no view', name); continue; }
-    const r = await page.evaluate((v) => window.__perf.measure(v), all[name]);
+    const r = await liveHeap(await page.evaluate((v) => window.__perf.measure(v), all[name]));
     result.views[name] = r;
     log(name.padEnd(16), `calls ${r.calls} (main ${r.mainCalls})`, `tris ${(r.tris / 1000).toFixed(0)}k (main ${(r.mainTris / 1000).toFixed(0)}k)`,
       `colliders ${r.colliders}`, `upd ${r.updMs}ms`, `phys ${r.physMs}ms`, `heap ${r.heapMB}MB`, `tex ${r.texMB}MB`, `far ${r.far}`);
@@ -378,27 +396,54 @@ try {
         const app = window.__phortnite;
         const g = app.game;
         g.startMatch(23);
-        app.__ff = { t: 0, done: false };
+        app.__ff = { t: 0, done: false, err: null };
         const tick = () => {
           if (app.__ff.done) return;
-          for (let i = 0; i < 30; i++) g.update(1 / 60);
-          app.__ff.t += 0.5;
-          const me = g.me;
-          const focus = me && me.alive && !me.inBus ? me.pos : app.camera.position;
-          app.world.update(0.5, app.camera, focus, g);
+          try {
+            for (let i = 0; i < 30; i++) g.update(1 / 60);
+            app.__ff.t += 0.5;
+            const me = g.me;
+            const focus = me && me.alive && !me.inBus ? me.pos : app.camera.position;
+            app.world.update(0.5, app.camera, focus, g);
+          } catch (e) { app.__ff.err = String((e && e.stack) || e); return; }
           setTimeout(tick, 0);
         };
         setTimeout(tick, 200);
       });
-      await page.waitForFunction(() => {
-        const app = window.__phortnite, g = app.game;
-        if (!g || g.phase !== 'match') return false;
-        let up = 0;
-        for (const a of g.actors()) if (a.alive && !a.inBus && a.mover && a.mover.mode === 'ground') up++;
-        // and a minute of the match after the landings
-        if (up >= 12 && !app.__ff.landed) app.__ff.landed = app.__ff.t;
-        return app.__ff.landed && app.__ff.t - app.__ff.landed >= 60;
-      }, null, { timeout: 1200000, polling: 2000 });
+      // until most bots have landed and a minute of the match has gone by (progress every 30 s;
+      // a thrown error or a match that ended first stops the wait)
+      const deadline = Date.now() + 1200000;
+      for (;;) {
+        // a page that stops answering for 30 s: pause it and print where its main thread is
+        const answer = page.evaluate(() => {
+          const app = window.__phortnite, g = app.game;
+          let up = 0;
+          if (g) for (const a of g.actors()) if (a.alive && !a.inBus && a.mover && a.mover.mode === 'ground') up++;
+          if (g && g.phase === 'match' && up >= 12 && !app.__ff.landed) app.__ff.landed = app.__ff.t;
+          const ok = !!(app.__ff.landed && app.__ff.t - app.__ff.landed >= 60);
+          return { ok, t: app.__ff.t, phase: g && g.phase, up, err: app.__ff.err, landed: app.__ff.landed || 0 };
+        });
+        let st = await Promise.race([answer, new Promise((res) => setTimeout(() => res(null), 30000))]);
+        if (!st) {
+          await cdp.send('Debugger.enable');
+          const where = new Promise((res) => cdp.once('Debugger.paused', (e) => res(e.callFrames.slice(0, 16)
+            .map((f) => `${f.functionName || '?'}@${f.url.split('/').slice(-2).join('/')}:${f.location.lineNumber + 1}`).join(' <- '))));
+          await cdp.send('Debugger.pause');
+          const stack = await Promise.race([where, new Promise((res) => setTimeout(() => res('(no pause: the main thread is blocked outside JS)'), 15000))]);
+          log('fight: the page stopped answering:', stack);
+          result.errors.push(`fight: page hung: ${stack}`);
+          await cdp.send('Debugger.resume').catch(() => {});
+          st = await Promise.race([answer, new Promise((res) => setTimeout(() => res(null), 30000))]);
+          if (!st) break;
+        }
+        if (st.ok) break;
+        if (st.err || (st.phase !== 'match' && st.phase !== 'bus') || Date.now() > deadline) {
+          log('fight: stopped early', JSON.stringify(st));
+          result.errors.push(`fight: ${st.err || 'phase ' + st.phase}`);
+          break;
+        }
+        if (!fightProgress(st)) await page.waitForTimeout(2000);
+      }
       await page.evaluate(() => { const app = window.__phortnite; app.__ff.done = true; });
       await page.waitForTimeout(500);
       await page.evaluate(pageSetup);
@@ -421,7 +466,7 @@ try {
         m.bots = g.bots.size;
         return m;
       });
-      result.views.fight24 = res;
+      result.views.fight24 = await liveHeap(res);
       log('fight24'.padEnd(16), JSON.stringify(res));
       if (SHOTS) {
         try { await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${QUALITY}-fight24.png`), timeout: 120000 }); } catch (e) { log('no fight screenshot:', e.message.split('\n')[0]); }
