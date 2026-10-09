@@ -53,11 +53,14 @@ function p2pMode() {
 
 async function loadPeer() {
   if (PeerCtor) return PeerCtor;
-  let m;
+  let m, timer = 0;
   try {
-    m = await import(PEERJS_URL);
+    // a network that silently drops the CDN must not hold up the relay
+    m = await Promise.race([import(PEERJS_URL), new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 8000); })]);
   } catch (e) {
     throw Object.assign(new Error('Could not load the online party service. Check that this device is connected to the internet.'), { type: 'load' });
+  } finally {
+    clearTimeout(timer);
   }
   PeerCtor = m.Peer || (m.default && (m.default.Peer || m.default));
   return PeerCtor;
@@ -191,7 +194,7 @@ export class P2PHost extends Emitter {
     let Peer = null, lastErr = null, peer = null;
     try { Peer = await loadPeer(); } catch (e) { lastErr = e; }
     // the same code as last time first, so friends' links and REJOIN keep working
-    const first = storedCode();
+    let first = storedCode();
     for (let tries = 0; Peer && tries < 6 && !peer && !this.closed; tries++) {
       const code = tries === 0 && first ? first : randomCode();
       try {
@@ -199,6 +202,7 @@ export class P2PHost extends Emitter {
         this.code = code;
       } catch (e) {
         lastErr = e;
+        if (e.type === 'unavailable-id' && code === first) first = ''; // someone else has it now
         if (e.type !== 'unavailable-id') break;
       }
     }
@@ -236,6 +240,9 @@ export class P2PHost extends Emitter {
     this.peerTimer = setInterval(() => this.keepPeer(Peer), 5000);
     this.onVisible = () => { if (!pageHidden()) this.keepPeer(Peer); };
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisible);
+    // closing the tab: relayed friends hear it at once (they knock again if this page comes back)
+    this.onPageHide = () => { if (this.relay) this.relay.hangUpAll(); };
+    if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('pagehide', this.onPageHide);
   }
 
   usePeer(peer) {
@@ -331,6 +338,7 @@ export class P2PHost extends Emitter {
     clearInterval(this.pumpTimer);
     clearInterval(this.peerTimer);
     if (this.onVisible && typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisible);
+    if (this.onPageHide && typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('pagehide', this.onPageHide);
     const links = [...this.links];
     this.links.clear();
     this.dcById.clear();
@@ -405,6 +413,14 @@ export class P2PClient extends Emitter {
       this.emit(msg);
     }));
     dc.on('close', () => { if (this.dc === dc) this.lost(); });
+    if (dc.open === false) {
+      // it closed before we were listening (the host hung up right after answering)
+      this.dc = null;
+      this.open = false;
+      this.hangup = null;
+      res.close();
+      throw Object.assign(new Error('The link closed'), { type: 'direct-failed' });
+    }
   }
 
   say(text) { if (this.onStatus) this.onStatus(text); }
@@ -422,7 +438,8 @@ export class P2PClient extends Emitter {
       const pending = new Set();
       let won = false, relayStarted = false, grace = 0;
       const win = (r) => {
-        if (won || this.closed) { r.close(); return; }
+        if (won) { r.close(); return; }
+        if (this.closed) { won = true; clearTimeout(grace); r.close(); reject(cancelled()); return; }
         won = true;
         clearTimeout(grace);
         resolve(r);
@@ -491,6 +508,9 @@ export class P2PClient extends Emitter {
     if (offline) return Object.assign(new Error('Could not reach the online party service. Check that this device is connected to the internet, then try again.'), { type: 'offline' });
     if (missing || (d && OFFLINE_TYPES.has(d.type))) {
       return Object.assign(new Error(`No party with code ${this.code} right now. Check the code, and make sure your friend's game is open on their screen (not in the background).`), { type: 'peer-unavailable' });
+    }
+    if (relayDown && brokers().length) {
+      return Object.assign(new Error(`Found party ${this.code}, but this Wi-Fi blocks game connections between devices (and the backup relay too). Try another Wi-Fi network or a phone hotspot.`), { type: 'blocked' });
     }
     return Object.assign(new Error(`Found party ${this.code}, but could not connect to it. Make sure you both have the newest version (reload the page) and keep the game open on screen, then try again.`), { type: 'unreachable' });
   }

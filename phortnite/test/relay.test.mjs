@@ -29,6 +29,12 @@ test('mqtt: connects with a login, hears its own messages (packets split over fr
     m.publish('a/c', 'not for us');
     await until(() => got.length === 2);
     assert.deepEqual(got, ['hello', 'émoji 🎉 '.repeat(2000)]);
+    // timers frozen (an iPad app switch) with a ping still unanswered: the healthy connection stays
+    m.asked = m.lastTick = Date.now() - 20000;
+    m.tick();
+    assert.equal(m.open, true);
+    assert.ok(m.asked > 0, 'it asks the broker');
+    await until(() => m.lastRx >= m.asked, 2000); // and hears back
     let closed = false;
     m.onClose = () => { closed = true; };
     b.kill();
@@ -74,6 +80,15 @@ test('relay: a friend reaches the host, messages (big ones too) go both ways in 
     hl.on('close', () => { hostClosed = true; });
     link.close();
     await until(() => hostClosed);
+    // the friend's broker connection goes with the link (no socket left behind per reconnect)
+    await until(() => link.mqtt.dead);
+    // many friends on the relay: the host sends to each less often
+    const more = [];
+    for (let i = 0; i < 6; i++) more.push(await relayDial('ABCD', 3000));
+    await until(() => host.links.size === 6);
+    assert.equal([...host.links.values()][0].flushMs, 200);
+    for (const l of more) l.close();
+    await until(() => host.links.size === 0);
   } finally {
     host.stop();
     useBrokers(null);
@@ -225,6 +240,9 @@ test('P2P over the relay: with the introduction service out of reach the party r
     PEERS.set('phortnite-v1-OLDV', new FakePeer('x'));
     useBrokers([{ url: b.url }]);
     await assert.rejects(quick('OLDV').connect(), (e) => e.type === 'unreachable' && /reload/.test(e.message));
+    // found, but this network blocks both the direct link and the relay
+    useBrokers([{ url: 'ws://127.0.0.1:1/mqtt' }]);
+    await assert.rejects(quick('OLDV').connect(), (e) => e.type === 'blocked' && /hotspot/.test(e.message));
   } finally {
     host.close();
     useBrokers(null);

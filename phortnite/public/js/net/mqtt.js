@@ -186,6 +186,7 @@ export class Mqtt {
     const now = Date.now();
     const woke = now - this.lastTick > TICK_MS * 3; // timers were frozen (iPad app switch)
     this.lastTick = now;
+    if (woke) this.asked = 0; // a ping from before the freeze: ask again below
     if (this.asked && this.lastRx >= this.asked) this.asked = 0;
     if (this.asked && now - this.asked > ANSWER_MS) { this.teardown(); return; }
     if (woke || now - this.lastPing >= this.keepalive * 500) {

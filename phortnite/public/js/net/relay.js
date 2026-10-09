@@ -12,7 +12,9 @@
 //   host -> friend  (topic <base>/c/<link>): a answer, d data, x close
 // d bodies are text frames joined by '\n' (JSON text never holds a raw line break). Public brokers
 // allow about 100 messages a second from one network (both iPads on the same Wi-Fi count
-// together), so a link sends at most 10 a second, each carrying everything since the last.
+// together), so a friend sends at most 8 a second and the host at most 10 a second to each
+// friend, fewer when many friends are on the relay; each carries everything since the last.
+// (Unlike a direct link, relayed messages are not encrypted: the relay is only a fallback.)
 import { Mqtt } from './mqtt.js';
 
 export const BROKERS = [
@@ -21,7 +23,8 @@ export const BROKERS = [
   { url: 'wss://broker.hivemq.com:8884/mqtt' },
 ];
 const BATCH = 16000; // characters per MQTT message
-const FLUSH_MS = 100;
+const FLUSH_MS = 100; // host -> friend, with up to 3 friends on the relay
+const FRIEND_FLUSH_MS = 125;
 const KNOCK_MS = 1500;
 const IDLE_MS = 20000; // a friend's link that has been silent this long is gone (they ping every 2 s)
 const MAX_LINKS = 32;
@@ -84,6 +87,7 @@ export class RelayLink {
     this.queued = false;
     this.flushTimer = 0;
     this.lastFlush = 0;
+    this.flushMs = FLUSH_MS;
     this.lastRx = Date.now();
     this.heardData = false;
     this.onDrop = null;
@@ -107,7 +111,7 @@ export class RelayLink {
     else if (!this.queued) {
       // right away after a quiet spell, else with whatever else comes in the next moment
       this.queued = true;
-      this.flushTimer = setTimeout(() => this.flush(), Math.max(0, this.lastFlush + FLUSH_MS - Date.now()));
+      this.flushTimer = setTimeout(() => this.flush(), Math.max(0, this.lastFlush + this.flushMs - Date.now()));
     }
   }
 
@@ -226,14 +230,26 @@ export class RelayHost {
       }
       if (this.links.size >= MAX_LINKS) return;
       const nl = new RelayLink(m, `${this.base}/c/${id}`, id);
-      nl.onDrop = () => { if (this.links.get(id) === nl) this.links.delete(id); };
+      nl.onDrop = () => { if (this.links.get(id) === nl) this.links.delete(id); this.pace(); };
       this.links.set(id, nl);
+      this.pace();
       nl.say('a', '');
       this.onLink(nl);
       return;
     }
     if (link && link.mqtt === m) link.heard(kind, text.slice(11));
     else if (!link && kind === 'd') m.publish(`${this.base}/c/${id}`, `${id}x`); // a link from before a reload: hang up so they knock again
+  }
+
+  /** Many friends on the relay: each hears from the host less often, so the party stays under the brokers' limit. */
+  pace() {
+    const ms = FLUSH_MS * Math.max(1, this.links.size / 3);
+    for (const link of this.links.values()) link.flushMs = ms;
+  }
+
+  /** The host's page is going away: friends hear it at once instead of waiting for the silence. */
+  hangUpAll() {
+    for (const link of [...this.links.values()]) link.close();
   }
 
   /** Drop links that went silent. After the page slept (timers frozen) everyone gets a fresh start. */
@@ -292,7 +308,10 @@ export function relayDial(code, ms = 9000) {
           if (link) { if (link.mqtt === m) link.heard(text[10], text.slice(11)); return; }
           if (done || text[10] !== 'a') return;
           link = new RelayLink(m, `${base}/h`, id);
+          link.flushMs = FRIEND_FLUSH_MS;
           m.onClose = () => link.drop();
+          // the link is this broker connection's only use: hang up with it (once the 'x' is out)
+          link.onDrop = () => setTimeout(() => m.close(), 200);
           finish(null, link);
         }))
         .then(() => {
