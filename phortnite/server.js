@@ -17,8 +17,14 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
-const TRUST_PROXY = process.env.TRUST_PROXY !== '0';
+// X-Forwarded-For: '1' always trusted, '0' never; by default only from a reverse proxy on this
+// machine (loopback), so a client cannot pick its own IP to get around the per-IP limits below
+const TRUST_PROXY = process.env.TRUST_PROXY === '1' ? 'always' : process.env.TRUST_PROXY === '0' ? 'never' : 'loopback';
 const MAX_ROOMS = Number(process.env.MAX_ROOMS) || 200;
+// per network (IP) limits: generous, since a home or a school behind NAT shares one public IP
+const MAX_ROOMS_PER_IP = Number(process.env.MAX_ROOMS_PER_IP) || 8;
+const MAX_CREATES_PER_MIN = Number(process.env.MAX_CREATES_PER_MIN) || 10;
+const MAX_CONNS_PER_IP = Number(process.env.MAX_CONNS_PER_IP) || 64;
 
 const VENDOR = {
   '/vendor/three.module.js': 'node_modules/three/build/three.module.js',
@@ -66,13 +72,22 @@ function localizeHtml(buf) {
 
 const ADDONS = path.join(ROOT, 'node_modules/three/examples/jsm');
 
+/** decodeURIComponent, or null for a malformed escape (e.g. '%E0%A4%A'). */
+function safeDecode(s) {
+  try { return decodeURIComponent(s); } catch { return null; }
+}
+
+/** The file for a URL path: an absolute path, null (outside public/: 403) or undefined (malformed: 400). */
 function resolvePath(urlPath) {
   if (VENDOR[urlPath]) return path.join(ROOT, VENDOR[urlPath]);
   if (urlPath.startsWith('/vendor/addons/')) {
-    const abs = path.normalize(path.join(ADDONS, decodeURIComponent(urlPath.slice('/vendor/addons/'.length))));
+    const rel = safeDecode(urlPath.slice('/vendor/addons/'.length));
+    if (rel === null) return undefined;
+    const abs = path.normalize(path.join(ADDONS, rel));
     return abs.startsWith(ADDONS) ? abs : null;
   }
-  let p = decodeURIComponent(urlPath.split('?')[0]);
+  let p = safeDecode(urlPath.split('?')[0]);
+  if (p === null) return undefined;
   if (p.endsWith('/')) p += 'index.html';
   const abs = path.normalize(path.join(PUBLIC, p));
   if (!abs.startsWith(PUBLIC)) return null;
@@ -90,10 +105,19 @@ function serveFile(req, res, abs) {
     const type = TYPES[ext] || 'application/octet-stream';
     let entry = cache.get(abs);
     if (!entry || entry.mtime !== st.mtimeMs) {
-      let raw = fs.readFileSync(abs);
-      if (abs === path.join(PUBLIC, 'index.html')) raw = localizeHtml(raw);
-      entry = { mtime: st.mtimeMs, raw, gz: COMPRESSIBLE.has(ext) && raw.length > 1024 ? zlib.gzipSync(raw, { level: 6 }) : null };
-      cache.set(abs, entry);
+      // outside the request handler's try/catch: a file deleted or swapped between the stat and
+      // the read must not become an uncaught exception that ends every party on the server
+      try {
+        let raw = fs.readFileSync(abs);
+        if (abs === path.join(PUBLIC, 'index.html')) raw = localizeHtml(raw);
+        entry = { mtime: st.mtimeMs, raw, gz: COMPRESSIBLE.has(ext) && raw.length > 1024 ? zlib.gzipSync(raw, { level: 6 }) : null };
+        cache.set(abs, entry);
+      } catch (e) {
+        log('serve error', { file: abs, err: String(e) });
+        if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain' });
+        res.end();
+        return;
+      }
     }
     const etag = `"${Math.floor(st.mtimeMs).toString(36)}-${st.size.toString(36)}"`;
     const headers = {
@@ -119,14 +143,34 @@ function serveFile(req, res, abs) {
   });
 }
 
+const isLoopback = (ip) => ip === '127.0.0.1' || ip === '::1' || ip.startsWith('127.');
+
 function clientIp(req) {
+  const raw = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   const fwd = req.headers['x-forwarded-for'];
-  if (TRUST_PROXY && typeof fwd === 'string' && fwd) return fwd.split(',')[0].trim();
-  return (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  const trust = TRUST_PROXY === 'always' || (TRUST_PROXY === 'loopback' && isLoopback(raw));
+  if (trust && typeof fwd === 'string' && fwd) return fwd.split(',')[0].trim().slice(0, 64);
+  return raw;
+}
+
+function badRequest(res) {
+  if (!res.headersSent) res.writeHead(400, { 'content-type': 'text/plain' });
+  res.end();
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
+  // one malformed request must never take the server (and every party on it) down
+  try {
+    await handleRequest(req, res);
+  } catch (e) {
+    log('request error', { url: String(req.url).slice(0, 200), err: String(e) });
+    try { badRequest(res); } catch { /* the socket is gone */ }
+  }
+});
+
+async function handleRequest(req, res) {
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { badRequest(res); return; }
   if (url.pathname === '/api/info') {
     const lan = lanAddresses().map((ip) => `http://${ip}${PORT === 80 ? '' : ':' + PORT}/`);
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -152,13 +196,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   const abs = resolvePath(url.pathname);
+  if (abs === undefined) { badRequest(res); return; }
   if (!abs) {
     res.writeHead(403);
     res.end();
     return;
   }
   serveFile(req, res, abs);
-});
+}
 
 // ---------------------------------------------------------------- rooms
 const rooms = new Map(); // code -> Room
@@ -180,7 +225,7 @@ function log(msg, fields) {
 
 function roomList(ip) {
   return [...rooms.values()]
-    .filter((r) => !r.empty)
+    .filter((r) => !r.empty && r.conns.size > 0)
     .map((r) => r.publicInfo(ip))
     .sort((a, b) => Number(b.sameNet) - Number(a.sameNet) || b.players - a.players)
     .slice(0, 30);
@@ -197,10 +242,41 @@ function encode(obj) {
   return s;
 }
 
+const connsPerIp = new Map(); // ip -> open sockets
+const createsByIp = new Map(); // ip -> times of recent 'create's (the last minute)
+
+/** Live parties started from this network, or with someone from it (held players included). */
+function roomsOfIp(ip) {
+  let n = 0;
+  for (const r of rooms.values()) {
+    if (r.empty) continue;
+    if (r.ownerIp === ip || r.humans().some((p) => p.ip === ip)) n++;
+  }
+  return n;
+}
+
+/** May this network create another party now? (at most MAX_CREATES_PER_MIN a minute; this computer always may) */
+function createAllowed(ip, now) {
+  if (isLoopback(ip)) return true;
+  const list = (createsByIp.get(ip) || []).filter((t) => now - t < 60000);
+  if (list.length >= MAX_CREATES_PER_MIN) { createsByIp.set(ip, list); return false; }
+  list.push(now);
+  createsByIp.set(ip, list);
+  return true;
+}
+
 wss.on('connection', (ws, req) => {
+  const ip = clientIp(req);
+  const open = (connsPerIp.get(ip) || 0) + 1;
+  if (open > MAX_CONNS_PER_IP && !isLoopback(ip)) {
+    try { ws.send(JSON.stringify({ t: 'err', msg: 'Too many connections from this network.' })); } catch { /* ignore */ }
+    ws.close();
+    return;
+  }
+  connsPerIp.set(ip, open);
   const conn = {
     id: `c${++connSeq}`,
-    ip: clientIp(req),
+    ip,
     room: null,
     alive: true,
     msgCount: 0,
@@ -226,12 +302,18 @@ wss.on('connection', (ws, req) => {
         conn.send({ t: 'rooms', rooms: roomList(conn.ip) });
         return;
       case 'create': {
-        if (conn.room) leaveRoom(conn);
+        const busy = { t: 'err', msg: 'Too many parties from this network. Try again in a minute.' };
+        if (!createAllowed(conn.ip, now)) { conn.send(busy); return; } // (stays in its party)
+        // switching parties is a deliberate leave: never held for a rejoin (one socket, one room)
+        if (conn.room) leaveRoom(conn, true);
         if (rooms.size >= MAX_ROOMS) { conn.send({ t: 'err', msg: 'Server is full, try again later.' }); return; }
+        if (roomsOfIp(conn.ip) >= MAX_ROOMS_PER_IP && !isLoopback(conn.ip)) { conn.send(busy); return; }
         const code = newCode();
+        if (!code) { conn.send({ t: 'err', msg: 'Server is full, try again later.' }); return; }
         const name = String(msg.hello?.name || 'Player').slice(0, 16);
         // the party keeps the mode its leader picked before inviting anyone
         const room = new Room({ code, name: `${name}'s party`, log, settings: cleanSettings(msg.settings) });
+        room.ownerIp = conn.ip;
         room.onKick = onKick;
         // only list the party once its creator is in (an old cached page is turned away by join)
         if (!room.join(conn, msg.hello || {})) return;
@@ -244,19 +326,25 @@ wss.on('connection', (ws, req) => {
         const code = String(msg.code || '').toUpperCase().replace(/[^A-Z]/g, '');
         const room = rooms.get(code);
         if (!room || room.empty) { conn.send({ t: 'err', msg: `No party with code ${code || '?'} on this server.` }); return; }
-        if (conn.room) leaveRoom(conn);
+        if (conn.room) leaveRoom(conn, true);
         if (room.join(conn, msg.hello || {})) conn.room = room;
         return;
       }
       case 'leave':
-        leaveRoom(conn);
+        leaveRoom(conn, true);
         return;
       default:
         if (conn.room) conn.room.message(conn.id, msg);
     }
   });
 
-  ws.on('close', () => { connById.delete(conn.id); leaveRoom(conn); });
+  ws.on('close', () => {
+    connById.delete(conn.id);
+    const n = (connsPerIp.get(ip) || 1) - 1;
+    if (n > 0) connsPerIp.set(ip, n); else connsPerIp.delete(ip);
+    // a dropped socket (Wi-Fi blip, locked iPad) is the one case held for a rejoin
+    leaveRoom(conn);
+  });
   ws.on('error', () => {});
   ws.conn = conn;
 });
@@ -267,10 +355,12 @@ function onKick(connId) {
   if (c) c.room = null;
 }
 
-function leaveRoom(conn) {
+/** onPurpose: the page chose to leave (create, join, leave): a 'bye' first, so it is not held. */
+function leaveRoom(conn, onPurpose = false) {
   const room = conn.room;
   if (!room) return;
   conn.room = null;
+  if (onPurpose) room.message(conn.id, { t: 'bye' });
   room.leave(conn.id);
   if (room.empty) {
     rooms.delete(room.code);
@@ -292,6 +382,8 @@ setInterval(() => {
 }, 1000 / TICK_HZ);
 
 setInterval(() => {
+  const now = Date.now();
+  for (const [ip, list] of createsByIp) if (!list.some((t) => now - t < 60000)) createsByIp.delete(ip);
   for (const ws of wss.clients) {
     if (!ws.conn) continue;
     if (!ws.conn.alive) { ws.terminate(); continue; }
@@ -299,6 +391,14 @@ setInterval(() => {
     try { ws.ping(); } catch { /* ignore */ }
   }
 }, 15000);
+
+// last-resort guards (the request handler and the room ticks catch their own errors): one bad
+// request or message must never end every party on the server
+process.on('unhandledRejection', (e) => log('unhandled rejection', { err: String((e && e.stack) || e) }));
+process.on('uncaughtException', (e) => {
+  log('uncaught exception', { err: String((e && e.stack) || e) });
+  if (e && (e.code === 'EADDRINUSE' || e.code === 'EACCES')) process.exit(1);
+});
 
 // ---------------------------------------------------------------- start
 const t0 = Date.now();

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import net from 'node:net';
 import { PROTOCOL } from '../public/shared/constants.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -22,9 +23,9 @@ async function startServer() {
   throw new Error('server did not start');
 }
 
-function client(port) {
+function client(port, headers = undefined) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, headers ? { headers } : undefined);
     const queue = [];
     const waiters = [];
     ws.on('message', (d) => {
@@ -126,6 +127,63 @@ test('server parties: create with settings, join by code, kick (the kicked socke
     const rooms = (await lister.next((m) => m.t === 'rooms')).rooms;
     assert.equal(rooms.find((r) => r.code === w.code).players, 2);
     for (const c of [lead, ben2, cat, lister]) c.close();
+  } finally {
+    proc.kill();
+  }
+});
+
+/** A raw HTTP request line (fetch() refuses to send these), resolved with the status line or ''. */
+function rawRequest(port, line) {
+  return new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1', () => s.write(`${line}\r\nHost: x\r\nConnection: close\r\n\r\n`));
+    let buf = '';
+    s.on('data', (d) => { buf += d; });
+    s.on('end', () => resolve(buf.split('\r\n')[0]));
+    s.on('error', () => resolve(''));
+    setTimeout(() => { s.destroy(); resolve(buf.split('\r\n')[0]); }, 2000);
+  });
+}
+
+test('malformed requests get a 400 and never take the server (and its parties) down', async () => {
+  const { port, proc } = await startServer();
+  let exited = false;
+  proc.on('exit', () => { exited = true; });
+  try {
+    const lead = await client(port);
+    lead.send({ t: 'create', hello: { name: 'Mia', v: PROTOCOL } });
+    assert.equal((await lead.next((m) => m.t === 'welcome' || m.t === 'err')).t, 'welcome');
+    assert.match(await rawRequest(port, 'GET /%E0%A4%A HTTP/1.1'), / 400 /);
+    assert.match(await rawRequest(port, 'GET /vendor/addons/%ZZ HTTP/1.1'), / 400 /);
+    assert.match(await rawRequest(port, 'GET //[ HTTP/1.1'), / 400 /);
+    assert.match(await rawRequest(port, 'GET /../../etc/passwd HTTP/1.1'), / (403|404) /);
+    const r = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(await r.text(), 'ok');
+    assert.equal(exited, false);
+    const info = await (await fetch(`http://127.0.0.1:${port}/api/info`)).json();
+    assert.equal(info.rooms, 1, 'the party survived');
+    lead.close();
+  } finally {
+    proc.kill();
+  }
+});
+
+test('one socket cannot fill the server with parties: switching parties is never held, and creates are limited per network', async () => {
+  const { port, proc } = await startServer();
+  try {
+    // a client on another network, behind a reverse proxy on the server's machine (X-Forwarded-For
+    // is trusted from loopback only; this computer itself is never limited)
+    const spam = await client(port, { 'x-forwarded-for': '203.0.113.7' });
+    let welcomes = 0, errs = 0;
+    for (let i = 0; i < 40; i++) {
+      spam.send({ t: 'create', hello: { name: `S${i}`, v: PROTOCOL, resume: '' } });
+      const m = await spam.next((x) => x.t === 'welcome' || x.t === 'err');
+      if (m.t === 'welcome') welcomes++; else errs++;
+    }
+    assert.ok(welcomes >= 1 && welcomes <= 10, `creates per minute are limited (${welcomes})`);
+    assert.ok(errs > 0);
+    const info = await (await fetch(`http://127.0.0.1:${port}/api/info`)).json();
+    assert.equal(info.rooms, 1, 'each create left the previous party for good');
+    spam.close();
   } finally {
     proc.kill();
   }
