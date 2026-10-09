@@ -192,23 +192,25 @@ export class Ui {
         <tr><td>Jump / crouch</td><td>⤒ and ⤓</td></tr>
         <tr><td>Aim down sights</td><td>◎ (toggle)</td></tr>
         <tr><td>Aim assist</td><td>Aiming slows down over enemies and helps you stay on them while you aim or shoot; tap ◎ near an enemy and your aim swings onto them. Touch and controllers only — switch it off in Settings.</td></tr>
-        <tr><td>Build</td><td>⚒ then Wall / Floor / Ramp, fire places it, "Mat" switches material</td></tr>
+        <tr><td>Build</td><td>⚒, then tap Wall / Ramp / Floor / Cone: one tap places a piece (hold it and turn or walk to keep building). "Mat" switches material. No build buttons in Zero Build modes.</td></tr>
+        <tr><td>Edit</td><td>Look at your (or a teammate's) wall or floor and tap the yellow ✎ EDIT button, then DOOR / WINDOW / ARCH / HALF (or HOLE on floors). Tap the same one again, or RESET, to close it up.</td></tr>
         <tr><td>Weapons & heals</td><td>Tap the slots at the bottom. Hold fire to use heals.</td></tr>
         <tr><td>Map / dance</td><td>Tap the minimap / 💃</td></tr>
       </table>
       <h3>Keyboard & mouse</h3>
       <table>
         <tr><td>Move / jump / sprint</td><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> · <kbd>Space</kbd> · <kbd>Shift</kbd></td></tr>
-        <tr><td>Crouch</td><td><kbd>Ctrl</kbd> (hold) or <kbd>V</kbd> (toggle)</td></tr>
+        <tr><td>Crouch</td><td><kbd>Ctrl</kbd> (hold) or <kbd>X</kbd> (toggle)</td></tr>
         <tr><td>Shoot / aim</td><td>Left mouse / right mouse</td></tr>
         <tr><td>Weapons</td><td><kbd>1</kbd>–<kbd>5</kbd>, mouse wheel, <kbd>F</kbd> pickaxe</td></tr>
-        <tr><td>Build wall / floor / ramp</td><td><kbd>Q</kbd> / <kbd>Z</kbd> / <kbd>C</kbd> (<kbd>B</kbd> toggles build mode)</td></tr>
-        <tr><td>Change material</td><td><kbd>G</kbd> or right mouse while building</td></tr>
+        <tr><td>Build wall / floor / ramp / cone</td><td><kbd>Q</kbd> / <kbd>Z</kbd> / <kbd>C</kbd> / <kbd>V</kbd> (<kbd>B</kbd> toggles build mode)</td></tr>
+        <tr><td>Edit</td><td><kbd>G</kbd> while looking at your (or a teammate's) piece, then <kbd>1</kbd>–<kbd>5</kbd> (door, window, arch, half, reset)</td></tr>
+        <tr><td>Change material</td><td><kbd>G</kbd> (when no piece of yours is under the crosshair) or right mouse while building</td></tr>
         <tr><td>Reload / interact</td><td><kbd>R</kbd> / <kbd>E</kbd></td></tr>
         <tr><td>Map / menu / dance</td><td><kbd>M</kbd> / <kbd>Esc</kbd> / <kbd>T</kbd></td></tr>
       </table>
       <h3>Controllers</h3>
-      <p>Bluetooth game controllers work too: sticks move & look, triggers aim & shoot, A jump, B crouch, X reload/interact, Y build, D-pad picks wall/floor/ramp/material.</p>
+      <p>Bluetooth game controllers work too: sticks move & look, triggers aim & shoot, A jump, B crouch, X reload / interact, Y build mode, bumpers change weapon. D-pad up / down / left / right builds a wall / floor / ramp / cone; R3 (or LT in build mode) changes material. Hold B to edit: the D-pad picks the edit and Y resets it.</p>
       <h3>Playing with friends</h3>
       <p>Play with friends anywhere: tap <b>+ INVITE</b> in the lobby and send the 4-letter party code, the QR code or the link (SHARE / COPY LINK). Friends tap <b>JOIN A FRIEND</b> and type the code, or just open the link. The party leader (♛) picks the mode with <b>CHANGE</b> and presses <b>PLAY</b>; everyone else taps <b>READY</b>. After a match everybody comes back to the lobby together. On the website the party runs on the host's device, so the host should keep the game open; if the Wi-Fi blips you get back into the same match within a minute.</p>`;
     this.modal(html, null, onClose);

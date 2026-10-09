@@ -27,6 +27,7 @@ import { Combatant, forwardFromAngles } from './combatant.js';
 import { RAY_STATIC, RAY_SOLID } from '../physics.js';
 import { navFor, PathFollower } from '../ai/nav.js';
 import { BuildFight } from '../ai/buildfight.js';
+import { EDIT_PRESETS, EDIT_FULL } from '../../shared/buildgrid.js';
 import {
   modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, hillOf, inArea,
 } from '../ai/goals.js';
@@ -1486,8 +1487,10 @@ export class Bot extends Combatant {
       b.probeT = 0.15;
       const h = this.game.physics.raycast(this.pos.x, this.pos.y + 0.8, this.pos.z, wx, 0, wz, 2.2, RAY_STATIC);
       if (h && h.ny < 0.5) {
-        if (h.dist < 1.6 && b.mode !== 'fight' && b.mode !== 'box' && !this.build.busy && this.breakable(h.info, b.noProg > 0 || b.urgent === 2)) {
-          // a wall in the way (often our own box, or a house we can't find a way around): pickaxe through
+        if (h.dist < 1.6 && b.mode !== 'fight' && b.mode !== 'box' && !this.build.busy && this.editOut(h.info)) {
+          // our own (or a teammate's) wall: a door goes in, and we walk on through it
+        } else if (h.dist < 1.6 && b.mode !== 'fight' && b.mode !== 'box' && !this.build.busy && this.breakable(h.info, b.noProg > 0 || b.urgent === 2)) {
+          // a wall in the way (an enemy's build, or a house we can't find a way around): pickaxe through
           b.breakT = 1.8; b.breakX = h.x; b.breakY = h.y; b.breakZ = h.z;
         } else { b.avoid = Math.random() < 0.5 ? 1 : -1; b.avoidT = 0.8; }
       }
@@ -1496,6 +1499,25 @@ export class Bot extends Combatant {
     this.ctl.my = -(sy * wx + cy * wz) * m;
     this.ctl.mx = (cy * wx - sy * wz) * m;
     b.moving = true;
+  }
+
+  /**
+   * Our own (or a teammate's) wall in the way (leaving our box after healing, say): edit a door into
+   * it like a player would (build-feel's edits, sent through BuildClient.editPiece and checked by
+   * the room) instead of pickaxing it down. False when that isn't possible (then we pickaxe).
+   */
+  editOut(info) {
+    const g = this.game, bc = g.buildClient, b = this.brain;
+    if (!info || info.kind !== 'build' || !bc || typeof bc.editPiece !== 'function' || buildRule(g) === 'off') return false;
+    if (this.time - (b.editT ?? -9) < 1.2) return false; // one try; if the door didn't take, pickaxe
+    const p = g.builds.pieces.get(info.key);
+    if (!p || p.pending || p.t !== 'w' || (p.e !== undefined && p.e !== EDIT_FULL.w)) return false;
+    if (p.by !== this.id && !(g.friendly && g.friendly(p.by, this.id))) return false;
+    b.editT = this.time;
+    if (!bc.editPiece(this, p.k, EDIT_PRESETS.w.door)) return false;
+    b.avoidT = 0;
+    b.edits = (b.edits || 0) + 1;
+    return true;
   }
 
   /** Builds can always be pickaxed out of the way; destructible scenery only when we're stuck. */

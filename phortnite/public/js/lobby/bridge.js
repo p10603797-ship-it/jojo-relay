@@ -251,7 +251,10 @@ export class PartyBridge {
     me.hp = s.hp;
     me.sh = s.sh;
     me.infinite = false;
-    me.resetInventory({ slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
+    // the mode's loadout when it has one (the room keeps it), else the start materials
+    if (s.lo && typeof g.giveLoadout === 'function') g.giveLoadout(me, s.lo);
+    else me.resetInventory({ slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
+    if (typeof g.applyMode === 'function') g.applyMode(me);
     g.spectateId = 0;
     this.app.lobby.toast('Back in the game! 💪');
   }

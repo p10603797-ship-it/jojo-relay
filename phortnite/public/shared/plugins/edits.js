@@ -36,6 +36,8 @@ export const edits = {
       const a = room.actor(c.conn.id, m.id);
       if (!b || !a || !a.alive || a.inBus || !(room.phase === 'lobby' || room.phase === 'match' || room.phase === 'bus')) { refuse(room, c, b); return; }
       if (!editAllowed(b.t, m.e) || !sameSide(room, a, b)) { refuse(room, c, b); return; }
+      // Zero Build: no edits either (the warm-up lobby always builds)
+      if (room.phase !== 'lobby' && room.rules && room.rules.build === 'off') { refuse(room, c, b); return; }
       const pose = piecePose(b);
       const dx = pose.x - a.x, dy = pose.y - (a.y + 1), dz = pose.z - a.z;
       if (dx * dx + dy * dy + dz * dz > RANGE * RANGE) { refuse(room, c, b); return; }

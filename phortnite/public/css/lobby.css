@@ -5,6 +5,9 @@
    after a match ends the touch buttons and hotbar get out of the way of the end card */
 body.onstage #hud, body.onstage #touch, body.onstage #rotate, body.onstage #fullmap { display: none !important; }
 body.ended #touch, body.ended #hotbar, body.endcard #touch, body.endcard #hotbar, body.endcard #ammo { display: none !important; }
+/* build-feel's banners and edit chips never sit on top of an end card (or a dead player's view) */
+body.ended #elimbanner, body.ended #editchips, body.ended #shieldbreak, body.endcard #elimbanner, body.endcard #editchips,
+body.endcard #shieldbreak, body.dead #editchips, body.ended #mats, body.endcard #mats { display: none !important; }
 
 #lobby {
   position: fixed; inset: 0; z-index: 20; pointer-events: none; font-family: var(--font-hud); color: #fff;

@@ -422,6 +422,8 @@ function rebind(room, conn, p, hello) {
   const w = room.welcome(p.id);
   w.resumed = true;
   w.me = { x: r1(p.x), y: r1(p.y), z: r1(p.z), hp: Math.ceil(p.hp), sh: Math.ceil(p.sh), alive: !!p.alive, inBus: !!p.inBus };
+  // the mode's loadout (gun game rung, build fight kit, …): a reloaded page gets it back
+  if (p.lo) w.me.lo = p.lo;
   if (hello.keep) w.t = 'resumed';
   room.send(conn, w);
   room.broadcast({ t: 'roster', players: room.roster(), leader: room.leader }, conn.id);

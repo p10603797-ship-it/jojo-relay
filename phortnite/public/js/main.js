@@ -37,7 +37,7 @@ const TIPS = [
 ];
 
 const PRESETS = {
-  low: { maxDpr: 1, shadows: false, shadowSize: 0, grass: 0, drawDist: 380, particles: 0.5, lights: false, aa: false },
+  low: { maxDpr: 1, shadows: false, shadowSize: 0, grass: 0, drawDist: 450, particles: 0.5, lights: false, aa: false },
   medium: { maxDpr: 1.35, shadows: true, shadowSize: 1024, grass: 64, drawDist: 520, particles: 0.8, lights: true, aa: true },
   high: { maxDpr: 1.75, shadows: true, shadowSize: 2048, grass: 96, drawDist: 720, particles: 1, lights: true, aa: true },
   ultra: { maxDpr: 2, shadows: true, shadowSize: 4096, grass: 128, drawDist: 900, particles: 1, lights: true, aa: true },

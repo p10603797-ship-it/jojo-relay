@@ -41,6 +41,7 @@ const CHEST_ASK = 0.5; // s between two requests to open the same chest
 const PLAIN_MODS = { speed: 1, gravity: 1, jump: 1 };
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _f = new THREE.Vector3();
+const _near = []; // interactions(): the floor loot next to me
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Aim assist (a setting, touch + controller only): angles in rad, rates in rad/s.
@@ -685,7 +686,7 @@ export class Game {
     let line;
     if (m.c === 'storm') line = `<span class="${meV ? 'me' : ''}">${vName}</span> was lost in the storm`;
     else if (m.c === 'fall') line = `<span class="${meV ? 'me' : ''}">${vName}</span> fell too far`;
-    else if (m.c === 'lava') line = `<span class="${meV ? 'me' : ''}">${vName}</span> fell in the lava`;
+    else if (m.c === 'lava') line = `🌋 <span class="${meV ? 'me' : ''}">${vName}</span> melted`;
     else if (m.c === 'left') line = `${vName} left the match`;
     else line = `<span class="${meK ? 'me' : ''}">${kName}</span> ${m.hs ? '🎯' : '✖'} <span class="${meV ? 'me' : ''}">${vName}</span>`;
     this.hud.killfeed(line);
@@ -763,7 +764,7 @@ export class Game {
     for (const a of this.actors()) if (a !== this.me && a.alive && a.mode !== 'bus' && this.friendly(a.id, this.myId)) { mate = a; break; }
     this.spectateId = mate ? mate.id : killer && killer !== this.me ? killer.id : 0;
     this.specYaw = this.me.yaw;
-    const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : m.c === 'lava' ? 'The lava got you'
+    const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : m.c === 'lava' ? 'You melted in the lava'
       : killer ? `Eliminated by ${this.nameOf(m.k)}` : 'Eliminated';
     if (respawning) {
       // endscreen ignores {respawn: true} once mode-catalog's overlay counts down (modeState.rs)
@@ -1174,12 +1175,16 @@ export class Game {
 
   nearestTree(pos, r) {
     let best = null, bd = r * r;
-    for (const o of this.world.data.objects) {
-      if (o.kind !== 'tree') continue;
+    const look = (o) => {
+      if (o.kind !== 'tree') return;
       const dx = o.x - pos.x, dz = o.z - pos.z;
       const d = dx * dx + dz * dz;
       if (d < bd && this.world.isAlive(o.id)) { bd = d; best = o.id; }
-    }
+    };
+    const data = this.world.data;
+    // the world's 32 m object hash (23k objects on the big island)
+    if (data.objectsNear) data.objectsNear(pos.x, pos.z, r, look);
+    else for (const o of data.objects) look(o);
     return best;
   }
 
@@ -1835,7 +1840,12 @@ export class Game {
     if (!me.alive || me.inBus || !me.canAct()) { this.hud.prompt(''); this.input.setInteractLabel(''); return; }
     // auto pickup
     let slotBusy = this.slotPickPending(me);
-    for (const it of this.loot.items.values()) {
+    // (LootView's 16 m grid: only the items next to me, not every item on the island)
+    const near = _near;
+    near.length = 0;
+    if (this.loot.forNear) this.loot.forNear(me.pos.x, me.pos.z, 1.7, (it) => { near.push(it); });
+    else for (const it of this.loot.items.values()) near.push(it);
+    for (const it of near) {
       const dx = it.x - me.pos.x, dz = it.z - me.pos.z, dy = it.y - me.pos.y;
       if (dx * dx + dz * dz >= 1.7 * 1.7 || Math.abs(dy) >= 1.6 || !me.canAutoPick(it.item)) continue;
       const kind = itemKind(it.item.k);
@@ -1845,6 +1855,7 @@ export class Game {
       }
       this.pick(me, it);
     }
+    near.length = 0;
     const chest = this.nearestChest(me.pos, 2.8);
     const l = chest ? null : this.loot.nearest(me.pos, 2.6, (it) => !me.pendingPick.has(it.id));
     const touch = this.input.touchMode;
