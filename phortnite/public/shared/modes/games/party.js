@@ -92,6 +92,35 @@ const gungame = {
   },
 };
 
+// ------------------------------------------------------------------ the room's clock
+/**
+ * Infection, Hide & Seek and Floor is Lava count from set-up with the rules' time limit until the
+ * room has its own clock (ctx.endTime: after setup, a bus ride first). From then on they follow it,
+ * so the game ends exactly when the HUD clock (ms.tl) does: st.endAt becomes the room's end and
+ * the game's other times (head start, scoring, the lava's rise) move by the bus ride with it.
+ */
+function syncClock(ctx) {
+  const st = ctx.state;
+  if (st.synced) return;
+  const end = typeof ctx.endTime === 'function' ? ctx.endTime() : 0;
+  if (!(end > 0)) return;
+  st.synced = true;
+  const shift = Number.isFinite(st.endAt) ? end - st.endAt : 0;
+  st.endAt = end;
+  if (!shift) return;
+  for (const k of ['t0', 'seekAt', 'nextScore', 'nextHurt']) if (Number.isFinite(st[k])) st[k] += shift;
+}
+
+/** Ends the game for `team` when the room's clock is about to run out (just before the core time
+ * limit, which would also pick the top score). */
+function timeUp(ctx, team) {
+  const st = ctx.state;
+  if (!st.over && ctx.now() >= st.endAt - 150) {
+    st.over = true;
+    ctx.end({ team, reason: 'time' });
+  }
+}
+
 // ------------------------------------------------------------------ Infection
 const SURVIVORS = 1, INFECTED = 2;
 const isZombie = (ctx, p) => ctx.roleOf(p) === 'zombie';
@@ -150,6 +179,7 @@ const infection = {
   },
 
   tick(ctx) {
+    syncClock(ctx);
     const st = ctx.state;
     const now = ctx.now();
     // every second some survivors are still standing, the survivors' team scores
@@ -157,12 +187,8 @@ const infection = {
       st.nextScore += 1000;
       if (survivors(ctx).some((p) => p.alive)) ctx.addScore(SURVIVORS, 1);
     }
-    // survivors win when the clock runs out (a moment before the core time limit, which
-    // would also pick them as the top score)
-    if (!st.over && now >= st.endAt - 150) {
-      st.over = true;
-      ctx.end({ team: SURVIVORS, reason: 'time' });
-    }
+    // survivors win when the clock runs out
+    timeUp(ctx, SURVIVORS);
   },
 
   checkWin(ctx) {
@@ -372,12 +398,14 @@ const lava = {
     const st = ctx.state;
     st.t0 = ctx.now();
     st.dur = (ctx.rules.timeLimit || 300) * 1000;
+    st.endAt = st.t0 + st.dur; // (moved to the room's clock by syncClock: the lava rises from the landing)
     st.top = lavaTop(ctx);
     st.level = LAVA_START;
     st.nextHurt = st.t0 + 1000;
   },
 
   tick(ctx) {
+    syncClock(ctx);
     const st = ctx.state;
     const now = ctx.now();
     st.level = lavaLevel(ctx);
@@ -456,6 +484,7 @@ const hideseek = {
   /** Nobody gets hurt during the head start; afterwards only seekers can tag (one hit finds you). */
   allowDamage(ctx, attacker, target) {
     if (!attacker || attacker === target) return true;
+    syncClock(ctx);
     if (ctx.now() < ctx.state.seekAt) return false;
     return isSeeker(ctx, attacker) && !isSeeker(ctx, target);
   },
@@ -473,16 +502,14 @@ const hideseek = {
   },
 
   tick(ctx) {
+    syncClock(ctx);
     const st = ctx.state;
     const now = ctx.now();
     while (now >= st.nextScore) {
       st.nextScore += 1000;
       if (hiders(ctx).some((p) => p.alive)) ctx.addScore(HIDERS, 1);
     }
-    if (!st.over && now >= st.endAt - 150) {
-      st.over = true;
-      ctx.end({ team: HIDERS, reason: 'time' });
-    }
+    timeUp(ctx, HIDERS);
   },
 
   checkWin(ctx) {

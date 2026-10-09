@@ -18,7 +18,9 @@
 //  - fights like a Fortnite player (js/ai/buildfight.js): a wall when shot, ramp pushes, 90s,
 //    boxing up with a roof to heal, a shotgun up close, healing up after a fight
 //  - plays the mode (js/ai/goals.js): holds the hill, hunts the Juggernaut, zombies chase, climbs
-//    away from the lava, stays passive in Playground, tags along with a human teammate
+//    away from the lava, stays passive in Playground, tags along with a human teammate; in Hide &
+//    Seek seekers keep their eyes shut through the head start and then search with their own eyes
+//    and ears, hiders crouch in a house or behind a bush and run when a seeker comes close
 //  - far from every human it is simulated cheaply (js/ai/farsim.js)
 // Each bot thinks ~4 times a second (staggered); per-frame work is steering and aiming only.
 import * as THREE from 'three';
@@ -30,6 +32,7 @@ import { BuildFight } from '../ai/buildfight.js';
 import { EDIT_PRESETS, EDIT_FULL } from '../../shared/buildgrid.js';
 import {
   modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, hillOf, inArea,
+  seekerWaits, hider, hideFound,
 } from '../ai/goals.js';
 import { wantFar, enterFar, exitFar, farUpdate } from '../ai/farsim.js';
 
@@ -54,6 +57,7 @@ const SHOTGUN_NEAR = 10;  // m: inside this a shotgun is the gun
 const CALM_S = 60;        // s after landing spent looting rather than starting fights (rushers: RUSH_CALM_S)
 const RUSH_CALM_S = 15;
 const RESPAWN_CALM_S = 10;
+const HIDER_RUN = 14;     // m: a hider runs from a seeker it sees this close (further off it stays hidden)
 
 // preferred engagement ranges [min, ideal, max] in m; guns not listed are derived from their stats
 const RANGES = { shotgun: [0, 7, 14], smg: [0, 12, 28], pistol: [0, 15, 35], ar: [8, 40, 120], sniper: [45, 110, 400], rocket: [12, 35, 80] };
@@ -753,6 +757,12 @@ export class Bot extends Combatant {
 
   decide() {
     const b = this.brain, now = this.time, P = b.persona;
+    // Hide & Seek: a seeker counts with its eyes shut while the others hide
+    if (seekerWaits(this)) {
+      b.target = null; b.trec = null;
+      if (b.mode !== 'blind') this.enterMode('blind');
+      return;
+    }
     const t0 = b.target;
     if (t0 && (!t0.alive || !this.present(t0))) {
       if (!t0.alive && now - this.lastShot < 2.5) {
@@ -788,6 +798,12 @@ export class Bot extends Combatant {
       }
       // the infected only have claws: run them down
       if (hunter) mode = d < 30 || threat ? 'melee' : 'travel';
+      // a Hide & Seek hider who sees a seeker coming: run for it (and hide somewhere else), else
+      // keep still where we are
+      else if (hider(this)) {
+        mode = d < HIDER_RUN ? 'flee' : 'travel';
+        if (mode === 'flee') hideFound(this);
+      }
       // no gun yet: grab one (there's usually one close by after landing); swing back only at
       // someone hitting us when there's nothing to grab
       else if (!gun) mode = d < 5 && threat && !this.gunNear(12) ? 'melee' : d < 25 && threat ? 'flee' : 'travel';
@@ -1232,7 +1248,8 @@ export class Bot extends Combatant {
     b.thinkT -= dt; b.planT -= dt; b.goalT -= dt; b.buildT -= dt; b.jumpT -= dt; b.rampT -= dt; b.ninetyT -= dt;
     if (b.thinkT <= 0) {
       b.thinkT = rnd(0.2, 0.3);
-      this.perceive(Math.min(0.5, b.thinkAcc));
+      // (a Hide & Seek seeker's eyes are shut through the head start)
+      if (b.mode !== 'blind') this.perceive(Math.min(0.5, b.thinkAcc));
       b.thinkAcc = 0;
       this.decide();
     }
@@ -1252,6 +1269,7 @@ export class Bot extends Combatant {
         case 'investigate': this.investigate(dt); break;
         case 'hold': this.hold(dt); break;
         case 'hill': this.holdHill(dt); break;
+        case 'blind': this.blind(dt); break;
         default: this.travel(dt);
       }
     }
@@ -1370,6 +1388,8 @@ export class Bot extends Combatant {
         d.copy(b.goal);
     }
     const hd = Math.hypot(d.x - this.pos.x, d.z - this.pos.z);
+    // in our hiding place: down low, and keep still
+    if (b.goalKind === 'hide' && hd < 2 && Math.abs(d.y - this.pos.y) < 2) this.ctl.crouch = true;
     if (hd < 0.6 && Math.abs(d.y - this.pos.y) < 2) { this.lookAround(this.yaw, -0.05, dt, true); return; }
     const urgent = b.urgent === 2;
     const r = this.navTo(d, dt, urgent || hd > 25);
@@ -1420,7 +1440,12 @@ export class Bot extends Combatant {
     if (b.destKind === 'storm' && nav.ready && st) {
       const field = nav.flowTo(st.ncx, st.ncz, st.nr);
       f.useFlow(field, p.x, p.z, d.x, nav.groundY(d.x, d.z), d.z, this.time);
-    } else f.goal(d.x, b.destKind === 'storm' ? nav.groundY(d.x, d.z) : d.y, d.z, b.destKind === 'goal' ? 8 : 2.5);
+    } else {
+      // (a goal that moves less than 8 m keeps its route; a hiding place or a place to search is
+      // exact: the next one may be a room away)
+      const slack = b.destKind !== 'goal' ? 2.5 : b.goalKind === 'hide' ? 0.5 : b.goalKind === 'search' ? 2.5 : 8;
+      f.goal(d.x, b.destKind === 'storm' ? nav.groundY(d.x, d.z) : d.y, d.z, slack);
+    }
   }
 
   /**
@@ -2003,6 +2028,12 @@ export class Bot extends Combatant {
     this.lookAround(b.lookYaw, -0.05, dt, false);
   }
 
+  /** Hide & Seek, a seeker in the head start: stand still with our eyes on the ground. */
+  blind(dt) {
+    if (this.inv.sel !== 0) this.select(0);
+    this.turnTo(this.yaw, -1.1, dt, 2);
+  }
+
   /** King of the hill: stand on it, keep moving a little, watch every way in. */
   holdHill(dt) {
     const b = this.brain, h = hillOf(this.game);
@@ -2065,6 +2096,7 @@ export class Bot extends Combatant {
     b.lootRef = null; b.destKind = ''; b.chestI = -1; b.harvest = null; b.goal = null; b.goalT = 0;
     b.breakT = 0; b.stuckN = 0; b.noProg = 0; b.detourT = 0; b.wallReq = false; b.lowPlan = '';
     b.danceT = 0; this.dancing = false; b.hurtT = -99; b.noiseDone = true; b.farTarget = null; b.farHealT = -1;
+    b.hideSpot = null; b.seekSpot = null; b.seekPt = null; b.seekLook = 0;
     b.lastHp = this.hp;
     b.lastPos.copy(this.pos);
     b.skyT = this.time;

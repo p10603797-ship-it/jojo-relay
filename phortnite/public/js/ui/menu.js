@@ -25,7 +25,9 @@ export class Ui {
     });
     $('.es-spec').addEventListener('click', () => {
       this.app.sfx.ui();
-      this.app.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: this.app.game && this.app.game.solo });
+      const g = this.app.game;
+      // (mid best-of-N series PLAY AGAIN would end the series: not offered)
+      this.app.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: !!g && g.solo && !g.inSeries() });
       this.app.resume();
     });
     $('.es-leave').addEventListener('click', () => { this.app.sfx.ui(); this.app.backToLobby(); });

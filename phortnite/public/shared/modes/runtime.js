@@ -349,6 +349,12 @@ export class ModeRuntime {
   /** [[key, n]], best first (ties keep the order they first scored in). */
   scores() { return [...this.scoreMap.entries()].sort((a, b) => b[1] - a[1]); }
 
+  /**
+   * When the room's time limit runs out, on the now() clock (ms; a bus ride comes first), or 0
+   * when there is none. Known once the match has started (the Room sets it after setup).
+   */
+  endTime() { return this.endsAt ? this.endsAt - this.t0 : 0; }
+
   setRole(p, role) {
     p.role = role ?? null;
     // during set-up (before 'start' / a round's start went out) the room sends the roles after

@@ -23,7 +23,6 @@
 // still has its game running) it comes as {t: 'resumed'} instead, so the client's game is not reset.
 import { SKINS, MAP } from '../constants.js';
 import { normalizeRules } from '../modes/rules.js';
-import { findMode, modeRules, modeInfo } from '../modes/index.js';
 import { GAMES } from '../modes/games/index.js';
 
 export const HOLD_MS = 60000;      // a dropped player keeps their spot this long
@@ -137,37 +136,6 @@ export function cleanSettings(s) {
   return out;
 }
 
-/**
- * Mode picks ({t:'mode', id} or {t:'mode', custom, name}) for a Room without the mode engine's own
- * 'mode' handler: init() only installs this when room.baseHandlers.mode does not exist.
- */
-function legacyModeHandler(c, m) {
-  if (c.pid !== this.leader || this.phase !== 'lobby' || !m) return;
-  const games = Object.keys(GAMES);
-  let rules, info, modeId;
-  if (typeof m.id === 'string') {
-    const entry = findMode(m.id);
-    if (!entry) return;
-    rules = modeRules(m.id, { games });
-    info = modeInfo(entry);
-    modeId = entry.id;
-  } else if (m.custom && typeof m.custom === 'object') {
-    rules = normalizeRules(m.custom, { games });
-    info = { name: String(m.name || 'Custom mode').replace(/[\u0000-\u001f<>&"']/g, '').slice(0, 40), emoji: '🛠️', color: '#8a8fa8', desc: 'A custom mode.', tags: ['Custom'] };
-    modeId = 'custom';
-  } else return;
-  const s = this.settings;
-  s.modeId = modeId;
-  s.rules = rules;
-  s.info = info;
-  s.custom = modeId === 'custom';
-  // today's Room still reads these two
-  s.mode = rules.teams === 'humans' ? 'squad' : 'ffa';
-  s.bots = rules.bots;
-  this.rules = rules;
-  this.broadcast({ t: 'settings', settings: s });
-}
-
 export const party = {
   name: 'party',
 
@@ -181,7 +149,6 @@ export const party = {
       lookT: new Map(),    // pid -> time of the last look
       sweepT: 0,
     };
-    if (!room.baseHandlers.mode && !room.pluginHandlers.mode) room.pluginHandlers.mode = legacyModeHandler;
   },
 
   onJoin(room, conn, hello) {
