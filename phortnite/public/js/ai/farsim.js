@@ -9,7 +9,7 @@
 //    storm, siphon and modes see nothing different
 // Waking up snaps the capsule to open ground (never inside a wall or a building).
 import { WEAPONS, HEALS, ANIM, PLAYER, ENV } from '../../shared/constants.js';
-import { passive, buildRule, isHunter, modeKey } from './goals.js';
+import { passive, buildRule, isHunter, modeKey, seekerWaits } from './goals.js';
 import { hasCone } from './buildfight.js';
 
 export const FAR_OUT = 180, FAR_IN = 160;
@@ -290,7 +290,8 @@ function farBox(a) {
 /** Would this far bot take a fight with o at distance d (the brain's decide(), roughly)? */
 function wantsFight(a, o, d, now) {
   const b = a.brain, P = b.persona;
-  if (isHunter(a)) return d < 30; // the infected run them down (their goal is the nearest survivor)
+  // the infected run them down; a Hide & Seek seeker sees nobody through the head start
+  if (isHunter(a)) return d < 30 && !seekerWaits(a);
   if (!a.hasGun()) return false;
   const threat = now - b.hurtT < 4;
   if (b.urgent === 2 && d > 25 && !threat) return false;
