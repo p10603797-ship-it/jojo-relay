@@ -76,6 +76,7 @@ const OUT = opt('out', null);
 const LABEL = opt('label', 'soak');
 const TRACK = !args.includes('--no-track');
 const EVERY = +opt('every', 75);
+const REPORT = opt('report', null); // a saved --out file: print its summary and checks again (no browser)
 const PARTY_CYCLES = +opt('party-cycles', 0); // with --url of a Node server: host / leave a server party this many times
 const PUBLIC = path.resolve(opt('public', path.join(ROOT, 'public'))); // e.g. an older checkout's public/ to compare
 const VERBOSE = !!opt('verbose', false);
@@ -579,196 +580,210 @@ async function pageSetup(opts) {
 // ------------------------------------------------------------------ main
 const t00 = Date.now();
 const log = (...a) => console.log(`+${((Date.now() - t00) / 1000).toFixed(0)}s`, ...a);
-let server = null;
-let base = URL_ARG;
-if (!base) {
-  server = await startServer();
-  base = `http://127.0.0.1:${server.address().port}/`;
-}
-const { chromium } = await loadPlaywright();
-// Full Chromium in the new headless mode: the old headless shell (Playwright's default) lets the
-// renderer and browser processes balloon by GBs within seconds once the GPU process falls behind
-// (SwiftShader shader compiles), with the game's own frame loop too; that is not the game's memory.
-const LAUNCH_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
-  '--enable-precise-memory-info', '--autoplay-policy=no-user-gesture-required'];
-const CHANNEL = opt('channel', 'chromium');
-let browser;
-try {
-  browser = await chromium.launch({ channel: CHANNEL === 'shell' ? undefined : CHANNEL, args: LAUNCH_ARGS });
-} catch (e) {
-  console.log(`no ${CHANNEL} browser (${e.message.split('\n')[0]}); using the headless shell: renderer numbers are not reliable`);
-  browser = await chromium.launch({ args: LAUNCH_ARGS });
-}
-const result = {
-  label: LABEL, when: new Date().toISOString(), quality: QUALITY, size: `${VW}x${VH}`, matches: MATCHES, bots: BOTS,
-  matchSecs: MATCH_SECS, renderEvery: RENDER_EVERY, mode: MODE, touch: TOUCH, rejoin: REJOIN, checkpoints: [], errors: [],
-};
+let result = null;
 const save = () => { if (OUT) fs.writeFileSync(OUT, JSON.stringify(result, null, 1)); };
-try {
-  const ctx = await browser.newContext({ viewport: { width: VW, height: VH }, hasTouch: TOUCH });
-  await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
-  await ctx.addInitScript((s) => {
-    try { localStorage.setItem('phortnite.settings', JSON.stringify(s)); } catch (e) { /* ignore */ }
-  }, { name: 'Soak', skin: 1, quality: QUALITY, forceTouch: TOUCH, shake: false, music: 0.5 });
-  await ctx.addInitScript(instrument, TRACK);
-  const page = await ctx.newPage();
-  page.on('pageerror', (e) => { result.errors.push(e.message); log('PAGEERROR', e.message); });
-  page.on('console', (m) => {
-    if (m.type() !== 'error') return;
-    const t = m.text();
-    if (/favicon|fonts\.g|net::ERR|Failed to load resource/.test(t)) return;
-    result.errors.push(`console.error: ${t.slice(0, 300)}`);
-    log('CONSOLE.ERROR', t.slice(0, 300));
-  });
-  page.on('crash', () => { result.errors.push('renderer crashed'); log('RENDERER CRASHED'); });
-  const cdp = await ctx.newCDPSession(page);
-  await page.goto(base);
-  await page.waitForFunction(() => { const a = window.__phortnite; return a && a.game && a.game.me && a.stageOn; }, null, { timeout: 300000 });
-  // the texture arrays fill in the background: wait for them, so boot work is not counted as growth
-  await page.waitForFunction(() => {
-    const L = window.__phortnite.T && window.__phortnite.T.layers;
-    return !L || (L.surfaces.complete && L.looks.complete && !L.busy);
-  }, null, { timeout: 300000, polling: 500 });
-  // a key press unlocks the game's audio (it waits for the first tap / key, like iPad Safari)
-  await page.keyboard.down('ShiftLeft');
-  await page.keyboard.up('ShiftLeft');
-  log('booted', await page.evaluate(() => { const s = window.__phortnite.sfx; return s.ctx ? `audio ${s.ctx.state}` : 'no audio'; }));
-  await page.evaluate(pageSetup, {});
-  // SwiftShader draws on the CPU: a lower drawing-buffer resolution (the CSS layout, the HUD and
-  // the textures stay the same) keeps it from falling minutes behind
-  await page.evaluate((r) => { const app = window.__phortnite; app.resScale = r; app.applyPixelRatio(); }, RES);
 
-  const run = async (secs) => {
-    // long runs in slices, so the page never blocks an evaluate for minutes
-    for (let left = secs; left > 0; left -= SLICE) {
-      const w0 = Date.now();
-      await page.evaluate(([s, e, r]) => window.__soak.run(s, e, r), [Math.min(SLICE, left), RENDER_EVERY, RAF]);
-      if (VERBOSE) {
-        const st = await page.evaluate(() => ({ t: window.__soak.simSecs().toFixed(0), ph: window.__phortnite.game.phase, err: window.__soak.hookErr }));
-        log(`  sim ${st.t}s ${st.ph} (${((Date.now() - w0) / 1000).toFixed(1)} s wall)`, JSON.stringify(procMem()), st.err || '');
-      }
-    }
+/** The soak itself: fills result.checkpoints (and result.errors). */
+async function soak() {
+  let server = null;
+  let base = URL_ARG;
+  if (!base) {
+    server = await startServer();
+    base = `http://127.0.0.1:${server.address().port}/`;
+  }
+  const { chromium } = await loadPlaywright();
+  // Full Chromium in the new headless mode: the old headless shell (Playwright's default) lets the
+  // renderer and browser processes balloon by GBs within seconds once the GPU process falls behind
+  // (SwiftShader shader compiles), with the game's own frame loop too; that is not the game's memory.
+  const LAUNCH_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
+    '--enable-precise-memory-info', '--autoplay-policy=no-user-gesture-required'];
+  const CHANNEL = opt('channel', 'chromium');
+  let browser;
+  try {
+    browser = await chromium.launch({ channel: CHANNEL === 'shell' ? undefined : CHANNEL, args: LAUNCH_ARGS });
+  } catch (e) {
+    console.log(`no ${CHANNEL} browser (${e.message.split('\n')[0]}); using the headless shell: renderer numbers are not reliable`);
+    browser = await chromium.launch({ args: LAUNCH_ARGS });
+  }
+  result = {
+    label: LABEL, when: new Date().toISOString(), quality: QUALITY, size: `${VW}x${VH}`, matches: MATCHES, bots: BOTS,
+    matchSecs: MATCH_SECS, renderEvery: RENDER_EVERY, mode: MODE, touch: TOUCH, rejoin: REJOIN, checkpoints: [], errors: [],
   };
-  const checkpoint = async (name) => {
-    await cdp.send('HeapProfiler.collectGarbage');
-    await cdp.send('HeapProfiler.collectGarbage');
-    const p = await page.evaluate(() => window.__probe());
-    const h = await cdp.send('Runtime.getHeapUsage');
-    let dc = null;
-    try { dc = await cdp.send('Memory.getDOMCounters'); } catch (e) { /* older Chromium */ }
-    const row = {
-      name, ...procMem(),
-      heapMB: +(h.usedSize / 1e6).toFixed(1), extMB: h.backingStorageSize !== undefined ? +(h.backingStorageSize / 1e6).toFixed(1) : undefined,
-      listeners: dc ? dc.jsEventListeners : undefined, ...p,
-    };
-    result.checkpoints.push(row);
-    log(`${name.padEnd(18)} rend ${row.rendererMB}/${row.rendererPrivMB} gpu ${row.gpuMB} heap ${row.heapMB} ext ${row.extMB} wasm ${row.wasmMB}`
-      + ` | geo ${row.geo} tex ${row.tex} progs ${row.progs} glBuf ${row.glBuffers}/${row.glBufMB}MB glTex ${row.glTextures}/${row.glTexMB}MB`
-      + ` | col ${row.colliders} bod ${row.bodies} | 3js g${row.three ? row.three.live.geometry : '-'} t${row.three ? row.three.live.texture : '-'}`
-      + ` m${row.three ? row.three.live.material : '-'} o${row.three ? row.three.live.object3d : '-'} orphG ${row.three ? row.three.orphanGeo : '-'}`
-      + ` | canvas ${row.canvas.withCtx}/${row.canvas.MB}MB audio ${row.audio.liveNodes} dom ${row.domNodes} lis ${row.listeners}`
-      + ` | ${row.phase}${row.game ? ` alive ${row.game.alive}` : ''}`);
-    save();
-    return row;
-  };
-
-  await run(5);
-  await checkpoint('lobby-boot');
-  for (let mi = 1; mi <= MATCHES; mi++) {
-    // the lobby: mode and bots, then PLAY
-    await page.evaluate(([mode, bots]) => {
-      const g = window.__phortnite.game;
-      if (mode) g.send({ t: 'mode', id: mode });
-      g.send({ t: 'tweak', bots });
-    }, [MODE, BOTS]);
-    await run(1);
-    await page.evaluate(() => {
-      const app = window.__phortnite, g = app.game;
-      g.send({ t: 'start' });
-      // the player: an invulnerable observer that drops at once and visits the fights
-      const room = g.net.room, me = g.myId;
-      if (room && !room.__soakGod) {
-        room.__soakGod = true;
-        const ad = room.applyDamage.bind(room);
-        room.applyDamage = (p, ...a) => (p && p.id === me ? undefined : ad(p, ...a));
-      }
-      let lastHop = 0;
-      window.__soak.hook = () => {
-        const gg = app.game;
-        if (!gg || !gg.me) return;
-        if (app.stageOn && gg.phase !== 'lobby') app.showStage(false);
-        if (gg.me.inBus && gg.phase === 'bus' && window.__soak.simSecs() > 0) gg.dropFromBus(gg.me);
-        const t = window.__soak.simSecs();
-        if (gg.phase === 'match' && gg.me.alive && !gg.me.inBus && t - lastHop > 20) {
-          lastHop = t;
-          const bots = gg.actors().filter((a) => a !== gg.me && a.alive && !a.inBus && a.pos);
-          if (bots.length) {
-            const b = bots[Math.floor(Math.random() * bots.length)];
-            gg.me.mover.teleport(b.pos.x + 6, b.pos.y + 3, b.pos.z + 6);
-            gg.me.mover.mode = 'air';
-          }
-        }
-      };
+  try {
+    const ctx = await browser.newContext({ viewport: { width: VW, height: VH }, hasTouch: TOUCH });
+    await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
+    await ctx.addInitScript((s) => {
+      try { localStorage.setItem('phortnite.settings', JSON.stringify(s)); } catch (e) { /* ignore */ }
+    }, { name: 'Soak', skin: 1, quality: QUALITY, forceTouch: TOUCH, shake: false, music: 0.5 });
+    await ctx.addInitScript(instrument, TRACK);
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => { result.errors.push(e.message); log('PAGEERROR', e.message); });
+    page.on('console', (m) => {
+      if (m.type() !== 'error') return;
+      const t = m.text();
+      if (/favicon|fonts\.g|net::ERR|Failed to load resource/.test(t)) return;
+      result.errors.push(`console.error: ${t.slice(0, 300)}`);
+      log('CONSOLE.ERROR', t.slice(0, 300));
     });
-    const t0 = await page.evaluate(() => window.__soak.simSecs());
-    let next = EVERY, ended = false;
-    for (let el = 0; el < MATCH_SECS;) {
-      const chunk = Math.min(30, MATCH_SECS - el);
-      await run(chunk);
-      el += chunk;
-      const ph = await page.evaluate(() => window.__phortnite.game.phase);
-      if (ph === 'lobby' || ph === 'ended') { ended = true; break; }
-      if (el >= next) { await checkpoint(`m${mi}-${el}s`); next += EVERY; }
-    }
-    const simIn = (await page.evaluate(() => window.__soak.simSecs())) - t0;
-    await checkpoint(`m${mi}-end`);
-    // BACK TO LOBBY (solo: ends the match), or wait for the room to send everyone back
-    await page.evaluate((e) => {
-      const app = window.__phortnite;
-      window.__soak.hook = null;
-      if (!e) app.backToLobby();
-    }, ended);
-    for (let i = 0; i < 20; i++) {
+    page.on('crash', () => { result.errors.push('renderer crashed'); log('RENDERER CRASHED'); });
+    const cdp = await ctx.newCDPSession(page);
+    await page.goto(base);
+    await page.waitForFunction(() => { const a = window.__phortnite; return a && a.game && a.game.me && a.stageOn; }, null, { timeout: 300000 });
+    // the texture arrays fill in the background: wait for them, so boot work is not counted as growth
+    await page.waitForFunction(() => {
+      const L = window.__phortnite.T && window.__phortnite.T.layers;
+      return !L || (L.surfaces.complete && L.looks.complete && !L.busy);
+    }, null, { timeout: 300000, polling: 500 });
+    // a key press unlocks the game's audio (it waits for the first tap / key, like iPad Safari)
+    await page.keyboard.down('ShiftLeft');
+    await page.keyboard.up('ShiftLeft');
+    log('booted', await page.evaluate(() => { const s = window.__phortnite.sfx; return s.ctx ? `audio ${s.ctx.state}` : 'no audio'; }));
+    await page.evaluate(pageSetup, {});
+    // SwiftShader draws on the CPU: a lower drawing-buffer resolution (the CSS layout, the HUD and
+    // the textures stay the same) keeps it from falling minutes behind
+    await page.evaluate((r) => { const app = window.__phortnite; app.resScale = r; app.applyPixelRatio(); }, RES);
+
+    const run = async (secs) => {
+      // long runs in slices, so the page never blocks an evaluate for minutes
+      for (let left = secs; left > 0; left -= SLICE) {
+        const w0 = Date.now();
+        await page.evaluate(([s, e, r]) => window.__soak.run(s, e, r), [Math.min(SLICE, left), RENDER_EVERY, RAF]);
+        if (VERBOSE) {
+          const st = await page.evaluate(() => ({ t: window.__soak.simSecs().toFixed(0), ph: window.__phortnite.game.phase, err: window.__soak.hookErr }));
+          log(`  sim ${st.t}s ${st.ph} (${((Date.now() - w0) / 1000).toFixed(1)} s wall)`, JSON.stringify(procMem()), st.err || '');
+        }
+      }
+    };
+    const checkpoint = async (name) => {
+      await cdp.send('HeapProfiler.collectGarbage');
+      await cdp.send('HeapProfiler.collectGarbage');
+      const p = await page.evaluate(() => window.__probe());
+      const h = await cdp.send('Runtime.getHeapUsage');
+      let dc = null;
+      try { dc = await cdp.send('Memory.getDOMCounters'); } catch (e) { /* older Chromium */ }
+      const row = {
+        name, ...procMem(),
+        heapMB: +(h.usedSize / 1e6).toFixed(1), extMB: h.backingStorageSize !== undefined ? +(h.backingStorageSize / 1e6).toFixed(1) : undefined,
+        listeners: dc ? dc.jsEventListeners : undefined, ...p,
+      };
+      result.checkpoints.push(row);
+      log(`${name.padEnd(18)} rend ${row.rendererMB}/${row.rendererPrivMB} gpu ${row.gpuMB} heap ${row.heapMB} ext ${row.extMB} wasm ${row.wasmMB}`
+        + ` | geo ${row.geo} tex ${row.tex} progs ${row.progs} glBuf ${row.glBuffers}/${row.glBufMB}MB glTex ${row.glTextures}/${row.glTexMB}MB`
+        + ` | col ${row.colliders} bod ${row.bodies} | 3js g${row.three ? row.three.live.geometry : '-'} t${row.three ? row.three.live.texture : '-'}`
+        + ` m${row.three ? row.three.live.material : '-'} o${row.three ? row.three.live.object3d : '-'} orphG ${row.three ? row.three.orphanGeo : '-'}`
+        + ` | canvas ${row.canvas.withCtx}/${row.canvas.MB}MB audio ${row.audio.liveNodes} dom ${row.domNodes} lis ${row.listeners}`
+        + ` | ${row.phase}${row.game ? ` alive ${row.game.alive}` : ''}`);
+      save();
+      return row;
+    };
+
+    await run(5);
+    await checkpoint('lobby-boot');
+    for (let mi = 1; mi <= MATCHES; mi++) {
+      // the lobby: mode and bots, then PLAY
+      await page.evaluate(([mode, bots]) => {
+        const g = window.__phortnite.game;
+        if (mode) g.send({ t: 'mode', id: mode });
+        g.send({ t: 'tweak', bots });
+      }, [MODE, BOTS]);
       await run(1);
-      if (await page.evaluate(() => window.__phortnite.game.phase === 'lobby')) break;
-    }
-    await page.evaluate(() => { const app = window.__phortnite; if (!app.stageOn) app.showStage(true); });
-    await run(LOBBY_SECS);
-    log(`match ${mi}: ${simIn.toFixed(0)} s of game time${ended ? ' (ended by itself)' : ''}`);
-    await checkpoint(`m${mi}-lobby`);
-    if (WARMUP_SECS > 0) {
-      await page.evaluate(() => window.__phortnite.warmUp(true));
-      await run(WARMUP_SECS);
-      await page.evaluate(() => window.__phortnite.warmUp(false));
-      await run(3);
-    }
-    if (REJOIN) {
-      // a new party connection (leave / rejoin, a lost party, INVITE): the old Game is disposed
-      await page.evaluate(() => window.__phortnite.soloParty());
+      await page.evaluate(() => {
+        const app = window.__phortnite, g = app.game;
+        g.send({ t: 'start' });
+        // the player: an invulnerable observer that drops at once and visits the fights
+        const room = g.net.room, me = g.myId;
+        if (room && !room.__soakGod) {
+          room.__soakGod = true;
+          const ad = room.applyDamage.bind(room);
+          room.applyDamage = (p, ...a) => (p && p.id === me ? undefined : ad(p, ...a));
+        }
+        let lastHop = 0;
+        window.__soak.hook = () => {
+          const gg = app.game;
+          if (!gg || !gg.me) return;
+          if (app.stageOn && gg.phase !== 'lobby') app.showStage(false);
+          if (gg.me.inBus && gg.phase === 'bus' && window.__soak.simSecs() > 0) gg.dropFromBus(gg.me);
+          const t = window.__soak.simSecs();
+          if (gg.phase === 'match' && gg.me.alive && !gg.me.inBus && t - lastHop > 20) {
+            lastHop = t;
+            const bots = gg.actors().filter((a) => a !== gg.me && a.alive && !a.inBus && a.pos);
+            if (bots.length) {
+              const b = bots[Math.floor(Math.random() * bots.length)];
+              gg.me.mover.teleport(b.pos.x + 6, b.pos.y + 3, b.pos.z + 6);
+              gg.me.mover.mode = 'air';
+            }
+          }
+        };
+      });
+      const t0 = await page.evaluate(() => window.__soak.simSecs());
+      let next = EVERY, ended = false;
+      for (let el = 0; el < MATCH_SECS;) {
+        const chunk = Math.min(30, MATCH_SECS - el);
+        await run(chunk);
+        el += chunk;
+        const ph = await page.evaluate(() => window.__phortnite.game.phase);
+        if (ph === 'lobby' || ph === 'ended') { ended = true; break; }
+        if (el >= next) { await checkpoint(`m${mi}-${el}s`); next += EVERY; }
+      }
+      const simIn = (await page.evaluate(() => window.__soak.simSecs())) - t0;
+      await checkpoint(`m${mi}-end`);
+      // BACK TO LOBBY (solo: ends the match), or wait for the room to send everyone back
+      await page.evaluate((e) => {
+        const app = window.__phortnite;
+        window.__soak.hook = null;
+        if (!e) app.backToLobby();
+      }, ended);
+      for (let i = 0; i < 20; i++) {
+        await run(1);
+        if (await page.evaluate(() => window.__phortnite.game.phase === 'lobby')) break;
+      }
+      await page.evaluate(() => { const app = window.__phortnite; if (!app.stageOn) app.showStage(true); });
       await run(LOBBY_SECS);
-      await checkpoint(`m${mi}-rejoin`);
+      log(`match ${mi}: ${simIn.toFixed(0)} s of game time${ended ? ' (ended by itself)' : ''}`);
+      await checkpoint(`m${mi}-lobby`);
+      if (WARMUP_SECS > 0) {
+        await page.evaluate(() => window.__phortnite.warmUp(true));
+        await run(WARMUP_SECS);
+        await page.evaluate(() => window.__phortnite.warmUp(false));
+        await run(3);
+      }
+      if (REJOIN) {
+        // a new party connection (leave / rejoin, a lost party, INVITE): the old Game is disposed
+        await page.evaluate(() => window.__phortnite.soloParty());
+        await run(LOBBY_SECS);
+        await checkpoint(`m${mi}-rejoin`);
+      }
     }
-  }
-  if (PARTY_CYCLES > 0) {
-    const server = await page.evaluate(() => !!document.documentElement.dataset.server);
-    if (!server) log('--party-cycles needs --url of a Node server (npm start): skipped');
-    for (let i = 1; server && i <= PARTY_CYCLES; i++) {
-      // INVITE opens a server party (a new WebSocket and Game), LEAVE PARTY goes back to a party of one
-      const code = await page.evaluate(async () => { const app = window.__phortnite; await app.invite.host(); return app.game.code; });
-      await run(5);
-      await page.evaluate(() => { const app = window.__phortnite; app.ui.closeModal && app.ui.closeModal(); app.leaveParty(); });
-      await run(5);
-      // (toasts and their listeners go after a few seconds of real time)
-      if (i === 1 || i === PARTY_CYCLES) { await page.waitForTimeout(7000); await checkpoint(`party-${i}`); }
-      else log(`party ${i}: ${code}`);
+    if (PARTY_CYCLES > 0) {
+      const server = await page.evaluate(() => !!document.documentElement.dataset.server);
+      if (!server) log('--party-cycles needs --url of a Node server (npm start): skipped');
+      for (let i = 1; server && i <= PARTY_CYCLES; i++) {
+        // INVITE opens a server party (a new WebSocket and Game), LEAVE PARTY goes back to a party of one
+        const code = await page.evaluate(async () => { const app = window.__phortnite; await app.invite.host(); return app.game.code; });
+        await run(5);
+        await page.evaluate(() => { const app = window.__phortnite; app.ui.closeModal && app.ui.closeModal(); app.leaveParty(); });
+        await run(5);
+        // (toasts and their listeners go after a few seconds of real time)
+        if (i === 1 || i === PARTY_CYCLES) { await page.waitForTimeout(7000); await checkpoint(`party-${i}`); }
+        else log(`party ${i}: ${code}`);
+      }
     }
+  } catch (e) {
+    result.errors.push(`soak: ${e.message}`);
+    log('FAILED', e.stack || e.message);
+  } finally {
+    await browser.close();
+    if (server) server.close();
   }
-} catch (e) {
-  result.errors.push(`soak: ${e.message}`);
-  log('FAILED', e.stack || e.message);
-} finally {
-  await browser.close();
-  if (server) server.close();
+}
+
+if (REPORT) {
+  // only the summary and checks, again, from a saved run
+  result = JSON.parse(fs.readFileSync(REPORT, 'utf8'));
+  delete result.summary;
+  delete result.checks;
+} else {
+  await soak();
 }
 
 // ------------------------------------------------------------------ summary
@@ -802,19 +817,35 @@ if (a && b && a !== b) {
   for (const [k, [x, y, z]] of Object.entries(d)) log(`  ${k.padEnd(18)} ${String(x).padStart(8)} -> ${String(y).padStart(8)}  (${z >= 0 ? '+' : ''}${z})`);
   for (const [k, v] of Object.entries(kinds)) if (v.length) log(`  ${k} changed: ${v.join(' | ')}`);
 }
-// Flat within these tolerances from the first lobby after a full cycle to the last one: first-use
-// caches (a skin's LOD meshes, a loot model, Rapier's high-water mark) may still fill in a little.
+// Flat within these tolerances from the first lobby after a full cycle to the last one. First-use
+// caches still fill in a little: a skin's three LOD meshes and its glider are kept for the next
+// character in that skin (up to 8 x 4 geometries, counted as orphans while nobody wears the skin),
+// a loot model, Rapier's high-water mark.
 const TOLERANCE = {
   rendererMB: 30, gpuMB: 40, heapMB: 8, wasmMB: 6, glBufMB: 4, glTexMB: 1, progs: 2,
-  'three.geometry': 30, 'three.material': 8, 'three.texture': 3, 'three.orphanGeo': 8,
+  'three.geometry': 30, 'three.material': 8, 'three.texture': 3, 'three.orphanGeo': 12,
   'canvas.withCtx': 1, domNodes: 20, listeners: 5, 'audio.liveNodes': 40,
 };
+// ... and over the last cycle alone, where the caches are (nearly) full: a leak of one object per
+// match or per Game shows here
+const LAST_TOLERANCE = { rendererMB: 10, glBufMB: 2, geo: 8, progs: 1, 'three.geometry': 6, 'three.material': 3, 'three.orphanGeo': 4 };
 const checks = [];
 if (result.summary) {
   for (const [k, lim] of Object.entries(TOLERANCE)) {
     const row = result.summary.delta[k];
     if (!row || row[2] === null || row[2] === undefined) continue;
     checks.push({ what: k, delta: row[2], limit: lim, ok: row[2] <= lim });
+  }
+}
+const rejoins = C.filter((c) => /-rejoin$/.test(c.name));
+if (rejoins.length >= 3) {
+  const x = rejoins[rejoins.length - 2], y = rejoins[rejoins.length - 1];
+  const val = (c, k) => (k.startsWith('three.') ? (c.three ? (k === 'three.orphanGeo' ? c.three.orphanGeo : c.three.live[k.slice(6)]) : undefined) : c[k]);
+  for (const [k, lim] of Object.entries(LAST_TOLERANCE)) {
+    const a1 = val(x, k), b1 = val(y, k);
+    if (typeof a1 !== 'number' || typeof b1 !== 'number') continue;
+    const dd = +(b1 - a1).toFixed(1);
+    checks.push({ what: `last cycle ${k} (${x.name} -> ${y.name})`, delta: dd, limit: lim, ok: dd <= lim });
   }
 }
 const p1 = C.find((c) => c.name === 'party-1'), pN = [...C].reverse().find((c) => /^party-/.test(c.name));
