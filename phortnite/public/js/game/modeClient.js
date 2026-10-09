@@ -403,7 +403,7 @@ export class ModeClient {
       this.koth = null;
       return;
     }
-    if (!this.koth) this.koth = { rings: [{ x: 0, z: 0, r: 9, c: '#fff' }], pins: [{ x: 0, z: 0, c: '#fff', label: 'HILL' }] };
+    if (!this.koth) this.koth = { rings: [{ x: 0, z: 0, r: 9, c: '#fff' }], pins: [{ x: 0, z: 0, c: '#fff', label: '👑 HILL', big: true }] };
     const ring = this.koth.rings[0], pin = this.koth.pins[0];
     ring.x = pin.x = h.x;
     ring.z = pin.z = h.z;

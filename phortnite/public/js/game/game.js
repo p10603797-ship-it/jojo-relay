@@ -565,6 +565,7 @@ export class Game {
   on_lobby(m) {
     this.phase = 'lobby';
     this.watchers.clear();
+    this.kills = 0; // (the HUD's kill count is the match's)
     this.leader = m.leader;
     this.settingsState = m.settings;
     this.rules = rulesFromSettings(m.settings);

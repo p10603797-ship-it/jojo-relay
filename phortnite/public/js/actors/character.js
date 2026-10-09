@@ -150,8 +150,16 @@ function nameTag(text, color = '#ffffff') {
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, transparent: true }));
   sp.scale.set(1.6, 0.3, 1);
   sp.position.y = 2.2;
+  // a tag is world-sized: right next to the camera (a teammate beside you) it would cover a third
+  // of the screen, so it fades out closer than ~5 m and is gone under 2.5 m
+  sp.onBeforeRender = (r, sc, cam) => {
+    sp.getWorldPosition(_tagP);
+    const d = cam.position.distanceTo(_tagP);
+    sp.material.opacity = d >= 5 ? 1 : d <= 2.5 ? 0 : (d - 2.5) / 2.5;
+  };
   return sp;
 }
+const _tagP = new THREE.Vector3();
 
 // ------------------------------------------------------------------ weapon holds
 const GUN_SCALE = 1.3, ITEM_SCALE = 1.15;

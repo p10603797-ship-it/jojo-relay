@@ -519,6 +519,9 @@ class App {
       if (!g || g.phase !== 'lobby' || !g.me) return;
       this.warming = true;
       if (!g.me.alive) g.spawnWarmup();
+      // no banners, notices or kill counts from the last match on the warm-up island
+      if (this.hud.reset) this.hud.reset();
+      g.kills = 0;
       this.showStage(false);
       this.lobby.toast('Warm-up! Unlimited ammo and materials. Tap <b>↩ LOBBY</b> to go back.', { ms: 4000 });
     } else {
@@ -542,7 +545,7 @@ class App {
     if (!g || !inMatch(g)) return;
     this.showStage(false);
     if (!g.me || !g.me.alive) {
-      this.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: g.solo });
+      this.hud.elim({ spectating: true, sub: 'Spectating — NEXT PLAYER (or fire / click) to switch', leave: true, again: g.solo });
     }
   }
 

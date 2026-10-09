@@ -110,6 +110,11 @@ export class LobbyUi {
     }
     this.toasts = $('#toasts');
     this.status = $('#netstatus');
+    // portrait: the EMOTE / WARM UP row sits above the mode card + PLAY, whatever their height
+    const br = $('.lb-br', this.root);
+    if (br && typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => this.root.style.setProperty('--brh', `${Math.ceil(br.offsetHeight)}px`)).observe(br);
+    }
     this.bind();
   }
 
@@ -208,6 +213,7 @@ export class LobbyUi {
     this.set('mode', `${mv.emoji}|${mv.name}|${mv.tags.join('·')}|${mv.color}`, () => {
       this.el.memoji.textContent = mv.emoji;
       this.el.mname.textContent = mv.name;
+      this.el.mname.classList.toggle('long', mv.name.length > 14);
       this.el.mtags.innerHTML = mv.tags.map((t) => `<span>${esc(t)}</span>`).join('');
       this.el.mode.style.setProperty('--mc', mv.color);
     });

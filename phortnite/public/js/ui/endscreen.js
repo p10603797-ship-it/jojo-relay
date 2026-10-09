@@ -2,7 +2,7 @@
 // rounds of a best-of-N series the round card (who took the round, the series score, the next
 // round's countdown). Hud.elim(opts) forwards here; the party bridge adds who got you (enrich) right
 // after. The buttons are wired up in js/ui/menu.js: PLAY AGAIN (.es-again, solo), SPECTATE
-// (.es-spec), BACK TO LOBBY (.es-leave).
+// (.es-spec), BACK TO LOBBY (.es-leave), NEXT PLAYER (.es-nextp, while spectating).
 import { SKINS, WEAPONS } from '../../shared/constants.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -24,6 +24,7 @@ export class EndScreen {
         <div class="es-btns">
           <button class="btn es-leave yellow">BACK TO LOBBY</button>
           <button class="btn es-spec">SPECTATE</button>
+          <button class="btn es-nextp blue">NEXT PLAYER ▶</button>
           <button class="btn es-again blue">PLAY AGAIN</button>
         </div>
       </div>`;
@@ -66,6 +67,8 @@ export class EndScreen {
     if (rows) ser.innerHTML = seriesHtml(rows, opts.best);
     $('.es-again', E).style.display = opts.again ? '' : 'none';
     $('.es-spec', E).style.display = opts.spectate ? '' : 'none';
+    // spectating: switch who you watch (on an iPad the fire button is hidden while you're out)
+    $('.es-nextp', E).style.display = opts.spectating ? '' : 'none';
     $('.es-leave', E).style.display = opts.leave ? '' : 'none';
     const k = $('.es-killer', E), t = $('.es-tiles', E);
     const d = opts.death || null;

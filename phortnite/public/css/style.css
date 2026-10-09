@@ -115,10 +115,13 @@ button { font-family: inherit; }
 /* ------------------------------------------------------------------ modal */
 #modal { position: fixed; inset: 0; z-index: 60; background: rgba(5, 3, 20, 0.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
 .modal-card {
-  position: relative; width: min(720px, 100%); max-height: calc(100% - 20px); overflow: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y;
+  /* the body scrolls, the card (and its ✕) stays put */
+  position: relative; width: min(720px, 100%); max-height: calc(100% - 20px); display: flex; flex-direction: column; overflow: hidden;
   background: linear-gradient(180deg, #2a2070, #160f44); border-radius: 12px; padding: 26px 26px 22px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
+.modal-body { min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; padding-right: 4px; }
+.modal-x { z-index: 2; }
 .modal-x { position: absolute; top: 10px; right: 10px; width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 20px; cursor: pointer; }
 .modal-body h2 { font-family: var(--font-title); font-weight: normal; font-size: 32px; margin: 0 0 14px; letter-spacing: 1px; }
 .modal-body h3 { font-family: var(--font-title); font-weight: normal; font-size: 20px; margin: 18px 0 8px; color: var(--yellow); letter-spacing: 1px; }
@@ -128,8 +131,9 @@ button { font-family: inherit; }
 .modal-body td:first-child { width: 42%; opacity: 0.8; }
 .modal-body kbd { background: #fff; color: #222; border-radius: 4px; padding: 1px 6px; font-family: var(--font-hud); font-size: 13px; box-shadow: 0 2px 0 #999; }
 .setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.08); font-family: system-ui, -apple-system, sans-serif; }
-.setting input[type=range] { width: 50%; accent-color: var(--yellow); height: 28px; }
-.setting input[type=checkbox] { width: 26px; height: 26px; accent-color: var(--yellow); }
+.setting { min-height: 56px; }
+.setting input[type=range] { width: 50%; accent-color: var(--yellow); height: 44px; }
+.setting input[type=checkbox] { width: 40px; height: 40px; flex: none; accent-color: var(--yellow); }
 .setting select { font-size: 16px; }
 .mp-list { list-style: none; padding: 0; margin: 10px 0; display: flex; flex-direction: column; gap: 8px; }
 .mp-list li { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 8px; background: rgba(255, 255, 255, 0.07); }
@@ -357,7 +361,9 @@ body.ctx-editing #progress { top: calc(50% + 145px); }
 #fullmap canvas { width: min(92vh, 92vw); height: min(92vh, 92vw); max-width: 900px; max-height: 900px; border-radius: 8px; border: 3px solid #fff; }
 .fm-close { font-size: 13px; opacity: 0.7; }
 
-#rotate { display: none; position: fixed; inset: 0; z-index: 100; background: #1a0f3d; align-items: center; justify-content: center; font-family: var(--font-title); font-size: 30px; text-align: center; padding: 30px; }
+#rotate { display: none; position: fixed; inset: 0; z-index: 100; background: #1a0f3d; align-items: center; justify-content: center; flex-direction: column; gap: 28px; font-family: var(--font-title); font-size: 30px; text-align: center; padding: 30px; }
+/* a way back to the lobby (which works in portrait) without turning the iPad */
+#rotate .rot-lobby { min-height: 56px; padding: 0 28px; font-size: 22px; }
 @media (orientation: portrait) and (max-width: 1100px) { body.touch.ingame #rotate { display: flex; } }
 
 /* ------------------------------------------------------------------ touch controls (Touch HUD 2.0) */
@@ -464,6 +470,9 @@ body.touch.ingame.ctx-bus .tb-jump .ico, body.touch.ingame.inbus .tb-jump .ico {
 body.touch.ingame.ctx-bus .tb-jump .jl, body.touch.ingame.inbus .tb-jump .jl { display: block; font-family: var(--font-title); font-size: 22px; letter-spacing: 1px; text-shadow: none; }
 body.touch.ingame.ctx-sky .tbtn { display: none; }
 body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
+/* out of the match (spectating): your own empty hotbar, ammo line and 0/0 bars are clutter, and
+   the ammo line ran into the spectate card */
+body.ingame.dead #hotbar, body.ingame.dead #ammo, body.ingame.dead #bars { display: none; }
 
 /* small iPads in landscape (1024 x 768, 1133 x 744) and big phones */
 @media (max-height: 780px) {

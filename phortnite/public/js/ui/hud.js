@@ -137,6 +137,11 @@ export class Hud {
     this.el.shBreak = mk('div', 'shieldbreak', '', SHIELD_SVG, this.root);
     this.el.elimBanner = mk('div', 'elimbanner', '', '<div class="eb-streak"></div><div class="eb-main"><span class="eb-x">✖</span> ELIMINATED <b></b></div><div class="eb-count"></div>', this.root);
     this.el.editChips = mk('div', 'editchips', '', '', this.root);
+    // one-shot banners end their animation and lose .show: otherwise, when #hud shows again (after
+    // an end card or the lobby stage) the browser restarts the animation and old banners replay
+    for (const e of [this.el.big, this.el.elimBanner, this.el.shBreak, this.el.hit, this.el.sipHp, this.el.sipSh]) {
+      if (e) e.addEventListener('animationend', (ev) => { if (ev.target === e) e.classList.remove('show'); });
+    }
   }
 
   /** Elimination siphon: a short "+N" beside each bar that grew (green health, blue shield). */
@@ -162,7 +167,8 @@ export class Hud {
   inventory(p) {
     const inv = p.inv;
     for (const m of MAT_KEYS) {
-      this.set(`mat${m}`, p.infinite ? '∞' : inv.mats[m], (v) => { this.el.mats[m].lastChild.textContent = v; });
+      // (the warm-up's infinite flag, or a mode with infinite building: Playground, Infinite Build)
+      this.set(`mat${m}`, p.infinite || p.infMats ? '∞' : inv.mats[m], (v) => { this.el.mats[m].lastChild.textContent = v; });
       this.set(`matsel${m}`, p.buildMode && p.buildMat === m, (v) => this.el.mats[m].classList.toggle('sel', v));
     }
     for (let i = 0; i < 6; i++) {
