@@ -9,11 +9,13 @@
 import { SKINS } from '../../shared/constants.js';
 import { MODES, findMode, modeInfo } from '../../shared/modes/index.js';
 import { rulesFromSettings } from '../../shared/modes/rules.js';
+import { twoTeamFor, botCountFor } from '../../shared/modes/runtime.js';
 import { openDiscover } from './discover.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+const MAX_TOTAL = 32; // players in a match, bots included (shared/room.js)
 export const TEAM_COLORS = ['#3ea4ff', '#ff4d4d', '#5ad13a', '#ffd23f', '#bd52ff', '#ff8a00', '#2fe0c8', '#ff6fb1'];
 const TEAM_TAG = { 1: 'Solo', 2: 'Duos', 3: 'Trios', 4: 'Squads', two: '2 Teams', humans: 'Friends vs Bots' };
 const CAT_NAMES = { br: 'Battle Royale', team: 'Team Up', party: 'Party Games', mutators: 'Crazy Mutators', builders: 'Builders', practice: 'Practice', places: 'Places' };
@@ -38,8 +40,10 @@ export function modeView(settings) {
 }
 
 /**
- * Lobby team colour for each human (in join order), from the rules: teams of N fill in join order,
- * 'two' splits the party, 'humans' is one team; free-for-all uses each skin's colour.
+ * Lobby team colour for each human (in join order), from the rules, the way the room deals the
+ * teams (shared/modes/runtime.js assignTeams): teams of N fill in join order, 'two' keeps the
+ * party together on team 1 while there are bots to fill the other side (twoTeamFor), 'humans' is
+ * one team; free-for-all uses each skin's colour.
  */
 export function teamColors(humans, settings) {
   let r;
@@ -49,7 +53,7 @@ export function teamColors(humans, settings) {
   humans.forEach((p, i) => {
     let c;
     if (r.teams === 'humans') c = TEAM_COLORS[0];
-    else if (r.teams === 'two') c = TEAM_COLORS[i < Math.ceil(n / 2) ? 0 : 1];
+    else if (r.teams === 'two') c = TEAM_COLORS[twoTeamFor(i, n, n + botCountFor(r, n, MAX_TOTAL)) - 1];
     else if (typeof r.teams === 'number' && r.teams > 1) c = TEAM_COLORS[Math.floor(i / r.teams) % TEAM_COLORS.length];
     else c = (SKINS[p.skin] || SKINS[0]).accent;
     out.set(p.id, c);
@@ -278,8 +282,11 @@ export class LobbyUi {
 
   /** Discover / the creator (and its sheets) step aside: a match is starting or running. */
   closeSheets() {
-    if (this.discover && this.discover.open) { try { this.discover.close(); } catch (e) { /* gone */ } }
+    let kept = false;
+    // (a creator with changes nobody saved keeps them in MY MODES)
+    if (this.discover && this.discover.open) { try { kept = !!this.discover.close(true); } catch (e) { /* gone */ } }
     this.discover = null;
+    if (kept) this.toast('Your mode was saved in MY MODES 💾');
   }
 
   /** {t:'countdown', s, ms}: big 3-2-1 over the stage; s 0 clears it. */
@@ -303,9 +310,10 @@ export class LobbyUi {
       const n = Math.max(1, Math.ceil(left / 1000));
       if (left <= 0) {
         this.el.cnum.textContent = 'GO!';
-        // a 'start' (or the s:0 cancel) that never came: never lock PLAY until a reload
+        // the match is on (its 'start' clears this too), or a 'start' (or the s:0 cancel) that
+        // never came: stop ticking, and never lock PLAY until a reload
         const g = this.app.game;
-        if (left < -2500 && (!g || g.phase === 'lobby')) this.countdown(null);
+        if ((g && g.phase && g.phase !== 'lobby') || left < -2500) this.countdown(null);
         return;
       }
       if (n !== last) {

@@ -296,6 +296,16 @@ test('lava: everyone still standing when the clock runs out wins together (never
   assert.deepEqual(ctx.result, { reason: 'survived' });
 });
 
+test('lava: the clock runs out while everyone waits to respawn: nobody survived (not a shared win)', () => {
+  const ctx = new FakeCtx({ game: lava, rules: normalizeRules({ ...lava.defaults, win: 'lava', respawn: 30, lives: 0 }), players: 3 });
+  ctx.start();
+  for (const p of ctx.players()) p.y = 40;
+  ctx.advance(295000);
+  for (const p of ctx.players()) { p.alive = false; p.respawnAt = 1e12; }
+  ctx.advance(6000);
+  assert.deepEqual(ctx.result, { reason: 'lava' });
+});
+
 test('lava with respawns: a death is not the end while the others wait to respawn', () => {
   const ctx = new FakeCtx({ game: lava, rules: normalizeRules({ ...lava.defaults, win: 'lava', respawn: 3, lives: 0 }), players: 4 });
   ctx.start();
@@ -447,4 +457,39 @@ test('mode HUD: every game\'s hud() drives ModeClient (score bar, top 3, ladder,
   hs.mc.filterInput(s2);
   assert.deepEqual(s2, { mx: 1, fire: true });
   for (const k of Object.keys(PARTY_GAMES)) assert.ok(objective({ win: k, teams: 1, target: 0, timeLimit: 300 }).length > 10, k);
+});
+
+// ------------------------------------------------------------------ a modified P2P host
+test('mode HUD: a P2P host\'s mode state and team list never reach the HUD as markup', async () => {
+  const { ModeClient } = await import('../public/js/game/modeClient.js');
+  const { cleanTeam } = await import('../public/js/game/roster.js');
+  const bad = '<img src=x onerror=alert(1)>';
+  const view = () => {
+    const v = { calls: {} };
+    for (const k of ['show', 'clockText', 'bar', 'top', 'ladder', 'line', 'teammates', 'respawn', 'blindfold', 'pointTo']) v[k] = (...a) => { v.calls[k] = a; };
+    return v;
+  };
+  const html = [];
+  for (const win of ['infection', 'hideseek', 'juggernaut', 'elims', 'teamelims']) {
+    const roster = new Map([1, 2, 3, 4, 5].map((id) => [id, { id, name: `P${id}`, team: win === 'teamelims' ? 1 + (id % 3) : 1000 + id, alive: true }]));
+    const teams = new Map([1, 2, 3].map((id) => [id, cleanTeam({ id, name: bad, color: `red;" onclick="alert(1)` })]));
+    const game = {
+      rules: { ...modeRules('infection'), win, teams: win === 'teamelims' ? 3 : 1, target: 10 }, myId: 5, phase: 'match', roster, teams,
+      me: { alive: true, pos: { x: 0, y: 0, z: 0 } }, roleOf: () => null, teamOf: (id) => roster.get(id)?.team ?? id,
+      nameOf: (id) => roster.get(id)?.name ?? '?', actorById: () => null, actors: () => [], mapExtras: {},
+    };
+    const mc = new ModeClient(game);
+    mc.active = true;
+    mc.view = view();
+    mc.setMs({ t: 'ms', sc: [[1, bad], [2, bad], [3, bad], [1001, bad], [1002, bad], [1003, bad], [1004, bad]], goal: bad, g: { s: bad, z: bad, h: bad, hs: bad, j: 2 } });
+    mc.renderHud();
+    html.push(String(mc.view.calls.line?.[0] ?? ''), String(mc.view.calls.top?.[1] ?? ''));
+    for (const row of mc.view.calls.top?.[0] || []) assert.equal(typeof row.score, 'number');
+  }
+  for (const h of html) assert.ok(!/<img|onerror|onclick/.test(h), h);
+  // the team list: a colour is a colour, a name is plain text
+  const t = cleanTeam({ id: 2, name: bad, color: 'red;background:url(x)' });
+  assert.equal(t.color, '#ffffff');
+  assert.ok(!/[<>"'&]/.test(t.name) && t.name.length <= 24, t.name);
+  assert.equal(cleanTeam({ id: 1, name: 'Blue', color: '#3ea4ff' }).color, '#3ea4ff');
 });

@@ -164,6 +164,7 @@ export class Room {
     this.modeTickT = 0;
     this.starters = 0;
     this.startTeams = 0;
+    this.sidesDealt = false;
     this.humansOutAt = 0;
     this.elimDepth = 0;
     this.pendingEnd = null;
@@ -279,16 +280,22 @@ export class Room {
   /**
    * Remove a player for good (left, a rejoin hold ran out, a held player was kicked): the mode
    * hears about it (onKill) but never respawns them, and stops counting them (runtime.list), in
-   * every phase (a series' round break too, or the next round would revive a ghost). The caller
-   * re-checks the win afterwards: the elimination's own checkWin still saw the player listed.
+   * every phase (a series' round break too, or the next round would revive a ghost). The win is
+   * checked once while they are still listed (out of the game, but their side still counts as one
+   * that played: lastTeamStanding never ends a match that only ever had one side, so a 1v1 whose
+   * other player left while waiting to respawn would never end otherwise). The caller re-checks
+   * the win afterwards, without them (a listed infection survivor or hider can block it).
    */
   removePlayer(p) {
+    const live = () => this.phase === 'match' || this.phase === 'bus';
     p.leaving = true; // before the elimination, so the mode's onKill sees it
     p.respawnAt = 0;
-    if (p.alive && (this.phase === 'match' || this.phase === 'bus')) this.eliminate(p, null, { c: 'left' });
+    if (p.alive && live()) this.eliminate(p, null, { c: 'left' });
     p.inMatch = false;
     p.respawnAt = 0;
+    p.alive = false;
     this.players.delete(p.id);
+    if (live()) this.checkWin();
     this.runtime.list = this.runtime.list.filter((q) => q !== p);
     if (p.watch) { p.watch = 0; this.tellWatch(p); }
     this.broadcast({ t: 'note', msg: `${p.name} left` });
@@ -406,23 +413,30 @@ export class Room {
   }
 
   /**
-   * Hand every bot to player `to` ({t:'bots', own}). Mid-match the new owner also gets each live
-   * bot's current mode loadout ('lo', after 'bots' on the same channel): a bot taken over keeps its
-   * gun game rung or kit instead of starting again with a pickaxe (resend false: the start message
-   * already carries the loadouts).
+   * Hand every bot to player `to` ({t:'bots', own}). Mid-match a NEW owner also gets each live
+   * bot's mode kit ('lo' with kit, after 'bots' on the same channel): a bot taken over keeps its gun
+   * game rung or Juggernaut guns instead of starting again with a pickaxe. Only kits: 'lo' replaces
+   * the whole inventory, and a bot's other loadouts (a start or respawn loadout it has looted on
+   * top of) are better served by the start kit plus the gun it was seen holding (on_bots). An owner
+   * who keeps the bots (someone else left) gets no 'lo' at all: its bots keep what they carry.
+   * (resend false: the start message already carries the loadouts.)
    */
   reassignBots(to = this.leader, resend = true) {
     const owner = this.players.get(to);
     if (!owner) return;
     const own = [];
+    let moved = false;
     for (const p of this.players.values()) {
-      if (p.bot) { p.owner = owner.id; own.push(p.id); }
+      if (!p.bot) continue;
+      if (p.owner !== owner.id) moved = true;
+      p.owner = owner.id;
+      own.push(p.id);
     }
     const conn = this.connOf(owner);
     if (!conn) return;
     this.send(conn, { t: 'bots', own });
-    if (resend && (this.phase === 'match' || this.phase === 'bus' || this.phase === 'round')) {
-      for (const p of this.players.values()) if (p.bot && p.alive && p.lo) this.send(conn, { t: 'lo', id: p.id, lo: p.lo });
+    if (resend && moved && (this.phase === 'match' || this.phase === 'bus' || this.phase === 'round')) {
+      for (const p of this.players.values()) if (p.bot && p.alive && p.lo && p.lo.kit) this.send(conn, { t: 'lo', id: p.id, lo: p.lo });
       // and who watches which bot
       for (const p of this.players.values()) if (!p.bot && p.watch) this.send(conn, { t: 'watch', from: p.id, id: p.watch });
     }
@@ -519,7 +533,9 @@ export class Room {
     }
     this.teamList = assignTeams(humans, bots, R);
     const all = [...humans, ...bots];
-    // how many sides started (a series ends early once only one of them is left)
+    // the side each player was dealt (a series ends early once only one of them is left; the
+    // game may move players between teams during a round, so p.team is not it afterwards)
+    for (const p of all) p.team0 = p.team;
     this.startTeams = new Set(all.map((p) => p.team)).size;
     for (const p of all) {
       this.resetForMatch(p);
@@ -536,6 +552,8 @@ export class Room {
     // the mode's set-up, then everyone's loadout (its roles go out after the start: sendRoles)
     this.rolesHeld = true;
     try { this.runtime.setup(() => makeLoadout(R, Math.random)); } finally { this.rolesHeld = false; }
+    // a game that deals the sides itself every round (infection's zombies, hide & seek's seekers)
+    this.sidesDealt = !!(this.runtime.game && this.runtime.game.teamNames) || all.some((p) => p.team !== p.team0);
     if (R.timeLimit > 0) this.runtime.endsAt = now + (busTime + R.timeLimit) * 1000;
     this.stormTick = now;
     this.modeTickT = now;
@@ -947,7 +965,7 @@ export class Room {
     let name = '';
     if (w) {
       if (listed && this.rules.teams === 'humans') name = 'Your squad';
-      else if (listed) name = `${listed.name} Team`;
+      else if (listed && !(res.forfeit && this.sidesDealt)) name = `${listed.name} Team`;
       else name = w.name;
     }
     const sc = this.runtime.scores();
@@ -995,11 +1013,27 @@ export class Room {
     const R = this.rules;
     const r = this.round;
     // a side left during the series (LEAVE PARTY, a rejoin hold that ran out): the side still
-    // here takes it now, instead of playing every remaining round against nobody
-    const here = new Set(this.runtime.list.filter((p) => this.players.has(p.id)).map((p) => p.team));
-    if (here.size < 2 && this.startTeams > 1) {
+    // here takes it now, instead of playing every remaining round against nobody. Sides are the
+    // teams players were dealt at the start (a round's infections or finds do not count), or each
+    // player when the game deals the sides itself every round (then it needs two players).
+    const present = this.runtime.list.filter((p) => this.players.has(p.id));
+    const side = (p) => (this.sidesDealt ? p.id : p.team0 ?? p.team);
+    const here = new Set(present.map(side));
+    const sides = this.sidesDealt ? this.starters : this.startTeams;
+    if (here.size < 2 && sides > 1) {
       this.phase = 'match';
-      this.endMatch(here.size ? { team: [...here][0], reason: 'left', forfeit: true } : { reason: 'left', forfeit: true });
+      let res = { reason: 'left', forfeit: true };
+      if (here.size) {
+        const s0 = [...here][0];
+        const mine = present.filter((p) => side(p) === s0);
+        // back on the side they were dealt, so 'my team won' holds on every page
+        let moved = false;
+        for (const p of mine) if (p.team0 !== undefined && p.team !== p.team0) { p.team = p.team0; moved = true; }
+        if (moved) this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader });
+        const face = mine.find((p) => !p.bot) || mine[0];
+        res = this.sidesDealt ? { id: face.id, reason: 'left', forfeit: true } : { team: face.team, reason: 'left', forfeit: true };
+      }
+      this.endMatch(res);
       return;
     }
     r.n++;

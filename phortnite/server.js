@@ -399,6 +399,17 @@ process.on('uncaughtException', (e) => {
   log('uncaught exception', { err: String((e && e.stack) || e) });
   if (e && (e.code === 'EADDRINUSE' || e.code === 'EACCES')) process.exit(1);
 });
+// the server could not start listening (port taken, no permission, an address this machine does
+// not have, …): say so and exit, instead of a process that looks alive but serves nothing. (ws
+// re-emits the http server's errors on the WebSocketServer, so the handler goes there.)
+function serverError(e) {
+  log('server error', { err: String((e && e.stack) || e), code: e && e.code });
+  if (!server.listening) {
+    console.error(`  Phortnite could not start on ${HOST}:${PORT}: ${(e && e.message) || e}`);
+    process.exit(1);
+  }
+}
+wss.on('error', serverError);
 
 // ---------------------------------------------------------------- start
 const t0 = Date.now();

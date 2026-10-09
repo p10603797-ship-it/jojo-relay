@@ -440,6 +440,7 @@ const lava = {
       const alive = ctx.alive();
       const teams = [...new Set(alive.map((p) => p.team))];
       if (teams.length === 1) ctx.end(alive.length === 1 ? { id: alive[0].id, team: alive[0].team, reason: 'lava' } : { team: teams[0], reason: 'lava' });
+      else if (!teams.length) ctx.end({ reason: 'lava' }); // nobody standing (all waiting to respawn): nobody survived
       else ctx.end({ reason: 'survived' });
     }
   },

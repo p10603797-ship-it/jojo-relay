@@ -20,3 +20,17 @@ export function cleanRow(p) {
   if ('away' in src) out.away = src.away ? 1 : 0;
   return out;
 }
+
+const COLOR = /^#[0-9a-f]{3,8}$/i;
+
+/**
+ * A team from the room's list ({id, name, color}: start, welcome, round, teams) with clean types:
+ * the HUD puts the colour into style attributes and the name into its lines.
+ */
+export function cleanTeam(t) {
+  const src = t && typeof t === 'object' ? t : {};
+  const id = Number.isFinite(src.id) ? src.id : 0;
+  const name = String(src.name ?? '').replace(/[\u0000-\u001f<>"'&]/g, '').slice(0, 24) || 'Team';
+  const color = typeof src.color === 'string' && COLOR.test(src.color) ? src.color : '#ffffff';
+  return { id, name, color };
+}

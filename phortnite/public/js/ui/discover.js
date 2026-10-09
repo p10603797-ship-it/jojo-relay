@@ -334,16 +334,19 @@ export function openDiscover(app, opts = {}) {
     else if (shown) hideDetail();
     else close();
   }
-  function close() {
-    if (closed) return;
+  /** auto = true: closed for the player (a match is starting); true when a creator saved their edits. */
+  function close(auto = false) {
+    if (closed) return false;
     closed = true;
-    if (child) { try { child.close(); } catch (e) { /* already gone */ } child = null; }
+    let kept = false;
+    if (child) { try { kept = !!child.close(auto === true); } catch (e) { /* already gone */ } child = null; }
     window.removeEventListener('keydown', onKey, true);
     if (searchRaf) cancelAnimationFrame(searchRaf);
     root.classList.add('closing');
     setTimeout(() => root.remove(), 180);
     if (disabledInput && app.input && !app.input.enabled && app.game && app.game.me) app.input.enabled = true;
     if (opts.onClose) opts.onClose();
+    return kept;
   }
   window.addEventListener('keydown', onKey, true);
   if (app && app.input && app.input.enabled) { app.input.enabled = false; disabledInput = true; }

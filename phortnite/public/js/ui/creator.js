@@ -154,7 +154,12 @@ export function goalChange(rules, win) {
     const k = f.key;
     if (k !== 'win' && fresh[k] !== defs[k] && rules[k] === fresh[k]) undo[k] = defs[k];
   }
-  return { ...undo, ...goalPreset(win) };
+  const next = { ...undo, ...goalPreset(win) };
+  // WHERE is the player's (or the curated mode's) choice: a goal's own play area only replaces the
+  // whole island, or the area the old goal's preset put there
+  const fromPreset = fresh.area !== defs.area && rules.area === fresh.area;
+  if (rules.area && rules.area !== defs.area && !fromPreset) next.area = rules.area;
+  return next;
 }
 
 /** Last standing with respawn and damage on: unlimited lives could never end. */
@@ -413,14 +418,28 @@ export function createCreator(app, opts = {}) {
   root.addEventListener('pointerdown', (e) => e.stopPropagation());
 
   let closed = false;
+  const startCode = encodeRules(rules);
   function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
-  function close() {
-    if (closed) return;
+  /**
+   * Close the creator. auto = true: closed for the player (the party's match is starting), so
+   * changes they did not save go to MY MODES instead of being lost. Returns true when it saved.
+   */
+  function close(auto = false) {
+    if (closed) return false;
     closed = true;
+    let kept = false;
+    if (auto === true) {
+      const code = encodeRules(rules);
+      if (code !== startCode && !loadSaved().some((m) => m.code === code)) {
+        saveMode(describeRules(rules).name, rules);
+        kept = true;
+      }
+    }
     window.removeEventListener('keydown', onKey, true);
     root.classList.add('closing');
     setTimeout(() => root.remove(), 180);
     opts.onClose && opts.onClose();
+    return kept;
   }
   window.addEventListener('keydown', onKey, true);
   (opts.parent || document.body).appendChild(root);

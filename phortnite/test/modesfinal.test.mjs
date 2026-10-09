@@ -69,6 +69,42 @@ test('modes: when the other side leaves a series, the side still here takes it a
   assert.deepEqual(H.errors, []);
 });
 
+test('modes: a series whose game moves players between teams (infection, hide & seek) goes on after round 1', () => {
+  for (const win of ['infection', 'hideseek']) {
+    const H = makeRoom({ settings: customSettings({ win, rounds: 3, bots: 3 }), drop: ['s', 'ms', 'dmg', 'note'] });
+    const a = H.join('Ann');
+    H.join('Ben');
+    H.send(a, { t: 'start' });
+    H.advance(500);
+    const R = H.room;
+    if (R.phase === 'bus') { for (const p of R.players.values()) p.inBus = false; R.phase = 'match'; }
+    H.advance(31000); // past hide & seek's head start
+    const hunter = [...R.players.values()].find((p) => p.role === 'zombie' || p.role === 'seeker');
+    // the hunters catch everyone: one team is left at the end of round 1
+    for (let k = 0; k < 10; k++) for (const p of [...R.players.values()]) if (p.alive && p.team !== hunter.team) R.eliminate(p, hunter, { w: 'pickaxe' });
+    H.advance(500);
+    assert.equal(new Set(R.runtime.list.map((p) => p.team)).size, 1, `${win}: everyone on one team`);
+    H.advance(6000);
+    assert.equal(H.msgs(a, 'win').length, 0, `${win}: no "the other team left"`);
+    assert.ok(H.msgs(a, 'round').some((m) => m.start && m.n === 2), `${win}: round 2 started`);
+    assert.deepEqual(H.errors, []);
+  }
+  // with the sides dealt by the game, the series ends once fewer than two players are left
+  const S = makeRoom({ settings: customSettings({ win: 'infection', rounds: 3, bots: 0, teams: 'two' }), drop: ['s', 'ms', 'dmg', 'note'] });
+  const x = S.join('Ann'), y = S.join('Ben');
+  S.send(x, { t: 'start' });
+  S.advance(500);
+  S.send(y, { t: 'bye' });
+  S.leave(y);
+  // round 1 ends (the zombies caught everyone, or the clock ran out), then the series is over
+  for (let t = 0; t < 320 && !S.last(x, 'win'); t++) S.advance(1000);
+  const w = S.last(x, 'win');
+  assert.ok(w, 'the series is over');
+  assert.equal(w.id, x.pid);
+  assert.equal(w.name, 'Ann');
+  assert.deepEqual(S.errors, []);
+});
+
 test('modes: a tied top score when the clock runs out is a draw, not "whoever scored first"', () => {
   const H = makeRoom({ settings: modeSettings('team-rumble'), drop: ['s'] });
   const a = H.join('Ann');
@@ -197,6 +233,25 @@ test('modes: two big teams keep the party together (bots balance the other side)
   assert.deepEqual([0, 1, 2, 3, 4].map((i) => twoTeamFor(i, 5, 6)), [1, 1, 1, 2, 2]);
 });
 
+test('lobby: the podium colours show the teams the room will deal ("two": the party together)', async () => {
+  const { teamColors, TEAM_COLORS } = await import('../public/js/ui/lobby.js');
+  const cases = [['team-rumble', modeSettings('team-rumble')], ['koth', modeSettings('koth')], ['castle-siege', modeSettings('castle-siege')],
+    ['two, no bots', customSettings({ teams: 'two', bots: 0 })]];
+  for (const [label, settings] of cases) {
+    for (const n of [2, 3, 4, 5]) {
+      const H = makeRoom({ settings, drop: ['s'] });
+      const cs = [];
+      for (let i = 0; i < n; i++) cs.push(H.join(`Kid${i}`));
+      const humans = cs.map((c) => c.p);
+      const col = teamColors(humans.map((p) => ({ id: p.id, skin: 0 })), H.room.settings);
+      const lobby = humans.map((p) => TEAM_COLORS.indexOf(col.get(p.id)) + 1);
+      H.send(cs[0], { t: 'start' });
+      assert.deepEqual(lobby, humans.map((p) => p.team), `${label}, ${n} friends`);
+      assert.deepEqual(H.errors, []);
+    }
+  }
+});
+
 test('modes: a mode kit (gun game, Juggernaut) is marked so a death never drops it', () => {
   const H = makeRoom({ settings: modeSettings('juggernaut'), drop: ['s'] });
   const a = H.join('Ann');
@@ -260,6 +315,15 @@ test('creator: goal presets never pile up (every goal -> goal change = that goal
   const elims = normalizeRules(goalPreset('elims'));
   assert.equal(elims.area, 'center');
   assert.ok(elims.timeLimit > 0);
+  // ... unless the player (or the curated mode) picked a place: WHERE stays
+  for (const [area, win] of [['biome:farm', 'teamelims'], ['poi:Tilty Towers', 'elims'], ['biome:volcano', 'time'], ['biome:jungle', 'infection']]) {
+    const picked = normalizeRules({ ...normalizeRules({}), area });
+    const after = normalizeRules({ ...picked, ...goalChange(picked, win) });
+    assert.equal(after.area, picked.area, `${area} -> ${win}`);
+  }
+  // and the middle a goal put there goes again with that goal
+  const mid = normalizeRules({ ...normalizeRules({}), ...goalPreset('elims') });
+  assert.equal(normalizeRules({ ...mid, ...goalChange(mid, 'last') }).area, 'full');
 });
 
 import { rollBotSkill } from '../public/shared/modes/runtime.js';

@@ -19,6 +19,9 @@ const BIG_HEAD = 2.2; // matches the Big Head hitbox (combatant.js / remote.js)
 /** Games that dress players up, and the looks they use. */
 const ROLE_GAMES = { infection: ['zombie'], juggernaut: ['jugg'], hideseek: ['seeker'] };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// the mode state comes from the room, which a P2P host runs on their own page: numbers stay numbers
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number.isFinite(+v) && v !== null && typeof v !== 'object' ? +v : 0);
+const count = (v) => (v === undefined || v === null ? '–' : Math.max(0, num(v) | 0));
 const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
 const _p = new THREE.Vector3();
 
@@ -444,9 +447,9 @@ export class ModeClient {
 
   renderHud() {
     const g = this.game, r = this.rules, v = this.view, ms = this.ms;
-    const gh = (ms && ms.g) || {};
-    const sc = ms && Array.isArray(ms.sc) ? ms.sc : [];
-    const goal = (ms && ms.goal) || r.target || 0;
+    const gh = ms && ms.g && typeof ms.g === 'object' ? ms.g : {};
+    const sc = ms && Array.isArray(ms.sc) ? ms.sc.filter(Array.isArray).map((e) => [num(e[0]), num(e[1])]) : [];
+    const goal = num((ms && ms.goal) || r.target || 0);
     const me = g.me;
     const myId = g.myId;
     const win = r.win;
@@ -494,7 +497,7 @@ export class ModeClient {
       lv = Math.max(0, Math.min(GUN_LADDER.length - 1, lv | 0));
     } else if (win === 'infection') {
       const zombie = g.roleOf && g.roleOf(myId) === 'zombie';
-      line = `🧑 <b>${gh.s ?? '–'}</b> SURVIVORS · 🧟 <b>${gh.z ?? '–'}</b> ZOMBIES<br><small>${zombie ? 'You are a ZOMBIE: get them!' : 'Stay alive!'}</small>`;
+      line = `🧑 <b>${count(gh.s)}</b> SURVIVORS · 🧟 <b>${count(gh.z)}</b> ZOMBIES<br><small>${zombie ? 'You are a ZOMBIE: get them!' : 'Stay alive!'}</small>`;
       cls = zombie ? 'zombie' : '';
     } else if (win === 'koth' && gh.hill) {
       const h = gh.hill;
@@ -516,8 +519,8 @@ export class ModeClient {
       cls = j === myId ? 'jugg' : '';
     } else if (win === 'hideseek') {
       const seeker = g.roleOf && g.roleOf(myId) === 'seeker';
-      const hs = (gh.hs | 0) > 0 ? Math.max(0, Math.ceil(gh.hs - (performance.now() - this.msAt) / 1000)) : 0;
-      line = `🙈 <b>${gh.h ?? '–'}</b> HIDING · 👀 <b>${gh.s ?? '–'}</b> SEEKING<br><small>${hs > 0 ? `Seekers come out in ${hs}…` : seeker ? 'Find them! One tap is enough.' : 'Stay hidden!'}</small>`;
+      const hs = (gh.hs | 0) > 0 ? Math.max(0, Math.ceil(num(gh.hs) - (performance.now() - this.msAt) / 1000)) : 0;
+      line = `🙈 <b>${count(gh.h)}</b> HIDING · 👀 <b>${count(gh.s)}</b> SEEKING<br><small>${hs > 0 ? `Seekers come out in ${hs}…` : seeker ? 'Find them! One tap is enough.' : 'Stay hidden!'}</small>`;
       cls = seeker ? 'seeker' : '';
       this.blind = seeker && hs > 0 && !!(me && me.alive);
       if (this.view) this.view.blindfold(this.blind ? hs : -1);

@@ -8,7 +8,7 @@ import {
 import { rulesFromSettings, normalizeRules } from '../../shared/modes/rules.js';
 import { rollInitialLoot } from '../../shared/loot.js';
 import { GAME_PLUGINS } from './plugins.js';
-import { cleanRow } from './roster.js';
+import { cleanRow, cleanTeam } from './roster.js';
 import { seriesRows } from './modeClient.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
 import { Bot, forgetGame } from '../actors/bot.js';
@@ -412,7 +412,7 @@ export class Game {
   /** Team list {id, name, color} from the room (start / welcome / round). */
   setTeams(list) {
     this.teams.clear();
-    for (const t of list || []) this.teams.set(t.id, t);
+    for (const t of Array.isArray(list) ? list : []) { const c = cleanTeam(t); this.teams.set(c.id, c); }
   }
 
   allChestsOpen() {
@@ -1148,7 +1148,7 @@ export class Game {
       if (a !== me) this.botRespawned(a, m);
     }
     if (m.bus) this.bus.start(m.bus);
-    this.hud.big(`ROUND ${m.n}<small>Fight!</small>`);
+    this.hud.big(`ROUND ${m.n | 0}<small>Fight!</small>`);
     this.plug('onPhase', this.phase, m);
   }
 

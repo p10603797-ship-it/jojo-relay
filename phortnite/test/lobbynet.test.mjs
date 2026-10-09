@@ -73,6 +73,27 @@ test('lobby-net: a held player killed while waiting to respawn is dropped for go
   assert.deepEqual(H.errors, []);
 });
 
+test('lobby-net: two friends, no bots: the other one leaving while waiting to respawn ends the match', () => {
+  const rules = { teams: 1, bots: 0, respawn: 12, lives: 3, storm: 'none', spawn: 'ground', timeLimit: 0 };
+  for (const how of ['bye-dead', 'hold-expire-dead', 'kick-held-dead']) {
+    const H = makeRoom({ settings: customSettings(rules, 'Lives'), drop: ['s'] });
+    const a = H.join('Ann', RES), b = H.join('Ben', RES);
+    H.send(a, { t: 'start' });
+    H.advance(1000);
+    const R = H.room, ben = b.p;
+    if (how === 'bye-dead') { R.applyDamage(ben, 500, a.p, {}); H.send(b, { t: 'bye' }); H.leave(b); }
+    if (how === 'hold-expire-dead') { H.leave(b); H.advance(HOLD_MS - 5000); R.applyDamage(ben, 500, a.p, {}); H.advance(6000); }
+    if (how === 'kick-held-dead') { H.leave(b); H.advance(1000); R.applyDamage(ben, 500, a.p, {}); H.send(a, { t: 'kick', id: ben.id }); }
+    H.advance(500);
+    assert.equal(R.players.has(ben.id), false, how);
+    const wins = H.msgs(a, 'win');
+    assert.equal(wins.length, 1, `${how}: one result`);
+    assert.equal(wins[0].id, a.pid, `${how}: Ann wins`);
+    assert.equal(R.phase, 'ended', how);
+    assert.deepEqual(H.errors, []);
+  }
+});
+
 test('lobby-net: a hold that runs out in round 1 of a series never comes back as a ghost in round 2', () => {
   const H = makeRoom({ settings: modeSettings('box-fight'), drop: ['s'] });
   const a = H.join('Ann', RES), b = H.join('Ben', RES);
@@ -308,6 +329,43 @@ test('lobby-net: bots handed to another device mid-match come with their current
   for (const p of bots.filter((x) => x.alive)) assert.ok(los.some((m) => m.id === p.id && JSON.stringify(m.lo) === JSON.stringify(p.lo)), `bot ${p.id}`);
   assert.equal(los.find((m) => m.id === bot.id).lo.slots[0].k, 'tactical');
   assert.deepEqual(H.errors, []);
+});
+
+test('lobby-net: a friend leaving never resends loadouts to the unchanged bot owner; a new owner gets only mode kits', () => {
+  // late game (start loadouts, not kits): a third player taps Leave; Ann still runs the bots
+  const H = makeRoom({ settings: modeSettings('late-game'), drop: ['s'] });
+  const a = H.join('Ann', RES), b = H.join('Ben', RES), c = H.join('Cat', RES);
+  H.send(a, { t: 'start' });
+  H.advance(500);
+  assert.ok(H.bots().some((p) => p.lo), 'bots have start loadouts');
+  H.clear(a);
+  H.send(c, { t: 'bye' });
+  H.leave(c);
+  H.advance(100);
+  assert.equal(H.msgs(a, 'lo').length, 0, "no 'lo' to Ann: her bots keep what they looted");
+  // Ann leaves: Ben becomes the owner and gets 'bots', but no non-kit loadouts (on_bots gives the start kit)
+  H.clear(b);
+  H.send(a, { t: 'bye' });
+  H.leave(a);
+  H.advance(100);
+  assert.ok(H.msgs(b, 'bots').length >= 1, 'Ben runs the bots');
+  assert.equal(H.msgs(b, 'lo').length, 0);
+  // a respawned bot of a floor-loot mode (its respawn loadout is empty): no 'lo' wipes the gun it holds
+  const K = makeRoom({ settings: customSettings({ respawn: 3, lives: 0, win: 'elims', bots: 3, storm: 'none', spawn: 'ground' }), drop: ['s'] });
+  const x = K.join('Ann', RES), y = K.join('Ben', RES);
+  K.send(x, { t: 'start' });
+  K.advance(500);
+  const bot = K.bots()[0];
+  K.room.eliminate(bot, x.p, { w: 'ar' });
+  K.advance(4000);
+  assert.ok(bot.alive && bot.lo && !bot.lo.kit, 'respawned with the (empty) respawn loadout');
+  K.clear(y);
+  K.send(x, { t: 'bye' });
+  K.leave(x);
+  K.advance(100);
+  assert.ok(K.msgs(y, 'bots').length >= 1);
+  assert.equal(K.msgs(y, 'lo').filter((m) => m.id === bot.id).length, 0);
+  assert.deepEqual([...H.errors, ...K.errors], []);
 });
 
 test('lobby-net: an eliminated friend watching a bot: the bots\' device hears it (and when it stops)', () => {
