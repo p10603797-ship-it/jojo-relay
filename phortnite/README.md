@@ -16,19 +16,28 @@ The website is published from the **`gh-pages`** branch, which holds a copy of t
 folder at its root. To update the website, copy `phortnite/public/` onto the `gh-pages` branch
 and push; GitHub rebuilds the site within a minute or two.
 
-* **Play Solo**: you against up to 30 bots. Everything runs on your iPad.
-* **Play with Friends**: one player taps **Host a party** and gets a 4-letter code plus a QR
-  code. Everyone else taps **Play with Friends**, types the code (or scans the QR code with the
-  iPad camera) and joins. While waiting you can warm up on the island. The host picks the mode
-  (*Everyone for themselves* or *Friends team up vs bots*, with no friendly fire and the whole
-  squad winning together), plus the number of bots and starting materials, then hits
-  **Start match**.
+The game opens in the **lobby**: your character on a glowing podium, with your party around you.
+
+* **PLAY** starts a match right away (you against bots). **CHANGE** on the mode card picks the
+  game mode; **WARM UP** lets you practise on the island with unlimited ammo and materials.
+* **Play with friends anywhere**: tap a **+ INVITE** slot. Your lobby becomes a party with a
+  4-letter code, a QR code, **SHARE** (AirDrop, Messages…) and **COPY LINK**. Friends tap
+  **JOIN A FRIEND** and type the code, scan the QR code, or simply open the link. They appear
+  next to you on the podium with their name, level and a ✓ when they are **READY**.
+* The **party leader** (♛) picks the mode and presses **PLAY**; everyone sees 3-2-1 and drops in
+  together. Members can **suggest** a mode ("Mia wants Gun Game"). Tap a friend's name to make
+  them leader or remove them from the party; tap your own name to rename yourself.
+* After you are eliminated, **BACK TO LOBBY** lets you wait for your friends on the podium (the
+  match goes on; **SPECTATE** to watch). When the match ends everyone comes back together and
+  sees the results card: places, eliminations, damage, the MVP and the XP you earned.
+* If the Wi-Fi blips you get back into the same match within a minute. If the host's iPad goes
+  to sleep or switches apps, the match pauses and friends see *Waiting for the host…*. Solo
+  matches pause too when you switch apps.
 
 Parties are peer-to-peer: the match runs on the **host's** device and the others connect to it
 directly over WebRTC (the free [PeerJS](https://peerjs.com) service only introduces the devices
-to each other, and relays traffic if a direct link isn't possible). The host must keep the game
-open; if they leave, the party ends. It works best when everyone is on the same Wi-Fi, but
-friends elsewhere can join too.
+to each other, and relays traffic if a direct link isn't possible). Up to 8 players fit in a
+website party. The host keeps the same party code across reloads, so friends can **REJOIN**.
 
 Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
 screen for a true full-screen game.
@@ -53,9 +62,10 @@ The server prints something like:
 
 plus a QR code. Open the Wi-Fi address on every iPad / laptop on the same network (or scan the
 QR code with the iPad camera). In this mode the server runs the matches, so nobody has to host:
-**Play with Friends** lists the parties on the server (parties from your own Wi-Fi are marked
-*SAME WI-FI*), or join one by typing its 4-letter code. The server serves the 3D and physics
-libraries itself, so it needs no internet.
+**+ INVITE** opens a party on the server (its link and QR code use the Wi-Fi address), and
+**JOIN A FRIEND** lists the parties on the server (parties from your own Wi-Fi are marked
+*SAME WI-FI*) or joins one by its 4-letter code. Up to 16 players fit in a server party. The
+server serves the 3D and physics libraries itself, so it needs no internet.
 
 If Windows asks about the firewall the first time, allow Node.js on *private* networks,
 otherwise the iPads can't reach the server.
@@ -90,6 +100,12 @@ otherwise the iPads can't reach the server.
   style and look for each of the eight skins; full animation set and ragdolls.
 * **Building** — walls, floors and ramps on a 4 m grid in wood/brick/metal; pieces grow in
   health while building, can be shot down, and anything left floating collapses.
+* **Lobby & parties** — a Fortnite-style lobby with your squad on a podium (its own little scene,
+  far cheaper to draw than the island), ready-up, leader crown, kick / make leader, live skin
+  changes, a 3-2-1 countdown, one invite flow for the website and the server (code, QR, share
+  sheet, link), mode suggestions, back-to-lobby, a death card that shows who got you, a
+  *#1 PHICTORY ROYALE* celebration with the winners dancing, results with XP and levels, rejoin
+  after a dropped connection, and synthesized lobby music.
 * **Battle royale** — the bus, a shrinking storm with six phases, floor loot + chests, kill feed,
   spectating, victory screen.
 * **Bots that play like people** — they only see what is in front of them (a view cone, a sight
@@ -115,6 +131,7 @@ otherwise the iPads can't reach the server.
 | Material | Mat | `G` or right mouse while building |
 | Reload / interact | ⟳ / yellow button | `R` / `E` |
 | Map / menu | tap minimap / ☰ | `M` / `Esc` |
+| Back to the lobby | ☰ → BACK TO LOBBY (or ↩ LOBBY while warming up) | `Esc` → BACK TO LOBBY |
 
 Game controllers (via the Gamepad API) work too.
 
@@ -131,7 +148,25 @@ public/shared/            code shared by browser and server
                           for solo games and on the host's device for website parties)
 public/js/                the game client (three.js + Rapier)
 public/js/net/p2p.js      website parties over WebRTC (PeerJS)
+public/shared/plugins/party.js  party rules in the room: ready, kick, promote, countdown, rejoin
+public/js/lobby/          the lobby stage (3D) and the bridge between a match and the lobby
+public/js/ui/lobby.js     the lobby screen; ui/invite.js invites and joining; ui/endscreen.js
 ```
+
+### Checking a website (P2P) party on real iPads
+
+WebRTC can't be tested in the automated sandbox, so before publishing try this with two iPads
+(or an iPad and a laptop) on the website build:
+
+1. iPad A: open the site, tap **+ INVITE**. A 4-letter code and QR code appear.
+2. iPad B: scan the QR code with the camera (or open the link): it lands in A's lobby next to A.
+3. B taps **READY**, A sees the ✓. B changes skin in the Locker; A sees it at once.
+4. A taps **PLAY**: both see 3-2-1 and the bus. Turn B's Wi-Fi off for 10 s and on again: B gets
+   *Connection lost — getting you back in…* and continues the same match.
+5. A switches to another app for 20 s mid-match: B sees *Waiting for the host…*; when A comes
+   back the match continues where it was (the storm did not move on).
+6. A taps a friend's name → **KICK**: B is back in a party of one with a message.
+7. A reloads the page and taps **+ INVITE** again: the party code is the same, B can **REJOIN**.
 
 The match logic (`room.js`, on the server or the party host's device) is authoritative for health, damage, eliminations, loot, chests, builds, destruction
 and the storm; each device simulates its own player (and the party leader simulates the bots)

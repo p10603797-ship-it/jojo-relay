@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { Room, getWorld } from './public/shared/room.js';
 import { VERSION, TICK_HZ } from './public/shared/constants.js';
+import { cleanSettings } from './public/shared/plugins/party.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -129,7 +130,8 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/info') {
     const lan = lanAddresses().map((ip) => `http://${ip}${PORT === 80 ? '' : ':' + PORT}/`);
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    res.end(JSON.stringify({ name: 'phortnite', version: VERSION, lan, rooms: rooms.size }));
+    // lanUrl: the address friends' iPads can open (invite links use it when this page is on localhost)
+    res.end(JSON.stringify({ name: 'phortnite', version: VERSION, lan, lanUrl: lan[0] || '', rooms: rooms.size }));
     return;
   }
   if (url.pathname === '/api/qr.svg') {
@@ -186,6 +188,7 @@ function roomList(ip) {
 
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
 let connSeq = 0;
+const connById = new Map(); // conn id -> conn (a room's onKick detaches a kicked or replaced connection)
 // broadcasts send the same object to many sockets: stringify it once
 const jsonCache = new WeakMap();
 function encode(obj) {
@@ -207,6 +210,7 @@ wss.on('connection', (ws, req) => {
     },
   };
   ws.on('pong', () => { conn.alive = true; });
+  connById.set(conn.id, conn);
   conn.send({ t: 'hi', v: VERSION });
 
   ws.on('message', (data) => {
@@ -226,7 +230,9 @@ wss.on('connection', (ws, req) => {
         if (rooms.size >= MAX_ROOMS) { conn.send({ t: 'err', msg: 'Server is full, try again later.' }); return; }
         const code = newCode();
         const name = String(msg.hello?.name || 'Player').slice(0, 16);
-        const room = new Room({ code, name: `${name}'s party`, log });
+        // the party keeps the mode its leader picked before inviting anyone
+        const room = new Room({ code, name: `${name}'s party`, log, settings: cleanSettings(msg.settings) });
+        room.onKick = onKick;
         // only list the party once its creator is in (an old cached page is turned away by join)
         if (!room.join(conn, msg.hello || {})) return;
         rooms.set(code, room);
@@ -250,10 +256,16 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', () => leaveRoom(conn));
+  ws.on('close', () => { connById.delete(conn.id); leaveRoom(conn); });
   ws.on('error', () => {});
   ws.conn = conn;
 });
+
+/** The room let go of this connection (kicked, or its player rejoined on a newer one). */
+function onKick(connId) {
+  const c = connById.get(connId);
+  if (c) c.room = null;
+}
 
 function leaveRoom(conn) {
   const room = conn.room;
@@ -268,8 +280,14 @@ function leaveRoom(conn) {
 
 setInterval(() => {
   for (const room of rooms.values()) {
-    if (room.empty) continue;
-    try { room.tick(); } catch (e) { log('tick error', { room: room.code, err: String(e && e.stack || e) }); }
+    if (!room.empty) {
+      try { room.tick(); } catch (e) { log('tick error', { room: room.code, err: String(e && e.stack || e) }); }
+    }
+    // a room can also empty itself (players held for a rejoin who never came back)
+    if (room.empty) {
+      rooms.delete(room.code);
+      log('room closed', { code: room.code });
+    }
   }
 }, 1000 / TICK_HZ);
 
