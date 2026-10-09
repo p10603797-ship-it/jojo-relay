@@ -518,6 +518,9 @@ export class Game {
         bot.sh = r.sh;
         if (last.a === ANIM.DEAD || info.alive === false) { bot.alive = false; bot.char.setVisible(false); bot.mover.setEnabled(false); bot.mover.mode = 'dead'; }
       }
+      // a teammate bot this device runs gets a name tag, like a teammate on another device has
+      // (RemotePlayer.setNameVisible in on_start); enemies stay anonymous
+      if (this.phase !== 'lobby' && this.friendly(id, this.myId) && bot.char && bot.char.setName) bot.char.setName(info.name || 'Bot', '#ffd27a');
       this.bots.set(id, bot);
     }
     for (const [id, bot] of this.bots) {
