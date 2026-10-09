@@ -508,6 +508,40 @@ export function lavaClose(bot) {
   return lava !== null && bot.pos.y - lava < 2.5;
 }
 
+const _esc = { x: 0, y: 0, z: 0, pad: false };
+
+/**
+ * Standing in a lava pool (data.lava: the volcano's crater, which the nav graph leaves out, and
+ * where Room.inLava burns 10 a second): the way out, the pool's nearest geyser (it throws you out
+ * of the crater), else straight out past its edge. {x, y, z, pad} (shared object), or null.
+ */
+export function lavaEscape(bot, out = _esc) {
+  const g = bot.game, d = g && g.world && g.world.data;
+  const pools = d && d.lava;
+  if (!pools || !pools.length) return null;
+  const p = bot.pos;
+  for (const L of pools) {
+    if (!L || !(L.r > 0)) continue;
+    const dx = p.x - L.x, dz = p.z - L.z, r2 = dx * dx + dz * dz, R = L.r + 1;
+    if (r2 > R * R) continue;
+    if (p.y > (Number.isFinite(L.y) ? L.y : d.heightAt(p.x, p.z)) + 1.5) continue;
+    let best = null, bd = Infinity;
+    for (const q of d.pads || []) {
+      if (!q || q.kind === 'mushroom' || q.roof || (q.x - L.x) ** 2 + (q.z - L.z) ** 2 > R * R) continue;
+      const dd = (q.x - p.x) ** 2 + (q.z - p.z) ** 2;
+      if (dd < bd) { bd = dd; best = q; }
+    }
+    if (best) {
+      out.x = best.x; out.z = best.z; out.y = best.y ?? d.heightAt(best.x, best.z); out.pad = true;
+    } else {
+      const l = Math.sqrt(r2) || 1;
+      out.x = L.x + (dx / l) * (L.r + 4); out.z = L.z + (dz / l) * (L.r + 4); out.y = d.heightAt(out.x, out.z); out.pad = false;
+    }
+    return out;
+  }
+  return null;
+}
+
 /** A random open point inside the area (or the storm's next circle, or around us). out {x, y, z}. */
 export function roamPoint(bot, out) {
   const g = bot.game, data = g.world.data, st = g.storm && g.storm.state, a = g.area;

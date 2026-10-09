@@ -31,7 +31,7 @@ import { navFor, PathFollower } from '../ai/nav.js';
 import { BuildFight } from '../ai/buildfight.js';
 import { EDIT_PRESETS, EDIT_FULL } from '../../shared/buildgrid.js';
 import {
-  modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, hillOf, inArea,
+  modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, lavaEscape, hillOf, inArea,
   seekerWaits, hider, hideFound, forgetActors, meleeOnly,
 } from '../ai/goals.js';
 import { wantFar, enterFar, exitFar, farUpdate, forgetFar } from '../ai/farsim.js';
@@ -241,6 +241,7 @@ export class Bot extends Combatant {
       progT: 0, progD: 0, progX: 0, progZ: 0, noProg: 0, detourT: 0, detourX: 0, detourZ: 0,
       glance: 0, glanceT: 1,
       goal: null, goalT: 0, goalKind: '', dest: new THREE.Vector3(), destKind: '', lootRef: null, lootT: 0, badLoot: new Set(), badChest: new Set(),
+      swappedOut: new Map(), // 'k:r' -> when we swapped that item out for another (not worth going back for)
       badTree: new Set(), harvestT: -1, harvestM: 0, wdT: 0, wdX: 0, wdZ: 0, wdMove: 0,
       chestI: -1, harvest: null, treeT: 0,
       urgent: 0, safeKey: 0, safeX: 0, safeZ: 0,
@@ -405,6 +406,10 @@ export class Bot extends Combatant {
       const w = WEAPONS[k];
       if (w.melee) return 0;
       const r = item.r | 0;
+      // what we just gave up for something better (an AR for our first shotgun) is not worth going
+      // back for: swapping it back drops the shotgun, which is then worth going back for, and so on
+      const out = this.brain.swappedOut.get(`${k}:${r}`);
+      if (out !== undefined && this.time - out < 45) return 0;
       let guns = 0;
       for (let i = 1; i <= 5; i++) {
         const s = this.inv.slots[i];
@@ -485,6 +490,16 @@ export class Bot extends Combatant {
     if (this.canAutoPick(it.item)) { g.botPick(this, it); return; }
     const slot = this.freeSlot() < 0 ? this.swapSlotFor(it.item) : -1;
     if (slot > 0) { this.select(slot); g.pick(this, it, true); }
+  }
+
+  /** Items a pickup swapped out of our hands (Game.on_got): not worth going back for a while. */
+  swappedOutOf(drops) {
+    const so = this.brain.swappedOut;
+    for (const d of drops) {
+      if (!d || !has(WEAPONS, d.k)) continue;
+      so.set(`${d.k}:${d.r | 0}`, this.time);
+      if (so.size > 8) so.delete(so.keys().next().value);
+    }
   }
 
   // ------------------------------------------------------------------ perception
@@ -762,7 +777,9 @@ export class Bot extends Combatant {
     const p = this.pos;
     if (Math.hypot(p.x - st.cx, p.z - st.cz) > st.r - 3) return 2; // in the storm already
     const over = Math.hypot(p.x - st.ncx, p.z - st.ncz) - st.nr * 0.85;
-    if (over <= 0) return 0;
+    // once on the way in, keep going until a margin past the line (no zig-zag across it between a
+    // chest outside and the storm every second or two)
+    if (over <= 0) return this.brain.urgent >= 1 && over > -Math.min(10, st.nr * 0.1) ? 1 : 0;
     const need = over / 6.5 + 4; // s of running to get in, with some slack
     if (st.shrinking) return need > st.secs * 0.7 ? 2 : 1;
     // early rotators leave as soon as the circle shows, late ones wait for the last moment
@@ -957,7 +974,12 @@ export class Bot extends Combatant {
     }
     b.lootRef = null;
     if (loot && urg < 2) {
-      const c = g.nearestChest(this.pos, urg ? 10 : !gun ? 40 : 10 + 25 * P.loot);
+      const rad = urg ? 10 : !gun ? 40 : 10 + 25 * P.loot;
+      // the chest we're on our way to stays the plan a little farther out: the way in may lead
+      // away from it first (round to a door), and dropping it there walks us back and forth
+      if (b.destKind === 'chest' && b.chestI >= 0 && !g.world.chestOpen.has(b.chestI) && !b.badChest.has(b.chestI)
+        && Math.hypot(b.dest.x - this.pos.x, b.dest.z - this.pos.z) < rad * 1.5 + 4) return;
+      const c = g.nearestChest(this.pos, rad);
       if (c && !b.badChest.has(c.i)) { b.destKind = 'chest'; b.chestI = c.i; b.dest.set(c.x, c.y, c.z); return; }
     }
     // mats: builders keep a big stack, everyone else enough for a few fights
@@ -1023,7 +1045,8 @@ export class Bot extends Combatant {
       }
       // upstairs / downstairs is fine when we can route there (through the door, up the stairs);
       // a far bot slides along the ground and only picks up what is within 6 m of its height
-      if ((dy > 1.8 || dy < -1.8) && (this.far || !(this.nav.ready && this.nav.roomAt(it.x, it.z)))) continue;
+      // (farsim's pickup reach)
+      if (this.far ? dy > 6 || dy < -6 : (dy > 1.8 || dy < -1.8) && !(this.nav.ready && this.nav.roomAt(it.x, it.z))) continue;
       if (this.pendingPick.has(it.id) || b.badLoot.has(it.id)) continue;
       if (lim2 !== Infinity && (it.x - sx) ** 2 + (it.z - sz) ** 2 > lim2) continue;
       if (!inArea(this.game, it.x, it.z)) continue;
@@ -1266,6 +1289,18 @@ export class Bot extends Combatant {
       return;
     }
 
+    // in the crater's lava (no route out, and it burns): straight to its nearest geyser, hopping
+    // up the slope, until it throws us out (then the glider and a landing outside, see skydive)
+    const esc = (m === 'ground' || m === 'air') && !this.mover.launched ? lavaEscape(this) : null;
+    if (esc) {
+      b.jumpT -= dt;
+      this.goTo(esc.x, esc.z, dt, true);
+      this.turnHuman(Math.atan2(-(esc.x - this.pos.x), -(esc.z - this.pos.z)), -0.05, dt, b.turnSpeed, b.turnK);
+      const sp = Math.hypot(this.mover.vel.x, this.mover.vel.z);
+      if (this.mover.grounded && sp < 2 && b.jumpT <= 0) { ctl.jump = true; b.jumpT = 0.6; }
+      return;
+    }
+
     b.thinkAcc += dt;
     b.thinkT -= dt; b.planT -= dt; b.goalT -= dt; b.buildT -= dt; b.jumpT -= dt; b.rampT -= dt; b.ninetyT -= dt;
     if (b.thinkT <= 0) {
@@ -1452,6 +1487,8 @@ export class Bot extends Combatant {
     b.precise = false;
     // stairs and steps: hop when the next point is a little above us and we're slowing down
     if (f.ty - p.y > 0.6 && f.ty - p.y < 2.2 && this.speed < 2 && b.jumpT <= 0 && this.mover.grounded) { this.ctl.jump = true; b.jumpT = 0.8; }
+    // walking up onto a pad on a steep flank (the volcano's geysers): hop when the slope holds us
+    else if (f.pad && f.ty - p.y > 0.3 && this.speed < 2 && b.jumpT <= 0 && this.mover.grounded) { this.ctl.jump = true; b.jumpT = 0.6; }
     return 1;
   }
 

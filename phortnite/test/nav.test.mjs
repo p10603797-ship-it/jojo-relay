@@ -3,7 +3,7 @@
 // brain's pure parts (js/ai/goals.js, farsim.js, buildfight.js) with small fakes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode, PAD } from '../public/js/ai/nav.js';
+import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode, PAD, PADS_OFF_S } from '../public/js/ai/nav.js';
 import { generateWorld } from '../public/shared/worldgen.js';
 import * as goals from '../public/js/ai/goals.js';
 import { wantFar, farUpdate, FAR_IN, FAR_OUT } from '../public/js/ai/farsim.js';
@@ -577,11 +577,37 @@ test('nav: pad routes walk onto the pad itself; mushrooms are not pad links; a p
     }
   }
   assert.ok(padRoutes > 0);
-  nav.padsOff();
+  // a pad's route starts where the walk onto it is clear: never across the crater's lava, never
+  // from a node 20 m off and 30 m up the wall
+  const linked = new Map();
+  for (const [u, list] of nav.extra) for (const e of list) linked.set(`${e[2]},${e[3]}`, u);
+  for (const p of TODAY.pads.filter((q) => q.kind === 'geyser')) {
+    const inCrater = (TODAY.lava || []).some((l) => Math.hypot(p.x - l.x, p.z - l.z) < l.r + 6);
+    const u = linked.get(`${p.x},${p.z}`);
+    if (inCrater) assert.equal(u, undefined, `crater geyser ${p.id} is not a route`);
+    else if (u !== undefined) {
+      assert.ok(Math.hypot(nav.nodeX[u] - p.x, nav.nodeZ[u] - p.z) <= 16);
+      assert.ok(nav.padWalk(nav.nodeX[u], nav.nodeZ[u], p), `geyser ${p.id}: a clear walk on`);
+    }
+  }
+  // one pad that fails is off for a while (longer each time); the others still route
+  const [u1] = [...nav.extra.keys()];
+  const [u2] = [...nav.extra.keys()].slice(1);
+  nav.padsOff(u1);
   assert.equal(nav.padsOn, false);
-  nav.padsOffUntil = 0; // (the time-out is over)
+  assert.ok(nav.padBad.has(u1) && !nav.padBad.has(u2), 'only that pad');
+  const [v2] = nav.extra.get(u2)[0];
+  const r2 = nav.path(u2, v2, null, 0);
+  assert.ok(r2 && r2.length === 2, 'another pad still throws you');
+  const v1 = nav.extra.get(u1)[0][0];
+  const r1 = nav.path(u1, v1, null, 0);
+  assert.ok(!r1 || r1.length > 2, 'the failed pad is not used');
+  const first = nav.padBad.get(u1);
+  nav.padBad.set(u1, 0); // (the time-out is over)
   nav.path(0, 1, null, 0);
   assert.equal(nav.padsOn, true, 'pads come back');
+  nav.padsOff(u1);
+  assert.ok(nav.padBad.get(u1) - first > PADS_OFF_S * 1000 * 0.9, 'twice as long the second time');
 });
 
 test('nav: the storm flow field follows real (one-way aware) links: every flow path reaches the circle', () => {
@@ -598,4 +624,37 @@ test('nav: the storm flow field follows real (one-way aware) links: every flow p
     }
     assert.equal(short, 0, `circle (${cx}, ${cz}) r ${r}: ${short} of ${n} flow paths stop short`);
   }
+});
+
+test('pads: a geyser on a slope fires for someone walking up to its rim; a roof pad never fires from the floor below', async () => {
+  const { Traversal } = await import('../public/js/world/traversal.js');
+  // a 33° slope rising toward -z, the geyser in the middle of it
+  const heightAt = (x, z) => 10 - z * 0.65;
+  const T = { heightAt, pads: [{ id: 1, kind: 'geyser', x: 0, z: 0, y: 10, top: 0.3 }, { id: 2, kind: 'launch', x: 50, z: 0, y: 30, top: 0.3, roof: true }] };
+  const at = (x, z, dy = 0) => Traversal.prototype.padAt.call(T, x, heightAt(x, z) + dy, z);
+  // walking up from below (+z): standing on the slope 1.5 m and 2.1 m out (at the rim, capsule and all)
+  assert.equal(at(0, 1.5)?.id, 1, 'below its centre on the slope');
+  assert.equal(at(0, 2.1)?.id, 1, 'touching the rim');
+  assert.equal(at(0, 2.6), null, 'not from further off');
+  assert.equal(at(0, -1.5)?.id, 1, 'from above too');
+  assert.equal(at(0, 0, 3), null, 'flying over it');
+  // the roof pad: 20 m over the ground; someone on the ground floor under it is not on it
+  const roofT = { heightAt: () => 10, pads: [T.pads[1]] };
+  assert.equal(Traversal.prototype.padAt.call(roofT, 50, 10, 0), null);
+  assert.equal(Traversal.prototype.padAt.call(roofT, 50, 30, 0)?.id, 2);
+});
+
+test('bots: in a lava pool the way out is the pool\'s nearest geyser (else straight out past its edge)', () => {
+  const lava = [{ x: 0, z: 0, r: 28, y: 60 }, { x: 200, z: 0, r: 6, y: 30 }];
+  const pads = [{ kind: 'geyser', x: 17, z: 0, y: 50 }, { kind: 'geyser', x: -17, z: 0, y: 50 }, { kind: 'mushroom', x: 5, z: 0, y: 50 }, { kind: 'geyser', x: 60, z: 0, y: 70 }];
+  const data = { lava, pads, heightAt: () => 50 };
+  const bot = (x, y, z) => ({ game: { world: { data } }, pos: { x, y, z } });
+  const e = goals.lavaEscape(bot(10, 50, 1));
+  assert.deepEqual([e.x, e.z, e.pad], [17, 0, true]);
+  assert.equal(goals.lavaEscape(bot(-12, 50, 0)).x, -17);
+  assert.equal(goals.lavaEscape(bot(10, 70, 0)), null, 'above the lava');
+  assert.equal(goals.lavaEscape(bot(40, 50, 0)), null, 'outside the pool');
+  const f = goals.lavaEscape(bot(203, 29, 0));
+  assert.equal(f.pad, false);
+  assert.ok(f.x > 206, 'straight out of a pool with no geyser');
 });

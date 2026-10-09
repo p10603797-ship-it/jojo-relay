@@ -943,6 +943,7 @@ export class Game {
     }
     const drops = a.addItem(m.item);
     if (drops.length) this.send({ t: 'dropi', id: a.id, items: drops.map((d) => ({ ...d, near: true })), x: a.pos.x, y: a.pos.y, z: a.pos.z });
+    if (drops.length && typeof a.swappedOutOf === 'function') a.swappedOutOf(drops);
     if (a === this.me) this.sfx.pickup();
   }
 

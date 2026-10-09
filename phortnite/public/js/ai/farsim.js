@@ -9,7 +9,7 @@
 //    storm, siphon and modes see nothing different
 // Waking up snaps the capsule to open ground (never inside a wall or a building).
 import { WEAPONS, HEALS, ANIM, PLAYER, ENV } from '../../shared/constants.js';
-import { passive, buildRule, isHunter, modeKey, seekerWaits, meleeOnly } from './goals.js';
+import { passive, buildRule, isHunter, modeKey, seekerWaits, meleeOnly, lavaEscape } from './goals.js';
 import { hasCone } from './buildfight.js';
 
 export const FAR_OUT = 180, FAR_IN = 160;
@@ -72,7 +72,9 @@ export function wantFar(bot, dt) {
   let want = false;
   // (floor is lava: standing on what you build is the game, so always the real thing)
   if (g.phase === 'match' && bot.alive && !bot.inBus && !watched(g, bot) && bot.nav && bot.nav.ready
-    && bot.time - b.hurtNearT > 4 && !bot.build.busy && modeKey(g) !== 'lava') {
+    && bot.time - b.hurtNearT > 4 && !bot.build.busy && modeKey(g) !== 'lava'
+    // (in the crater's lava the way out is a geyser's throw: the real physics)
+    && !lavaEscape(bot)) {
     const m = bot.mode;
     const r = bot.far ? FAR_IN : FAR_OUT;
     if ((bot.far || m === 'ground' || m === 'swim') && humanDist2(g, bot.pos.x, bot.pos.z) > r * r) want = true;
@@ -127,7 +129,8 @@ function farWatch(bot) {
   if (b.lootRef) b.wdLoot.add(b.lootRef.id);
   if (kind === 'chest') b.wdChest.add(b.chestI);
   if (b.wdT < WD_S) return false;
-  const stuck = b.wdMove >= WD_S - 1 && (r < 2 || (b.wdMaxR < 6 && b.wdFlips >= 3));
+  // (moving all along but going nowhere: still, or pacing back and forth between plans)
+  const stuck = b.wdMove >= WD_S - 1 && (r < 2 || (b.wdMaxR < 6 && b.wdFlips >= 3) || (b.wdMaxR < 12 && r < 4 && b.wdFlips >= 4));
   if (stuck) {
     for (const id of b.wdLoot) b.badLoot.add(id);
     for (const c of b.wdChest) b.badChest.add(c);
@@ -227,7 +230,9 @@ export function farUpdate(bot, dt) {
     b.badLoot.add(b.lootRef.id); if (b.badLoot.size > 24) b.badLoot.clear();
     b.destKind = ''; b.lootRef = null; b.planT = 0;
   }
-  if ((!b.farTarget || isHunter(bot)) && b.farHealT < 0 && b.farHarv < 0 && b.destKind) {
+  // (a hunter follows its route to the hunt, unless the chase above already moved it this frame:
+  // one step a frame, never both)
+  if (!moving && (!b.farTarget || isHunter(bot)) && b.farHealT < 0 && b.farHarv < 0 && b.destKind) {
     bot.navGoal(b.dest);
     // (sliding along the ground, a spot upstairs counts as reached when we're under it)
     const under = Math.hypot(b.dest.x - bot.pos.x, b.dest.z - bot.pos.z) < 2;
