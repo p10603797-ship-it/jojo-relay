@@ -20,6 +20,15 @@ export function hashString(str) {
   return h >>> 0;
 }
 
+/** A stable value in [0, 1) for an integer cell (ix, iz) and a salt: per-cell randomness that does
+ * not depend on the order things are generated in. */
+export function hash2(ix, iz, salt = 0) {
+  let h = Math.imul(ix | 0, 0x27d4eb2d) ^ Math.imul(iz | 0, 0x165667b1) ^ Math.imul(salt | 0, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
 export const smoothstep = (e0, e1, x) => {
   const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
@@ -27,10 +36,11 @@ export const smoothstep = (e0, e1, x) => {
 export const lerp = (a, b, t) => a + (b - a) * t;
 export const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
-const GRAD = [
-  [1, 1], [-1, 1], [1, -1], [-1, -1], [1, 0], [-1, 0], [0, 1], [0, -1],
-  [0.7071, 0.7071], [-0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, -0.7071],
-];
+// gradient table as (x, y) pairs: the same 12 gradients as before, flattened for speed
+const GRAD = new Float64Array([
+  1, 1, -1, 1, 1, -1, -1, -1, 1, 0, -1, 0, 0, 1, 0, -1,
+  0.7071, 0.7071, -0.7071, 0.7071, 0.7071, -0.7071, -0.7071, -0.7071,
+]);
 
 /** Classic 2D gradient (Perlin) noise with a seeded permutation table. Range ~[-1, 1]. */
 export class Perlin {
@@ -44,6 +54,9 @@ export class Perlin {
     }
     this.perm = new Uint8Array(512);
     for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
+    // the gradient (times 2) behind every lattice hash, so noise() skips a % 12 per corner
+    this.g = new Uint8Array(512);
+    for (let i = 0; i < 512; i++) this.g[i] = (this.perm[i] % 12) * 2;
   }
 
   noise(x, y) {
@@ -52,13 +65,13 @@ export class Perlin {
     x -= xf; y -= yf;
     const u = x * x * x * (x * (x * 6 - 15) + 10);
     const v = y * y * y * (y * (y * 6 - 15) + 10);
-    const P = this.perm;
-    const g00 = GRAD[P[P[X] + Y] % 12], g10 = GRAD[P[P[X + 1] + Y] % 12];
-    const g01 = GRAD[P[P[X] + Y + 1] % 12], g11 = GRAD[P[P[X + 1] + Y + 1] % 12];
-    const n00 = g00[0] * x + g00[1] * y;
-    const n10 = g10[0] * (x - 1) + g10[1] * y;
-    const n01 = g01[0] * x + g01[1] * (y - 1);
-    const n11 = g11[0] * (x - 1) + g11[1] * (y - 1);
+    const P = this.perm, Gi = this.g;
+    const a = P[X] + Y, b = P[X + 1] + Y;
+    const i00 = Gi[a], i10 = Gi[b], i01 = Gi[a + 1], i11 = Gi[b + 1];
+    const n00 = GRAD[i00] * x + GRAD[i00 + 1] * y;
+    const n10 = GRAD[i10] * (x - 1) + GRAD[i10 + 1] * y;
+    const n01 = GRAD[i01] * x + GRAD[i01 + 1] * (y - 1);
+    const n11 = GRAD[i11] * (x - 1) + GRAD[i11 + 1] * (y - 1);
     const nx0 = n00 + u * (n10 - n00);
     const nx1 = n01 + u * (n11 - n01);
     return (nx0 + v * (nx1 - nx0)) * 1.4142;

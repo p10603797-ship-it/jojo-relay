@@ -532,8 +532,8 @@ test('client plugin points: game plugins, Discover, grade, bench, tree species, 
   const { treeGeometry } = await import('../public/js/world/models.js');
   const count = (g) => g.trunk.attributes.position.count + g.leaves.attributes.position.count;
   assert.equal(count(treeGeometry('pine')), count(treeGeometry(0)));
-  assert.equal(count(treeGeometry('palm', 2)), count(treeGeometry(2)));
-  assert.equal(count(treeGeometry('birch')), count(treeGeometry(1)));
+  assert.equal(count(treeGeometry('palm')), count(treeGeometry(2)));
+  for (const sp of SPECIES) for (const lod of [0, 1, 2]) assert.ok(count(treeGeometry(sp, lod)) > 0, `${sp} lod ${lod}`);
   assert.equal(count(treeGeometry('nope')), count(treeGeometry(1)));
   const { layerTexture } = await import('../public/js/gfx/texgen.js');
   for (const k of [...SURFACES, ...LOOKS, ...Object.keys(LOOK_ALIASES), 'unknown']) {
