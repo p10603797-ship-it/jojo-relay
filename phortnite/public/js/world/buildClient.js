@@ -8,12 +8,13 @@
 //   listener's pitch for positional audio
 import * as THREE from 'three';
 import { WEAPONS, HEALS, BUILD } from '../../shared/constants.js';
-import { EDIT_PRESETS, EDIT_FULL, editOf, floorHoleFor } from '../../shared/buildgrid.js';
+import { EDIT_PRESETS, EDIT_FULL, editOf, floorHoleFor, editInReach, parseKey } from '../../shared/buildgrid.js';
 // (no physics.js import: game plugins must load in Node for the contract tests; physics.raycast's
 // default filter is the solid world + builds + props)
 
 const EDIT_REACH = 4.5; // m from the player to the piece under the crosshair
-const EDIT_KEEP = 6; // m: the open edit closes when you walk further from its piece
+// the room's edit reach (editInReach) less this much: your position reaches it a snapshot late
+const EDIT_SLACK = 0.5;
 const EDIT_GAP = 0.16; // s between two edits (the room allows one per 0.15 s)
 const STREAK_GAP = 8; // s between eliminations that still count as a streak
 const STREAK = ['', '', 'DOUBLE ELIM!', 'TRIPLE ELIM!', 'QUAD ELIM!', 'MEGA ELIM!'];
@@ -110,10 +111,18 @@ export class BuildClient {
     if (dx * dx + dy * dy + dz * dz > EDIT_REACH * EDIT_REACH) return null;
     const p = g.builds.pieces.get(h.info.key);
     if (!p || p.pending || EDIT_FULL[p.t] === undefined) return null;
+    // only where the room will take the edit (its reach is to the piece's centre, not the hit point)
+    if (!this.inReach(p.k, me)) return null;
     if (p.by !== me.id && !(g.phase !== 'lobby' && g.friendly(p.by, me.id))) return null;
     const t = this.target && this.target.k === p.k ? this.target : {};
     t.k = p.k; t.t = p.t; t.x = h.x; t.y = h.y; t.z = h.z;
     return t;
+  }
+
+  /** Would the room take an edit of piece k from actor a where a stands now? */
+  inReach(k, a) {
+    const pc = parseKey(k);
+    return !!pc && !!a && editInReach(pc, a.pos.x, a.pos.y, a.pos.z, EDIT_SLACK);
   }
 
   openEdit(t) {
@@ -139,6 +148,8 @@ export class BuildClient {
     const choice = EDIT_CHOICES[ed.t] && EDIT_CHOICES[ed.t][i];
     if (!p || !choice || !g.me || !g.me.alive) { this.closeEdit(); return; }
     if (this.time - this.lastEdit(g.me) < EDIT_GAP) return; // your own last edit (not a bot's)
+    // walked out of reach with the choices still open: no edit the room would put back
+    if (!this.inReach(ed.k, g.me)) { this.closeEdit(); return; }
     let e = choice[0] === 'hole' ? floorHoleFor(p, ed.x, ed.z) : EDIT_PRESETS[p.t][choice[0]];
     // the same edit again puts the piece back (tap DOOR twice: door shut)
     if (editOf(p) === e) e = EDIT_FULL[p.t];
@@ -192,7 +203,6 @@ export class BuildClient {
     const t = this.target || this.findTarget();
     if (!t) return; // nothing to edit: G keeps changing material
     s.matCycle = false;
-    if (s.editPad) this.game.input.crouchToggle = !this.game.input.crouchToggle; // hold B: undo its crouch tap
     this.openEdit(t);
   }
 
@@ -227,7 +237,7 @@ export class BuildClient {
     this.target = this.findTarget();
     if (this.editing) {
       const p = g.builds.pieces.get(this.editing.k);
-      const far = !p || !me.alive || me.inBus || p.pos.distanceToSquared(me.pos) > EDIT_KEEP * EDIT_KEEP;
+      const far = !p || !me.alive || me.inBus || !this.inReach(this.editing.k, me);
       if (far) this.closeEdit();
       else if (this.target && this.target.k !== this.editing.k) {
         // looking at another of your pieces: the open choices move to it

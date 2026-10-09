@@ -72,6 +72,21 @@ export function piecePose(p) {
   return { x: cx * C + C / 2, y: cy * L + L / 2, z: cz * C + C / 2 };
 }
 
+/** m from an actor's chest (feet + 1) to a piece's centre (piecePose) for an edit (the room's rule). */
+export const EDIT_RANGE = 6;
+
+/**
+ * Can an actor with feet at (x, feetY, z) edit this piece ({t, cx, cy, cz, o}: a grid piece or a
+ * parsed key)? The room checks it with slack 0; a client offers EDIT with some slack (its own
+ * position reaches the room up to a snapshot late), so an edit it offers is never refused.
+ */
+export function editInReach(piece, x, feetY, z, slack = 0) {
+  const pose = piecePose(piece);
+  const dx = pose.x - x, dy = pose.y - (feetY + 1), dz = pose.z - z;
+  const R = EDIT_RANGE - slack;
+  return dx * dx + dy * dy + dz * dz <= R * R;
+}
+
 // ------------------------------------------------------------------ edits
 // An edit is a bit mask of the tiles a piece keeps (support and collapse stay edge-based).
 // Wall: 3 x 3 tiles, bit = row * 3 + col, row 0 at the bottom, col 0 at the piece's local -x.

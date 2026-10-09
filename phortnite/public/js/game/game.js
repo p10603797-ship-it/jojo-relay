@@ -2051,7 +2051,8 @@ export class Game {
     } else if (this.phase === 'lobby') stormText = 'WARM-UP';
     const alive = this.phase === 'lobby' ? [...this.roster.values()].filter((p) => !p.bot).length : this.aliveCount;
     hud.stats(stormText, shrinking, alive, this.kills);
-    const out = me.alive && !me.inBus ? this.storm.outside(me.pos.x, me.pos.z) : -1;
+    // (in the bus, dead or on the lobby stage there is no storm roar: -Infinity, never 'just inside')
+    const out = me.alive && !me.inBus && !this.app.stageOn ? this.storm.outside(me.pos.x, me.pos.z) : -Infinity;
     hud.stormTint(out > 0 ? 1 : out > -15 ? 0.15 : 0);
     if (out > 0 && Math.random() < 0.5) this.fx.stormWisp(me.pos.x, me.pos.y, me.pos.z);
     this.sfx.setStorm(out > -20 && st ? Math.min(1, (out + 20) / 25) : 0);

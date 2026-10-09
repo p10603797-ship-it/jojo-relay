@@ -495,6 +495,8 @@ class App {
   showStage(on) {
     if (!this.stage) return;
     this.stageOn = on;
+    // the match goes on behind the stage (BACK TO LOBBY): its sounds don't
+    if (this.sfx && this.sfx.setGame) this.sfx.setGame(on ? 0 : 1);
     this.stage.show(on);
     this.lobby.show(on);
     if (this.music) this.music.lobby(on);

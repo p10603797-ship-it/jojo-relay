@@ -274,7 +274,9 @@ export class Hud {
     n.oy = stack ? -10 : (Math.random() - 0.5) * 20;
     n.total = typeof amount === 'number' ? amount : 0;
     if (typeof amount === 'number' && kind !== 'mat') this.numStyle(n, kind, amount);
-    else { n.el.className = `dn ${kind}`; n.el.textContent = amount; n.el.style.fontSize = ''; }
+    // (a '+N' material number clears the size: forget the cached one, or the next damage number
+    // on this element keeps the stylesheet's size)
+    else { n.el.className = `dn ${kind}`; n.el.textContent = amount; n.el.style.fontSize = ''; n.size = 0; }
     n.el.style.display = 'block';
   }
 

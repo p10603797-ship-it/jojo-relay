@@ -83,6 +83,12 @@ export class Sfx {
     const trim = ctx.createGain();
     trim.gain.value = MUSIC_TRIM;
     this.musicBus.connect(trim).connect(this.master);
+    // the island's sounds (positional voices, the reverb, wind / storm / bus loops) go through one
+    // gate: silenced while the lobby stage shows (BACK TO LOBBY mid-match keeps the game running
+    // behind it); UI sounds and music bypass it
+    this.gameBus = ctx.createGain();
+    this.gameBus.gain.value = this.gameK ?? 1;
+    this.gameBus.connect(this.master);
     const len = ctx.sampleRate * 2;
     this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = this.noise.getChannelData(0);
@@ -98,7 +104,7 @@ export class Sfx {
     this.verb.buffer = this.ir;
     this.verbGain = ctx.createGain();
     this.verbGain.gain.value = 0.18;
-    this.verb.connect(this.verbGain).connect(this.master);
+    this.verb.connect(this.verbGain).connect(this.gameBus);
     // loops: wind (skydiving), storm, bus engine
     this.windGain = this.loop(400, 0.6, 0);
     this.stormGain = this.loop(160, 2, 0);
@@ -125,13 +131,19 @@ export class Sfx {
     f.Q.value = q;
     const g = this.ctx.createGain();
     g.gain.value = gain;
-    src.connect(f).connect(g).connect(this.master);
+    src.connect(f).connect(g).connect(this.gameBus);
     src.start();
     g.filter = f;
     return g;
   }
 
   setVolume(v) { if (this.master) this.master.gain.value = v; }
+
+  /** The island's sounds on (1) or off (0): off while the lobby stage shows. */
+  setGame(k) {
+    this.gameK = k;
+    if (this.gameBus) this.gameBus.gain.setTargetAtTime(k, this.ctx.currentTime, 0.12);
+  }
 
   setListener(pos, yaw) {
     this.listener.x = pos.x; this.listener.y = pos.y; this.listener.z = pos.z;
@@ -229,7 +241,7 @@ export class Sfx {
       tail = f.connect(sp);
     }
     g.connect(f);
-    tail.connect(this.master);
+    tail.connect(this.gameBus);
     if (d > 25) {
       const send = ctx.createGain();
       send.gain.value = Math.min(1, d / 80);

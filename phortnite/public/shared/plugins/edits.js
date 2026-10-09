@@ -8,10 +8,11 @@
 //
 // Build piece messages (b+ and the welcome's builds) carry e when a piece is edited, so late joiners
 // see the same doors and windows. Support and collapse stay edge-based: an edit never drops a piece.
-import { piecePose, editAllowed, editOf, EDIT_FULL } from '../buildgrid.js';
+import { editInReach, editAllowed, editOf, EDIT_FULL } from '../buildgrid.js';
 
-const RANGE = 6; // m from the actor (chest height) to the piece's centre
-const COOLDOWN = 150; // ms between two edits by the same actor
+// (reach: editInReach, EDIT_RANGE m from the actor's chest to the piece's centre, the same rule the
+// client checks before it offers EDIT)
+const COOLDOWN = 100; // ms between two edits by the same actor (the client waits 0.16 s: network jitter room)
 const lastEdit = new WeakMap(); // player record -> room time of its last accepted edit
 
 /** May actor a (a room player record) edit piece b? Its builder, or a teammate during a match. */
@@ -38,9 +39,7 @@ export const edits = {
       if (!editAllowed(b.t, m.e) || !sameSide(room, a, b)) { refuse(room, c, b); return; }
       // Zero Build: no edits either (the warm-up lobby always builds)
       if (room.phase !== 'lobby' && room.rules && room.rules.build === 'off') { refuse(room, c, b); return; }
-      const pose = piecePose(b);
-      const dx = pose.x - a.x, dy = pose.y - (a.y + 1), dz = pose.z - a.z;
-      if (dx * dx + dy * dy + dz * dz > RANGE * RANGE) { refuse(room, c, b); return; }
+      if (!editInReach(b, a.x, a.y, a.z)) { refuse(room, c, b); return; }
       const now = room.now();
       const last = lastEdit.get(a);
       if (last !== undefined && now - last < COOLDOWN) { refuse(room, c, b); return; }
