@@ -395,17 +395,34 @@ try {
       await page.evaluate(() => {
         const app = window.__phortnite;
         const g = app.game;
+        // one clock for the game and its room (solo): performance.now() is the simulated time while
+        // fast-forwarding and the room ticks at 20 Hz of it. (With the room on the wall clock the
+        // game ran ~10x ahead of it and the page's memory climbed by ~0.9 GB per 30 s until the
+        // renderer was killed; with one clock it stays flat.)
+        const realNow = performance.now.bind(performance);
+        let simT = realNow();
+        const net = g.net;
+        if (net && net.room && net.timer) { clearInterval(net.timer); net.timer = null; }
+        let nextTick = simT;
+        app.__ff = { t: 0, done: false, err: null, restore: () => { performance.now = realNow; } };
+        performance.now = () => simT;
         g.startMatch(23);
-        app.__ff = { t: 0, done: false, err: null };
         const tick = () => {
-          if (app.__ff.done) return;
+          if (app.__ff.done) { app.__ff.restore(); return; }
           try {
-            for (let i = 0; i < 30; i++) g.update(1 / 60);
+            for (let i = 0; i < 30; i++) {
+              simT += 1000 / 60;
+              if (net && net.room) {
+                while (simT >= nextTick) { net.room.tick(); nextTick += 50; }
+                if (net.flush) net.flush();
+              }
+              g.update(1 / 60);
+            }
             app.__ff.t += 0.5;
             const me = g.me;
             const focus = me && me.alive && !me.inBus ? me.pos : app.camera.position;
             app.world.update(0.5, app.camera, focus, g);
-          } catch (e) { app.__ff.err = String((e && e.stack) || e); return; }
+          } catch (e) { app.__ff.err = String((e && e.stack) || e); app.__ff.restore(); return; }
           setTimeout(tick, 0);
         };
         setTimeout(tick, 200);
@@ -437,14 +454,15 @@ try {
           if (!st) break;
         }
         if (st.ok) break;
-        if (st.err || (st.phase !== 'match' && st.phase !== 'bus') || Date.now() > deadline) {
+        // ('lobby' until the room's start message has arrived)
+        if (st.err || (st.phase !== 'match' && st.phase !== 'bus' && (st.phase !== 'lobby' || st.t > 5)) || Date.now() > deadline) {
           log('fight: stopped early', JSON.stringify(st));
           result.errors.push(`fight: ${st.err || 'phase ' + st.phase}`);
           break;
         }
         if (!fightProgress(st)) await page.waitForTimeout(2000);
       }
-      await page.evaluate(() => { const app = window.__phortnite; app.__ff.done = true; });
+      await page.evaluate(() => { const app = window.__phortnite; app.__ff.done = true; app.__ff.restore(); });
       await page.waitForTimeout(500);
       await page.evaluate(pageSetup);
       const res = await page.evaluate(() => {
@@ -458,6 +476,7 @@ try {
           for (const b of acts) if ((a.pos.x - b.pos.x) ** 2 + (a.pos.z - b.pos.z) ** 2 < 60 * 60) n++;
           if (n > bn) { bn = n; best = a; }
         }
+        if (!best) return { error: 'nobody standing' };
         const v = { x: best.pos.x - 10, y: best.pos.y + 4, z: best.pos.z - 10, yaw: Math.atan2(-10, -10) + Math.PI, pitch: -0.12 };
         const m = window.__perf.measure(v);
         m.nearby = bn;
