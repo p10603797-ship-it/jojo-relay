@@ -1,6 +1,10 @@
 // Stylised human: one skinned mesh per character (single draw call) built by humanoid.js,
 // procedural animation with two-bone IK for the hands (guns, glider), crossfades between pose
 // families, a lighter far LOD, weapon attachment, glider, name tag and a Rapier ragdoll on death.
+// Game modes dress characters up (setRoleLook: green zombies, a big red Juggernaut, an orange
+// seeker; setHeadScale for Big Head mode; setTagColor for team-coloured name tags). Draw-call
+// diet: only characters within SHADOW_NEAR cast shadows, and the held item is not drawn at the
+// distant LOD (it is a few pixels there).
 import * as THREE from 'three';
 import { SKINS, ANIM, WEAPONS } from '../../shared/constants.js';
 import { itemModel, itemMaterial } from '../combat/weaponModels.js';
@@ -87,6 +91,46 @@ const ANIM_NEAR = 8, ANIM_HALF = 30, ANIM_THIRD = 60;
 // the on-screen test for LOD and pose rate adds a margin
 const BODY_SPHERE = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 1.9), VIEW_MARGIN = 1;
 const noop = () => {};
+// beyond this (m from the camera) a character casts no shadow: its shadow is a few pixels and
+// each caster costs 1-2 extra draw calls in the shadow pass
+const SHADOW_NEAR = 40;
+
+// ------------------------------------------------------------------ mode looks
+// One shared material per role (the same shader program: the rim is a uniform), so a crowd of
+// zombies costs no extra draw calls. tint multiplies the vertex colours; rim lights the edges.
+const ROLE_LOOKS = {
+  zombie: { tint: 0x8fff6e, emissive: 0x0c2c06, rim: 0x55ff30, rimK: 1.1, scale: 1 },
+  jugg: { tint: 0xffb0a4, emissive: 0x220300, rim: 0xff2a10, rimK: 2.2, scale: 1.15 },
+  seeker: { tint: 0xffcf96, emissive: 0x1e0d00, rim: 0xff9a1c, rimK: 1.4, scale: 1 },
+};
+const roleMats = new Map();
+function roleMaterial(role) {
+  let m = roleMats.get(role);
+  if (m) return m;
+  const L = ROLE_LOOKS[role];
+  m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.05, color: L.tint, emissive: L.emissive });
+  const rim = { value: new THREE.Color(L.rim).multiplyScalar(L.rimK) };
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.rimColor = rim;
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 rimColor;')
+      .replace('#include <emissivemap_fragment>', [
+        '#include <emissivemap_fragment>',
+        'float rimF = 1.0 - saturate( dot( normal, normalize( vViewPosition ) ) );',
+        'totalEmissiveRadiance += rimColor * ( rimF * rimF * rimF );',
+      ].join('\n'));
+  };
+  m.customProgramCacheKey = () => 'phortnite-role-rim';
+  roleMats.set(role, m);
+  return m;
+}
+/** The rotation part of a (possibly scaled) world matrix. */
+const _dp = new THREE.Vector3(), _ds = new THREE.Vector3(), _bs = new THREE.Vector3();
+function rotationOf(m, q, scaled) {
+  if (!scaled) return q.setFromRotationMatrix(m);
+  m.decompose(_dp, q, _ds);
+  return q;
+}
 let charSeq = 0;
 
 function nameTag(text, color = '#ffffff') {
@@ -246,6 +290,15 @@ export class Character {
     this.group.add(this.glider);
 
     this.tag = null;
+    this.tagText = '';
+    this.tagColor = '';
+    // mode looks and the draw-call diet
+    this.roleLook = null; // the role setRoleLook was last given (also unknown ones)
+    this.bodyScale = 1;
+    this.headScale = 1;
+    this.shadowOn = true;
+    this.farHide = false; // the held item is not drawn at the distant LOD
+    this.weaponShown = true;
     if (name) this.setName(name, opts.tagColor);
 
     this.phase = 0;
@@ -288,8 +341,50 @@ export class Character {
 
   setName(name, color) {
     if (this.tag) { this.group.remove(this.tag); this.tag.material.map.dispose(); this.tag.material.dispose(); }
-    this.tag = nameTag(name, color);
+    this.tagText = name;
+    this.tagColor = color || '#ffffff';
+    this.tag = nameTag(name, this.tagColor);
     this.group.add(this.tag);
+    this.placeTag();
+  }
+
+  /** Re-colour the name tag (team colours); keeps its text and visibility. */
+  setTagColor(color) {
+    if (!this.tag || !color || color === this.tagColor) return;
+    const vis = this.tag.visible;
+    this.setName(this.tagText, color);
+    this.tag.visible = vis;
+  }
+
+  placeTag() {
+    if (this.tag) this.tag.position.y = 2.2 * this.bodyScale + (this.headScale > 1 ? 0.28 * (this.headScale - 1) : 0);
+  }
+
+  /**
+   * A game mode's look: 'zombie' (green, glowing edges), 'jugg' (1.15x bigger, red edges),
+   * 'seeker' (orange); null or an unknown role is the normal look.
+   */
+  setRoleLook(role) {
+    this.roleLook = role || null;
+    const L = role && hasOwn(ROLE_LOOKS, role) ? ROLE_LOOKS[role] : null;
+    this.mesh.material = L ? roleMaterial(role) : charMat;
+    this.bodyScale = L ? L.scale : 1;
+    this.model.scale.setScalar(this.bodyScale);
+    this.placeTag();
+  }
+
+  /** Big Head mode: the head (and hair / hat) scaled around the neck. */
+  setHeadScale(s) {
+    this.headScale = s > 0 ? s : 1;
+    this.bones.head.scale.setScalar(this.headScale);
+    this.placeTag();
+  }
+
+  setShadow(on) {
+    this.shadowOn = on;
+    this.mesh.castShadow = on;
+    this.glider.castShadow = on;
+    if (this.weaponMesh) this.weaponMesh.castShadow = on;
   }
 
   setWeapon(key, rarity = 0) {
@@ -301,7 +396,8 @@ export class Character {
     if (!key) return;
     const m = itemModel(key, rarity);
     const mesh = new THREE.Mesh(m.geo, itemMaterial());
-    mesh.castShadow = true;
+    mesh.castShadow = this.shadowOn;
+    mesh.visible = this.weaponShown && !this.farHide;
     const isWeapon = hasOwn(WEAPONS, key);
     mesh.scale.setScalar(isWeapon ? GUN_SCALE : ITEM_SCALE);
     if (key === 'pickaxe' || (isWeapon && WEAPONS[key].melee)) {
@@ -369,6 +465,14 @@ export class Character {
     }
     // up close includes the local player, also while hidden in first person: its muzzle has to be exact
     this.animEvery = raw < ANIM_NEAR ? 1 : !inView ? 4 : d > ANIM_THIRD ? 3 : d > ANIM_HALF ? 2 : 1;
+    // draw-call diet: far characters cast no shadow, and their held item is not drawn
+    const shadow = raw < SHADOW_NEAR;
+    if (shadow !== this.shadowOn) this.setShadow(shadow);
+    const far = lod >= LODS - 1;
+    if (far !== this.farHide) {
+      this.farHide = far;
+      if (this.weaponMesh) this.weaponMesh.visible = this.weaponShown && !far;
+    }
   }
 
   /**
@@ -574,11 +678,11 @@ export class Character {
     const dn = Math.max(0, -pitch) * (1 - port);
     _qAim.setFromAxisAngle(_xAxis, -pitch * (1 - port));
     _v2.set(lerp(h.o[0], h.ads[0], ads) + 0.07 * port, lerp(h.o[1], h.ads[1], ads) - rl * 0.05 - 0.1 * port + 0.05 * dn,
-      lerp(h.o[2], h.ads[2], ads) - rc * 0.07 - 0.04 * port - 0.1 * dn).applyQuaternion(_qAim).applyQuaternion(_qMesh);
+      lerp(h.o[2], h.ads[2], ads) - rc * 0.07 - 0.04 * port - 0.1 * dn).applyQuaternion(_qAim).applyQuaternion(_qMesh).multiplyScalar(this.bodyScale);
     _gunPos.setFromMatrixPosition(this.bones.chest.matrixWorld).add(_v2);
     _e1.set(-pitch * (1 - port) - rc * 0.14 + rl * 0.2 + 0.55 * port, 0.6 * port, rl * 0.5 + 0.3 * port);
     _qGun.setFromEuler(_e1).premultiply(_qMesh);
-    return out.compose(_gunPos, _qGun, _one);
+    return out.compose(_gunPos, _qGun, this.bodyScale === 1 ? _one : _bs.setScalar(this.bodyScale));
   }
 
   aimGun(s, gk) {
@@ -590,7 +694,7 @@ export class Character {
     // sprinting carries the gun low across the chest, unless aiming or shooting
     const port = this.sprintK * (1 - ads) * (1 - this.raiseK);
     b.chest.updateWorldMatrix(true, false);
-    _qMesh.setFromRotationMatrix(this.mesh.matrixWorld);
+    rotationOf(this.mesh.matrixWorld, _qMesh, this.bodyScale !== 1);
     // holder local = spine^-1 * gunWorld
     _mInv.copy(b.spine.matrixWorld).invert();
     this.lowered = port > 0.01;
@@ -621,8 +725,8 @@ export class Character {
       _qL.slerp(_qR, toMag * 0.6);
     }
     // wrist = grip - handRotation * palmOffset
-    _tR.sub(_v1.copy(this.ik.R.palm).applyQuaternion(_qR));
-    _tL.sub(_v1.copy(this.ik.L.palm).applyQuaternion(_qL));
+    _tR.sub(_v1.copy(this.ik.R.palm).applyQuaternion(_qR).multiplyScalar(this.bodyScale));
+    _tL.sub(_v1.copy(this.ik.L.palm).applyQuaternion(_qL).multiplyScalar(this.bodyScale));
     _poleR.set(-0.75, -1, -0.45).normalize().applyQuaternion(_qMesh);
     _poleL.set(0.45, -1, -0.15).normalize().applyQuaternion(_qMesh);
     this.solveArm(this.ik.R, _tR, _poleR, _qR, gk);
@@ -638,9 +742,9 @@ export class Character {
     A.clav.updateWorldMatrix(false, false);
     A.arm.updateWorldMatrix(false, false);
     _S.setFromMatrixPosition(A.arm.matrixWorld);
-    _q1.setFromRotationMatrix(A.clav.matrixWorld); // parent world rotation
+    rotationOf(A.clav.matrixWorld, _q1, this.bodyScale !== 1); // parent world rotation
     _d.subVectors(target, _S);
-    const a = A.up, c = A.lo;
+    const a = A.up * this.bodyScale, c = A.lo * this.bodyScale;
     const dist = clamp(_d.length(), Math.abs(a - c) + 1e-3, a + c - 1e-3);
     _d.normalize();
     const cosA = clamp((a * a + dist * dist - c * c) / (2 * a * dist), -1, 1), sinA = Math.sqrt(1 - cosA * cosA);
@@ -712,13 +816,13 @@ export class Character {
     // hands on the glider bar (IK)
     b.chest.updateWorldMatrix(true, false);
     this.glider.updateWorldMatrix(false, false);
-    _qMesh.setFromRotationMatrix(this.mesh.matrixWorld);
+    rotationOf(this.mesh.matrixWorld, _qMesh, this.bodyScale !== 1);
     _q4.setFromRotationMatrix(this.glider.matrixWorld);
     for (let i = 0; i < 2; i++) {
       const A = i ? this.ik.R : this.ik.L;
       _tL.set(i ? -0.29 : 0.29, -0.33, 0.0).applyMatrix4(this.glider.matrixWorld);
       _qHand.copy(_q4).multiply(Q_BAR[i]);
-      _tL.sub(_v1.copy(A.palm).applyQuaternion(_qHand));
+      _tL.sub(_v1.copy(A.palm).applyQuaternion(_qHand).multiplyScalar(this.bodyScale));
       _poleL.set(i ? -1 : 1, -0.2, -0.7).normalize().applyQuaternion(_qMesh);
       this.solveArm(A, _tL, _poleL, _qHand, 1);
     }
@@ -759,7 +863,10 @@ export class Character {
     }
   }
 
-  showWeapon(v) { if (this.weaponMesh) this.weaponMesh.visible = v; }
+  showWeapon(v) {
+    this.weaponShown = v;
+    if (this.weaponMesh) this.weaponMesh.visible = v && !this.farHide;
+  }
 
   setVisible(v) {
     this.visible = v;
