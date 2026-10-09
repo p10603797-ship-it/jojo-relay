@@ -268,6 +268,29 @@ export class Room {
     return null;
   }
 
+  /** The first human who is connected and not held away (join order), or null. */
+  firstPresent(except = 0) {
+    for (const p of this.players.values()) if (!p.bot && p.id !== except && !p.away && this.connOf(p)) return p;
+    return null;
+  }
+
+  /**
+   * Remove a player for good (left, a rejoin hold ran out, a held player was kicked): the mode
+   * hears about it (onKill) but never respawns them, and stops counting them (runtime.list), in
+   * every phase (a series' round break too, or the next round would revive a ghost). The caller
+   * re-checks the win afterwards: the elimination's own checkWin still saw the player listed.
+   */
+  removePlayer(p) {
+    p.leaving = true; // before the elimination, so the mode's onKill sees it
+    p.respawnAt = 0;
+    if (p.alive && (this.phase === 'match' || this.phase === 'bus')) this.eliminate(p, null, { c: 'left' });
+    p.inMatch = false;
+    p.respawnAt = 0;
+    this.players.delete(p.id);
+    this.runtime.list = this.runtime.list.filter((q) => q !== p);
+    this.broadcast({ t: 'note', msg: `${p.name} left` });
+  }
+
   roster() {
     return [...this.players.values()].map((p) => {
       const row = { id: p.id, name: p.name, skin: p.skin, bot: p.bot, alive: p.alive, kills: p.kills, spec: p.spectator, team: p.team };
@@ -319,7 +342,9 @@ export class Room {
     }
     this.players.set(id, p);
     this.conns.set(conn.id, { conn, pid: id, last: this.now() });
-    if (!this.leader || !this.players.get(this.leader)) this.leader = id;
+    // a leader who is away (held for a rejoin) cannot start: the newcomer leads
+    const lp = this.players.get(this.leader);
+    if (!lp || lp.away || !this.connOf(lp)) this.leader = id;
     this.send(conn, this.welcome(id));
     this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader }, conn.id);
     this.broadcast({ t: 'note', msg: `${p.name} joined the party` }, conn.id);
@@ -334,23 +359,14 @@ export class Room {
     const p = this.players.get(c.pid);
     // a room plugin may keep the player instead (e.g. held for a rejoin)
     if (this.plugAnswer('onLeave', this, c, p) === true) return;
-    if (p) {
-      // gone for good: the mode hears about it (onKill) but never respawns them, then stops counting them
-      p.leaving = true;
-      p.respawnAt = 0;
-      if (p.alive && (this.phase === 'match' || this.phase === 'bus')) this.eliminate(p, null, { c: 'left' });
-      p.inMatch = false;
-      p.respawnAt = 0;
-      this.players.delete(p.id);
-      this.runtime.list = this.runtime.list.filter((q) => q !== p);
-      this.broadcast({ t: 'note', msg: `${p.name} left` });
-    }
+    if (p) this.removePlayer(p);
     const humans = this.humans();
     if (!humans.length) {
       this.empty = true;
       return;
     }
-    if (this.leader === c.pid) this.leader = humans[0].id;
+    // someone who is here leads (a held player cannot start); all held: the first to come back will
+    if (this.leader === c.pid || !this.players.has(this.leader)) this.leader = (this.firstPresent() || humans[0]).id;
     this.reassignBots();
     this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader });
     if (this.phase === 'match' || this.phase === 'bus') this.checkWin();
@@ -1332,6 +1348,13 @@ function cleanHeld(w) {
 
 // positions are clamped to the island (plus a margin) so the room never judges storm / hits far off the map
 const XZ_LIMIT = MAP.size / 2 + 60;
+// loot on the floor at most (an honest match starts with ~1500 items; 4000 is a ~300 KB welcome,
+// well under the P2P reassembly limit of 400 x 5000 characters)
+export const LOOT_CAP = 4000;
+const DROP_PER_S = 60;           // items one actor may drop a second
+const EMOTE_MS = 250;            // one emote per player every 250 ms
+const dropBudget = new WeakMap(); // player record -> {t0, n}
+const emoteT = new WeakMap();     // player record -> room time of the last emote
 
 function setState(p, s) {
   if (!Array.isArray(s) || s.length < 11) return;
@@ -1583,8 +1606,22 @@ const HANDLERS = {
   dropi(c, m) {
     const a = this.actor(c.conn.id, m.id);
     if (!a || !Array.isArray(m.items)) return;
+    // dead actors and every phase may drop (death drops, swaps in the lobby): instead, drops land
+    // where the actor really is, the room's loot is capped, and each actor drops at most
+    // DROP_PER_S items a second (a flood would make the next joiner's welcome megabytes long)
+    if (this.loot.size >= LOOT_CAP) return;
+    const now = this.now();
+    const bud = dropBudget.get(a);
+    if (!bud || now - bud.t0 > 1000) dropBudget.set(a, { t0: now, n: 0 });
+    const b = dropBudget.get(a);
+    let x = num(m.x, a.x), y = num(m.y, a.y), z = num(m.z, a.z);
+    if (Math.hypot(x - a.x, z - a.z) > 4) { x = a.x; y = a.y; z = a.z; }
+    x = clampN(x, -XZ_LIMIT, XZ_LIMIT);
+    z = clampN(z, -XZ_LIMIT, XZ_LIMIT);
+    y = clampN(y, Math.max(-50, a.y - 6), Math.min(600, a.y + 6));
     const out = [];
     for (const it of m.items.slice(0, 12)) {
+      if (b.n >= DROP_PER_S || this.loot.size >= LOOT_CAP) break;
       if (!it || typeof it.k !== 'string') continue;
       const k = it.k;
       let item = null;
@@ -1593,9 +1630,10 @@ const HANDLERS = {
       else if (own(HEALS, k)) item = { k, n: clampN(num(it.n) | 0, 1, HEALS[k].stack) };
       else if (MAT_KEYS.includes(k)) item = { k, n: clampN(num(it.n) | 0, 1, MAX_MATS) };
       if (!item) continue;
+      b.n++;
       const ang = out.length * 1.3;
       const rad = it.near ? 0.4 : 0.8 + out.length * 0.15;
-      out.push(this.addLoot(item, num(m.x, a.x) + Math.cos(ang) * rad, num(m.y, a.y) + 0.05, num(m.z, a.z) + Math.sin(ang) * rad));
+      out.push(this.addLoot(item, x + Math.cos(ang) * rad, y + 0.05, z + Math.sin(ang) * rad));
     }
     if (out.length) this.broadcast({ t: 'l+', items: out });
   },
@@ -1616,6 +1654,10 @@ const HANDLERS = {
 
   emote(c, m) {
     const p = this.actor(c.conn.id, m.id);
-    if (p && p.alive) this.broadcast({ t: 'emote', id: p.id, e: num(m.e) | 0 }, c.conn.id);
+    if (!p || !p.alive) return;
+    const now = this.now();
+    if (now - (emoteT.get(p) ?? -1e12) < EMOTE_MS) return;
+    emoteT.set(p, now);
+    this.broadcast({ t: 'emote', id: p.id, e: num(m.e) | 0 }, c.conn.id);
   },
 };

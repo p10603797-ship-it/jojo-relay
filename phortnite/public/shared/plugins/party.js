@@ -12,6 +12,7 @@
 //   suggest {id}            a member asks the leader for a mode (at most 1 per 3 s)
 //   mark {x, z} | {clear}   a map marker for your team (everyone in the lobby), at most 4 per second
 //   bye                     the page leaves on purpose: its disconnect is not held for a rejoin
+// hello.keep on a rejoin: true, or {match, live, alive} (see keepUpToDate)
 // Messages (room -> client): countdown {s, ends, ms} (s 0 = cancelled), kicked {msg},
 //   suggest {id, from}, mark {id, x, z} | {id, clear}, and on a rejoin 'resumed' (see below).
 //
@@ -30,6 +31,7 @@ export const COUNTDOWN_MS = 3000;  // PLAY -> 3, 2, 1 -> the bus
 export const SUGGEST_MS = 3000;    // one mode suggestion per player per 3 s
 export const MARKS_PER_S = 4;
 const LOOK_MS = 100;
+const ROSTER_MS = 100; // members' own toggles: at most 10 rosters a second
 const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 
 const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
@@ -58,16 +60,24 @@ function recOf(room, id) {
   return null;
 }
 
-/** The first connected human (in join order), or null. */
-function firstConnected(room, except = 0) {
-  for (const p of room.players.values()) {
-    if (!p.bot && p.id !== except && !p.away && recOf(room, p.id)) return p;
-  }
-  return null;
-}
+/** The first connected human who is not held away (in join order), or null: one rule, the Room's. */
+const firstConnected = (room, except = 0) => room.firstPresent(except);
 
 function rosterOut(room) {
+  room.party.rosterDue = false;
+  room.party.rosterT = room.now();
   room.broadcast({ t: 'roster', players: room.roster(), leader: room.leader });
+}
+
+/**
+ * A roster change from a member's own toggle (ready, look): at most one roster every ROSTER_MS
+ * (the plugin's tick sends a pending one). A flood of toggles never loses one (the last roster
+ * carries every player's current state) but no longer makes every iPad re-render 400 times a second.
+ */
+function rosterSoon(room) {
+  const P = room.party;
+  if (room.now() - P.rosterT >= ROSTER_MS) rosterOut(room);
+  else P.rosterDue = true;
 }
 
 function cancelCountdown(room, tell = true) {
@@ -86,18 +96,20 @@ function fixBotOwner(room) {
 
 /** Remove a player for good (a hold ran out, a held player was kicked, the match ended). */
 function dropPlayer(room, p, broadcast = true) {
-  if (p.alive && inMatch(room)) room.eliminate(p, null, { c: 'left' });
-  room.players.delete(p.id);
+  // the same removal as Room.leave: out of the mode's list too (no ghost that blocks the win,
+  // waits forever to respawn, or comes back in the next round of a series)
+  room.removePlayer(p);
   room.party.suggestT.delete(p.id);
   room.party.marks.delete(p.id);
   room.party.lookT.delete(p.id);
-  room.broadcast({ t: 'note', msg: `${p.name} left` });
   room.log('party drop', { room: room.code, id: p.id });
   const humans = room.humans();
   if (!humans.length) { room.empty = true; return; }
   if (room.leader === p.id || !room.players.has(room.leader)) room.leader = (firstConnected(room) || humans[0]).id;
   fixBotOwner(room);
   if (broadcast) rosterOut(room);
+  // the elimination's own checkWin still counted them (an infection survivor, a hider, a pending respawn)
+  if (inMatch(room)) room.checkWin();
 }
 
 const cleanText = (s, n) => String(s ?? '').replace(/[\u0000-\u001f<>]/g, '').slice(0, n);
@@ -148,6 +160,8 @@ export const party = {
       marks: new Map(),    // pid -> { ts: [MARKS_PER_S times], i }
       lookT: new Map(),    // pid -> time of the last look
       sweepT: 0,
+      rosterT: -1e12,      // when the last roster went out
+      rosterDue: false,    // a member's toggle is waiting for the next roster (rosterSoon)
     };
   },
 
@@ -200,15 +214,20 @@ export const party = {
       p.token = makeToken();
     }
     if (!p.token) p.token = makeToken();
+    // a P2P party's host (its Room runs on their page): never kicked, named in 'party ended' notes
+    const hostRec = room.hostConn ? room.conns.get(room.hostConn) : null;
+    const party = { max: room.maxHumans, cd: P.cd ? Math.max(0, P.cd.ends - room.now()) : 0 };
+    if (hostRec) party.host = hostRec.pid;
     return {
       resume: p.token,
-      party: { max: room.maxHumans, cd: P.cd ? Math.max(0, P.cd.ends - room.now()) : 0 },
+      party,
       players: room.roster(), // again: the new player's row now has its level
     };
   },
 
   tick(room, now) {
     const P = room.party;
+    if (P.rosterDue && now - P.rosterT >= ROSTER_MS) rosterOut(room);
     if (P.cd && now >= P.cd.ends) fireCountdown(room);
     if (now - P.sweepT < 250) return;
     P.sweepT = now;
@@ -247,7 +266,7 @@ export const party = {
       const on = !!(m && m.on);
       if (!p || p.ready === on) return;
       p.ready = on;
-      rosterOut(this);
+      rosterSoon(this);
     },
 
     look(c, m) {
@@ -270,7 +289,7 @@ export const party = {
         const l = clampInt(m.lvl, 1, 999, p.lvl || 1);
         if (l !== p.lvl) { p.lvl = l; changed = true; }
       }
-      if (changed) rosterOut(this);
+      if (changed) rosterSoon(this);
     },
 
     kick(c, m) {
@@ -281,6 +300,11 @@ export const party = {
       if (!p || p.bot) return;
       let cid = null;
       for (const [k, r] of this.conns) if (r.pid === id) { cid = k; break; }
+      // a P2P party runs on its host's page: removing the host would end it for everyone
+      if (cid !== null && cid === this.hostConn) {
+        this.send(c.conn, { t: 'note', msg: "The host can't be removed. They're running the party!" });
+        return;
+      }
       this.log('party kick', { room: this.code, id });
       if (cid === null) { dropPlayer(this, p); return; } // held after a drop: just remove them
       this.send(this.conns.get(cid).conn, { t: 'kicked', msg: 'The party leader removed you from the party.' });
@@ -371,6 +395,13 @@ function fireCountdown(room) {
   if (room.phase === 'lobby') room.broadcast({ t: 'countdown', s: 0 });
 }
 
+/** Does a rejoining page's game (hello.keep) still match the room: same match, same phase, same life? */
+function keepUpToDate(room, p, keep) {
+  if (!keep || typeof keep !== 'object') return true;
+  const live = room.phase !== 'lobby';
+  return (keep.match | 0) === room.match && !!keep.live === live && (!live || !!keep.alive === !!p.alive);
+}
+
 /** A held (or still bound) player comes back on a new connection. */
 function rebind(room, conn, p, hello) {
   // a connection still bound to this player (its socket has not noticed the drop yet) is replaced
@@ -391,7 +422,11 @@ function rebind(room, conn, p, hello) {
   w.me = { x: r1(p.x), y: r1(p.y), z: r1(p.z), hp: Math.ceil(p.hp), sh: Math.ceil(p.sh), alive: !!p.alive, inBus: !!p.inBus };
   // the mode's loadout (gun game rung, build fight kit, …): a reloaded page gets it back
   if (p.lo) w.me.lo = p.lo;
-  if (hello.keep) w.t = 'resumed';
+  // a page whose game still runs gets 'resumed' (its game is patched, not rebuilt), unless what it
+  // has is out of date: hello.keep {match, live, alive} says which match and phase it is in, and
+  // whether its player is alive there (the match started, or a respawn happened, while it was away:
+  // the full welcome rebuilds its game). keep: true (older pages) is always 'resumed'.
+  if (hello.keep && keepUpToDate(room, p, hello.keep)) w.t = 'resumed';
   room.send(conn, w);
   room.broadcast({ t: 'roster', players: room.roster(), leader: room.leader }, conn.id);
   if (wasAway) room.broadcast({ t: 'note', msg: `${p.name} is back!` }, conn.id);

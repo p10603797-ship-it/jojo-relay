@@ -9,6 +9,7 @@ import { MapView } from './mapview.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const _v = new THREE.Vector3();
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // damage numbers: a hit this close (m) and this soon (s) after a live number adds to its total
 const STACK_DIST = 1.2, STACK_TIME = 0.7;
@@ -170,7 +171,7 @@ export class Hud {
       this.set(`slot${i}`, key, () => {
         const el = this.slots[i];
         el.className = `slot${inv.sel === i && !p.buildMode ? ' sel' : ''}${s && (WEAPONS[s.k] && s.k !== 'pickaxe' || HEALS[s.k]) ? ` r${WEAPONS[s.k] ? s.r | 0 : HEALS[s.k].rarity}` : ''}`;
-        el.children[1].innerHTML = s ? ICON[s.k] || (WEAPONS[s.k] ? WEAPONS[s.k].short.toUpperCase() : s.k) : '';
+        el.children[1].innerHTML = s ? ICON[s.k] || (WEAPONS[s.k] ? WEAPONS[s.k].short.toUpperCase() : esc(s.k)) : '';
         el.children[2].textContent = s ? (HEALS[s.k] ? s.n : WEAPONS[s.k] && WEAPONS[s.k].mag ? s.m : '') : '';
       });
     }

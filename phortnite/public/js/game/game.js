@@ -8,6 +8,7 @@ import {
 import { rulesFromSettings, normalizeRules } from '../../shared/modes/rules.js';
 import { rollInitialLoot } from '../../shared/loot.js';
 import { GAME_PLUGINS } from './plugins.js';
+import { cleanRow } from './roster.js';
 import { seriesRows } from './modeClient.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
 import { Bot, forgetGame } from '../actors/bot.js';
@@ -134,6 +135,7 @@ export class Game {
     this.startSpawns = null;     // the start message's spawns / loadouts, for bots handed over just after
     this.startLo = null;
     this.myPlace = 0;            // where I placed when eliminated (no respawn)
+    this.match = 0;              // the room's match number (a rejoin tells the room which match this page is in)
     this.unsub = net.onMessage((m) => this.onMessage(m));
     this.disposed = false;
     // game plugins (js/game/plugins.js), last so they can use everything above
@@ -221,6 +223,7 @@ export class Game {
     this.phase = m.phase;
     this.code = m.code;
     this.solo = m.solo;
+    this.match = m.match | 0;
     if (m.checksum !== this.world.data.checksum) {
       // a different island: every object id, loot spot and chest would disagree, so don't mix
       this.app.leaveGame();
@@ -234,7 +237,7 @@ export class Game {
     this.modeState = m.ms || {};
     this.roles.clear();
     for (const [id, role] of m.roles || []) this.roles.set(id, role);
-    for (const p of m.players) this.roster.set(p.id, p);
+    for (const p of m.players) this.roster.set(p.id, cleanRow(p));
     const info = this.roster.get(m.you) || { name: this.opts.name, skin: this.opts.skin };
     this.me = new LocalPlayer(this, m.you, info.name, info.skin);
     this.world.restoreAll();
@@ -275,8 +278,9 @@ export class Game {
 
   on_roster(m) {
     this.leader = m.leader;
-    const ids = new Set(m.players.map((p) => p.id));
-    for (const p of m.players) {
+    const players = m.players.map(cleanRow);
+    const ids = new Set(players.map((p) => p.id));
+    for (const p of players) {
       this.roster.set(p.id, { ...(this.roster.get(p.id) || {}), ...p });
       this.ensureRemote(p);
     }
@@ -313,6 +317,7 @@ export class Game {
 
   on_start(m) {
     this.phase = m.bus ? 'bus' : 'match';
+    this.match = m.match | 0;
     this.leader = m.leader;
     this.settingsState = m.settings;
     this.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings);
@@ -330,7 +335,7 @@ export class Game {
       if (!ids.has(id)) { r.dispose(); this.remotes.delete(id); }
     }
     this.roster.clear();
-    for (const p of m.players) this.roster.set(p.id, p);
+    for (const p of m.players) this.roster.set(p.id, cleanRow(p));
     const myTeam = this.teamOf(this.myId);
     for (const p of m.players) {
       if (p.id !== this.myId) {
@@ -549,7 +554,7 @@ export class Game {
     for (const b of this.bots.values()) b.dispose();
     this.bots.clear();
     this.roster.clear();
-    for (const p of m.players) this.roster.set(p.id, p);
+    for (const p of m.players) this.roster.set(p.id, cleanRow(p));
     for (const [id, r] of this.remotes) {
       if (!this.roster.has(id) || r.isBot) { r.dispose(); this.remotes.delete(id); } else { r.revive(); r.setNameVisible(true); }
     }
@@ -1045,7 +1050,7 @@ export class Game {
     this.resetWorld();
     this.startLoot(m);
     this.setTeams(m.teams);
-    for (const p of m.players || []) this.roster.set(p.id, { ...(this.roster.get(p.id) || {}), ...p });
+    for (const p0 of m.players || []) { const p = cleanRow(p0); this.roster.set(p.id, { ...(this.roster.get(p.id) || {}), ...p }); }
     this.roles.clear();
     this.modeState = {};
     this.startSpawns = m.spawns || null;

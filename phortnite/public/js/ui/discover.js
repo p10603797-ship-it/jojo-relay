@@ -226,12 +226,14 @@ export function openDiscover(app, opts = {}) {
 
   function openCreatorFrom(initial, name) {
     const leader = isLeader && !!opts.onPick;
-    return createCreator(app, {
+    if (child && child.close) child.close();
+    child = createCreator(app, {
       initial, name, parent: root,
       onPlay: leader ? (p) => { opts.onPick(p); close(); } : null,
       onSave: () => refreshMine(),
       onClose: () => { if (!closed) refreshMine(); },
     });
+    return child;
   }
 
   // ------------------------------------------------------------------ code sheet
@@ -324,6 +326,7 @@ export function openDiscover(app, opts = {}) {
   root.addEventListener('pointerdown', (e) => e.stopPropagation());
 
   let closed = false;
+  let child = null; // the creator opened from here (closed with this sheet)
   function onKey(e) {
     if (e.key !== 'Escape' || root.querySelector('#creator')) return;
     e.stopPropagation();
@@ -334,6 +337,7 @@ export function openDiscover(app, opts = {}) {
   function close() {
     if (closed) return;
     closed = true;
+    if (child) { try { child.close(); } catch (e) { /* already gone */ } child = null; }
     window.removeEventListener('keydown', onKey, true);
     if (searchRaf) cancelAnimationFrame(searchRaf);
     root.classList.add('closing');

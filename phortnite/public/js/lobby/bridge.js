@@ -10,6 +10,7 @@
 // (no three.js / Rapier imports here: game plugins load in Node too, for the contract tests)
 import { MatchStats } from '../game/matchStats.js';
 import { rulesFromSettings, normalizeRules } from '../../shared/modes/rules.js';
+import { cleanRow } from '../game/roster.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -68,6 +69,9 @@ export class PartyBridge {
         this.stats.start(g, m);
         app.lobby.hideResults();
         app.lobby.countdown(null);
+        // Discover, the creator and lobby sheets (a member card, the locker) never stay over the bus
+        app.lobby.closeSheets();
+        if (app.ui && app.ui.modalOpen && app.ui.modalOpen()) app.ui.closeModal();
         app.warming = false;
         app.showStage(false);
       } else if (m && m.t === 'welcome') {
@@ -120,7 +124,7 @@ export class PartyBridge {
       case 'welcome':
         g.partyInfo = m.party && typeof m.party === 'object' ? m.party : { max: 16, cd: 0 };
         app.onWelcome(g, m);
-        if (g.partyInfo.cd > 0 && m.phase === 'lobby') app.lobby.countdown({ s: Math.ceil(g.partyInfo.cd / 1000), ms: g.partyInfo.cd });
+        this.syncCountdown(m);
         break;
       case 'resumed':
         this.resumed(m);
@@ -191,6 +195,17 @@ export class PartyBridge {
    */
   resumed(m) {
     const g = this.game, app = this.app;
+    // the match started (or I respawned) while I was away: this game is in the wrong place (the
+    // lobby, or my death card), so rebuild it from the room's state, the same way a full welcome
+    // does ('fresh'): its onPhase revives me in the bus or at my spot (revive)
+    const s0 = m.me, me0 = g.me;
+    const liveNow = m.phase === 'bus' || m.phase === 'match';
+    const missedStart = liveNow && (g.phase === 'lobby' || g.phase === 'ended');
+    const missedRespawn = liveNow && !!me0 && !!s0 && s0.alive && !me0.alive;
+    if ((missedStart || missedRespawn) && typeof app.onNet === 'function') {
+      app.onNet(g, { t: '_net', state: 'fresh', msg: { ...m, t: 'welcome' } });
+      return;
+    }
     g.leader = m.leader;
     g.code = m.code;
     if (m.settings) g.settingsState = m.settings;
@@ -198,11 +213,14 @@ export class PartyBridge {
       try { g.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings); } catch (e) { /* keep */ }
     }
     g.partyInfo = m.party && typeof m.party === 'object' ? m.party : g.partyInfo;
+    // a countdown that started, or ended (s:0 missed), while I was away
+    this.syncCountdown(m);
     const live = m.phase !== 'lobby';
     if (Array.isArray(m.teams) && typeof g.setTeams === 'function') g.setTeams(m.teams);
     if (m.area !== undefined) g.area = m.area && live && g.rules.area !== 'full' ? m.area : null;
     const ids = new Set();
-    for (const p of m.players || []) {
+    for (const p0 of m.players || []) {
+      const p = cleanRow(p0);
       ids.add(p.id);
       g.roster.set(p.id, { ...(g.roster.get(p.id) || {}), ...p });
       if (p.id !== g.myId) g.ensureRemote(p);
@@ -252,6 +270,13 @@ export class PartyBridge {
     app.onWelcome(g, m);
     app.lobby.render();
     app.lobby.toast('Back in the game! 💪');
+  }
+
+  /** The lobby's 3-2-1 as the room has it now (welcome / resumed party.cd): shown, or cleared. */
+  syncCountdown(m) {
+    const cd = m.party && typeof m.party === 'object' ? m.party.cd : 0;
+    if (cd > 0 && m.phase === 'lobby') this.app.lobby.countdown({ s: Math.ceil(cd / 1000), ms: cd });
+    else this.app.lobby.countdown(null);
   }
 
   /** Roles as the room has them now ([[id, role]]): every change goes through Game's 'role' handling. */

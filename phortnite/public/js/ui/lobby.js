@@ -182,6 +182,7 @@ export class LobbyUi {
     // stage: you first, then the leader, then the rest in join order
     const order = S.humans.slice().sort((a, b) => (b.id === S.me) - (a.id === S.me) || (b.id === S.leader) - (a.id === S.leader) || a.id - b.id);
     const inMatch = S.phase !== 'lobby';
+    if (inMatch) this.closeSheets();
     app.stage.setParty(order.slice(0, 4).map((p) => ({
       id: p.id, name: p.name, skin: p.skin, lvl: p.lvl || 1, ready: !!p.ready, leader: p.id === S.leader, me: p.id === S.me,
       away: !!p.away, color: colors.get(p.id), inMatch: inMatch && p.id !== S.me && !p.away && p.alive !== false && !p.spec,
@@ -194,7 +195,7 @@ export class LobbyUi {
     const cards = order.map((p) => {
       const skin = SKINS[p.skin] || SKINS[0];
       const tag = p.away ? '<span class="lc-st away">…</span>' : p.id === S.leader ? '<span class="lc-st crown">♛</span>' : p.ready ? '<span class="lc-st ok">✓</span>' : '<span class="lc-st">…</span>';
-      return `<button class="lc${p.id === S.me ? ' me' : ''}" data-act="member" data-id="${p.id}"><i style="background:${skin.outfit};box-shadow:inset 0 -6px 0 ${skin.accent}"></i><span class="lc-name">${esc(p.name)}${p.id === S.me ? ' <small>(you)</small>' : ''}</span><span class="lc-lv">${p.lvl || 1}</span>${tag}</button>`;
+      return `<button class="lc${p.id === S.me ? ' me' : ''}" data-act="member" data-id="${p.id | 0}"><i style="background:${skin.outfit};box-shadow:inset 0 -6px 0 ${skin.accent}"></i><span class="lc-name">${esc(p.name)}${p.id === S.me ? ' <small>(you)</small>' : ''}</span><span class="lc-lv">${(p.lvl | 0) || 1}</span>${tag}</button>`;
     });
     const free = Math.max(0, Math.min(S.max, 4) - order.length);
     for (let i = 0; i < free; i++) cards.push('<button class="lc invite" data-act="invite"><b>+</b><span class="lc-name">INVITE</span></button>');
@@ -262,6 +263,19 @@ export class LobbyUi {
     }
   }
 
+  /** Forget any countdown without rendering (a party switch: the next Game is not up yet). */
+  resetCountdown() {
+    clearInterval(this.cdTimer);
+    this.cdEnds = 0;
+    this.el.count.classList.add('hidden');
+  }
+
+  /** Discover / the creator (and its sheets) step aside: a match is starting or running. */
+  closeSheets() {
+    if (this.discover && this.discover.open) { try { this.discover.close(); } catch (e) { /* gone */ } }
+    this.discover = null;
+  }
+
   /** {t:'countdown', s, ms}: big 3-2-1 over the stage; s 0 clears it. */
   countdown(m) {
     clearInterval(this.cdTimer);
@@ -271,6 +285,8 @@ export class LobbyUi {
       this.render();
       return;
     }
+    // everyone sees the 3-2-1 (a member browsing Discover would miss the bus)
+    this.closeSheets();
     this.cdEnds = performance.now() + (m.ms || m.s * 1000);
     const S = this.state();
     this.el.cancel.classList.toggle('hidden', !(S && S.isLeader));
@@ -279,7 +295,13 @@ export class LobbyUi {
     const tick = () => {
       const left = this.cdEnds - performance.now();
       const n = Math.max(1, Math.ceil(left / 1000));
-      if (left <= 0) { this.el.cnum.textContent = 'GO!'; clearInterval(this.cdTimer); return; }
+      if (left <= 0) {
+        this.el.cnum.textContent = 'GO!';
+        // a 'start' (or the s:0 cancel) that never came: never lock PLAY until a reload
+        const g = this.app.game;
+        if (left < -2500 && (!g || g.phase === 'lobby')) this.countdown(null);
+        return;
+      }
       if (n !== last) {
         last = n;
         this.el.cnum.textContent = n;
@@ -350,10 +372,12 @@ export class LobbyUi {
     if (id === S.me) { app.ui.renameModal(); return; }
     const skin = SKINS[p.skin] || SKINS[0];
     const lead = S.isLeader && S.phase === 'lobby' && !p.away;
+    // a P2P party runs on its host's page: the host can be made leader again, never kicked
+    const host = !!(S.g.partyInfo && S.g.partyInfo.host && p.id === S.g.partyInfo.host);
     app.ui.modal(`<h2 class="mem-h"><i style="background:${skin.outfit}"></i>${esc(p.name)}</h2>
-      <p class="mem-sub">Level ${p.lvl || 1} · ${esc(skin.name)}${p.id === S.leader ? ' · ♛ Party leader' : ''}${p.ready ? ' · ✓ Ready' : ''}</p>
+      <p class="mem-sub">Level ${(p.lvl | 0) || 1} · ${esc(skin.name)}${p.id === S.leader ? ' · ♛ Party leader' : ''}${host ? ' · 🏠 Host' : ''}${p.ready ? ' · ✓ Ready' : ''}</p>
       <div class="sheet-btns">
-        ${lead ? '<button class="btn yellow big m-promote">♛ MAKE LEADER</button><button class="btn big m-kick">KICK FROM PARTY</button>' : ''}
+        ${lead ? `<button class="btn yellow big m-promote">♛ MAKE LEADER</button>${host ? '' : '<button class="btn big m-kick">KICK FROM PARTY</button>'}` : ''}
         <button class="btn blue big m-close">OK</button>
       </div>`, (b) => {
       const pr = $('.m-promote', b), k = $('.m-kick', b);
@@ -366,7 +390,7 @@ export class LobbyUi {
   /** CHANGE: the Discover screen (mode-catalog), or a simple list of every mode until it exists. */
   changeMode() {
     const S = this.state();
-    if (!S || S.phase !== 'lobby') return;
+    if (!S || S.phase !== 'lobby' || this.cdEnds) return;
     const g = S.g;
     const onPick = (pick) => {
       if (!pick || !this.app.game) return;
@@ -375,7 +399,9 @@ export class LobbyUi {
     };
     const onSuggest = (id) => { if (this.app.game) { this.app.game.send({ t: 'suggest', id }); this.toast('Suggested to the party leader 👍'); } };
     let h = null;
+    this.closeSheets();
     try { h = openDiscover(this.app, { isLeader: S.isLeader, current: g.settingsState, onPick, onSuggest }); } catch (e) { console.error('discover', e); h = null; }
+    this.discover = h;
     if (h) return;
     this.modeSheet(S.isLeader, onPick, onSuggest);
   }
@@ -409,14 +435,16 @@ export class LobbyUi {
     if (!r) return;
     const tile = (n, l) => `<div class="rs-tile"><b>${esc(n)}</b><span>${esc(l)}</span></div>`;
     const mins = Math.floor(r.alive / 60), secs = String(Math.floor(r.alive % 60)).padStart(2, '0');
-    const top = r.top.slice(0, 8).map((x) => `<li class="${x.me ? 'me' : ''}"><b>${x.place ? `#${x.place}` : '–'}</b><span>${esc(x.name)}${x.bot ? ' <small>bot</small>' : ''}</span><em>${x.kills} ✖</em></li>`).join('');
+    // no placings (the leader ended the match, a timed mode): the list is just who did what
+    const placed = r.top.some((x) => x.place);
+    const top = r.top.slice(0, 8).map((x) => `<li class="${x.me ? 'me' : ''}${placed ? '' : ' np'}">${placed ? `<b>${x.place ? `#${x.place | 0}` : ''}</b>` : ''}<span>${esc(x.name)}${x.bot ? ' <small>bot</small>' : ''}</span><em>${x.kills | 0} ✖</em></li>`).join('');
     const xpHtml = xp ? `<div class="rs-xp"><div class="rs-xpline"><span>+${xp.gained} XP</span><span class="rs-lvl">LEVEL ${xp.from.level}</span></div><div class="rs-bar"><i style="width:${Math.round(xp.from.frac * 100)}%"></i></div><div class="rs-xpwhy">${xp.lines.map((l) => esc(l)).join(' · ')}</div></div>` : '';
     this.el.results.innerHTML = `<div class="rs-card">
       <div class="rs-head"><span class="rs-mode">${esc(r.mode)}</span><button class="rs-x" aria-label="Close">✕</button></div>
-      <div class="rs-main"><div class="rs-place ${r.won ? 'win' : ''}">${r.place ? `#${r.place}` : '–'}</div><div class="rs-title">${esc(r.title)}</div></div>
+      <div class="rs-main">${r.place ? `<div class="rs-place ${r.won ? 'win' : ''}">#${r.place | 0}</div>` : '<div class="rs-place none">🎮</div>'}<div class="rs-title">${esc(r.title)}</div></div>
       <div class="rs-tiles">${tile(r.elims, 'Elims')}${tile(r.damage, 'Damage')}${tile(`${mins}:${secs}`, 'Time alive')}${tile(r.builds, 'Builds')}${tile(r.chests, 'Chests')}${tile(r.hits, 'Hits')}</div>
       ${xpHtml}
-      ${r.mvp ? `<div class="rs-mvp">⭐ MVP: <b>${esc(r.mvp.name)}</b> · ${r.mvp.kills} elim${r.mvp.kills === 1 ? '' : 's'}</div>` : ''}
+      ${r.mvp ? `<div class="rs-mvp">⭐ MVP: <b>${esc(r.mvp.name)}</b> · ${r.mvp.kills | 0} elim${(r.mvp.kills | 0) === 1 ? '' : 's'}</div>` : ''}
       ${top ? `<ol class="rs-top">${top}</ol>` : ''}
       <button class="lb-btn rs-ok">OK</button>
     </div>`;

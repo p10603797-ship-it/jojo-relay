@@ -202,7 +202,7 @@ function keptGame(myId, inbox) {
   // what the page had seen before the drop
   for (const m of inbox) if (m.t === 'role') g.onMessage(m);
   g.got.length = 0;
-  g.app = { lobby: { render() {}, toast() {} }, stage: {}, onWelcome() {} };
+  g.app = { lobby: { render() {}, toast() {}, countdown() {} }, stage: {}, onWelcome() {} };
   return g;
 }
 

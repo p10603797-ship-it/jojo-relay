@@ -145,6 +145,7 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
 .rs-main { display: flex; align-items: baseline; gap: 14px; margin: 2px 0 10px; }
 .rs-place { font-family: var(--font-title); font-size: 72px; line-height: 1; color: #fff; text-shadow: 0 4px 0 #3a1b8a; }
 .rs-place.win { color: var(--yellow); text-shadow: 0 4px 0 #6a3a00; }
+.rs-place.none { font-size: 52px; text-shadow: none; }
 .rs-title { font-family: var(--font-title); font-size: 30px; letter-spacing: 1px; }
 .rs-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .rs-tile, .es-tile { padding: 8px 6px; border-radius: 10px; background: rgba(255, 255, 255, 0.08); text-align: center; }
@@ -165,7 +166,7 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
 .rs-top li.me { background: rgba(255, 210, 63, 0.18); }
 .rs-top li b { width: 30px; color: var(--yellow); font-weight: normal; font-family: var(--font-title); }
 .rs-top li span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rs-top li small { opacity: 0.6; font-size: 10px; }
+.rs-top li small { opacity: 0.7; font-size: 12px; }
 .rs-top li em { font-style: normal; opacity: 0.8; }
 .rs-ok { width: 100%; margin-top: 12px; background: linear-gradient(180deg, #ffe86b, #ffb800) !important; color: #2a1a00 !important; font-size: 24px !important; }
 

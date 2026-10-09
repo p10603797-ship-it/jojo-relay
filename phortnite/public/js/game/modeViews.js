@@ -109,7 +109,7 @@ export class ModeHud {
     if (rows && rows.length) {
       const key = rows.map((r) => `${r.name}|${r.score}|${r.color}|${r.me ? 1 : 0}`).join(';');
       this.set('top', key, () => {
-        this.el.top.innerHTML = rows.map((r, i) => `<li class="${r.me ? 'me' : ''}"><em>${i + 1}</em><i style="background:${r.color}"></i><span>${esc(r.name)}</span><b>${r.score}</b></li>`).join('');
+        this.el.top.innerHTML = rows.map((r, i) => `<li class="${r.me ? 'me' : ''}"><em>${i + 1}</em><i style="background:${esc(r.color)}"></i><span>${esc(r.name)}</span><b>${Math.round(+r.score || 0)}</b></li>`).join('');
       });
     }
     this.part('me', !!meText);
@@ -121,7 +121,7 @@ export class ModeHud {
     this.part('ladder', lv >= 0);
     if (lv < 0) return;
     this.set('ladder', lv, () => {
-      this.el.ladder.innerHTML = rungs.map((k, i) => `<span class="${i < lv ? 'done' : i === lv ? 'cur' : ''}">${LADDER_ICON[k] || k}</span>`).join('')
+      this.el.ladder.innerHTML = rungs.map((k, i) => `<span class="${i < lv ? 'done' : i === lv ? 'cur' : ''}">${LADDER_ICON[k] || esc(k)}</span>`).join('')
         + `<em>${lv + 1}/${rungs.length} · ${esc(rungs[lv] === 'pickaxe' ? 'PICKAXE: WIN IT!' : (WEAPONS[rungs[lv]] || {}).name || rungs[lv])}</em>`;
     });
   }
