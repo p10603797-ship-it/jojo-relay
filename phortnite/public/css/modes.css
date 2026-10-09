@@ -356,3 +356,12 @@ body.touch #modehud > .mh-line.on { display: block; width: auto; max-width: 100%
   body.touch #modehud { width: min(460px, 52vw); top: calc(4px + var(--sat)); }
   body.touch .mh-top li span { max-width: 64px; }
 }
+
+/* phones (touch): the notice goes under the two-row mode strip, and the kill feed under the
+   teammates panel (two lines) so nothing overlaps (tools/layout-sweep.mjs, mode state) */
+@media (max-height: 460px) {
+  body.touch #notice { font-size: 18px; }
+  body.touch.mode-score #notice { top: calc(76px + var(--sat)); }
+  body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed { top: calc(144px + var(--sat)); }
+  body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed .kf:nth-last-child(n+3) { display: none; }
+}

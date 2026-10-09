@@ -1,5 +1,6 @@
 // Touch HUD layout sweep: the rectangles of every visible touch button and HUD block on 8 iPad /
-// phone viewports, in each game state (warm-up, build, edit, match, bus, sky, dead). Reports
+// phone viewports, in each game state (warm-up, build, edit, match, bus, sky, dead, and a team mode
+// with the mode HUD, teammates panel and a notice: King of the Hill). Reports
 // overlapping pairs and anything off screen; expects none.
 //
 //   node tools/layout-sweep.mjs [url] [--shots dir] [--json out.json] [--scale 1.3] [--only 1180x820,844x390]
@@ -20,7 +21,7 @@ const { chromium } = await import(PW);
 const ONLY = opt('--only'); // e.g. --only 1180x820,844x390
 const VPS = [[1024, 768], [1080, 810], [1133, 744], [1180, 820], [1194, 834], [1366, 1024], [844, 390], [932, 430]]
   .filter(([w, h]) => !ONLY || ONLY.split(',').includes(`${w}x${h}`));
-const HUD = ['#bars', '#hotbar', '#ammo', '#mats', '#minimap', '#stats', '#poi', '#killfeed', '#menubtn', '#buildbar', '#lobbypanel', '#busprompt', '#editchips', '#prompt'];
+const HUD = ['#bars', '#hotbar', '#ammo', '#mats', '#minimap', '#stats', '#poi', '#killfeed', '#menubtn', '#buildbar', '#lobbypanel', '#busprompt', '#editchips', '#prompt', '#modehud', '.mh-mates', '#notice'];
 const t00 = Date.now();
 const log = (...a) => console.log(`+${((Date.now() - t00) / 1000).toFixed(0)}s`, ...a);
 
@@ -168,8 +169,32 @@ for (const [w, h] of VPS) {
   await ev(() => { const g = window.__phortnite.game, me = g.me; me.inBus = true; me.mover.mode = 'bus'; me.mover.setEnabled(false); me.char.setVisible(false); });
   for (const [st, fn] of Object.entries(matchStates)) { await fn(); await run(`${w}x${h}`, w, h, st); }
 }
+// a team mode with the mode HUD (score bar, hill line, teammates panel) and a notice: King of the Hill
+await ev(() => { const g = window.__phortnite.game; g.send({ t: 'end' }); });
+await p.waitForFunction(() => window.__phortnite.game.phase === 'lobby', null, { timeout: 60000 });
+await ev(() => { const g = window.__phortnite.game; g.send({ t: 'mode', id: 'koth' }); g.send({ t: 'tweak', bots: 7 }); g.send({ t: 'start' }); });
+await p.waitForFunction(() => window.__phortnite.game.phase === 'match', null, { timeout: 60000 });
+await frames(10);
+const modeStates = {
+  mode: async () => {
+    await ev(() => {
+      const g = window.__phortnite.game, me = g.me;
+      if (!me.alive) { me.alive = true; me.respawn(me.pos.x, me.pos.y + 0.5, me.pos.z); document.body.classList.remove('dead'); g.hud.elim(null); }
+      me.resetInventory({ slots: [{ k: 'ar', r: 3, m: 20 }, { k: 'shotgun', r: 2, m: 5 }], ammo: { medium: 120, shells: 20 }, mats: { wood: 240, stone: 90, metal: 30 } });
+      me.select(1);
+      g.hud.killfeed('<span class="me">JoJo</span> ✖ Ramp Rusher');
+      g.hud.killfeed('Noob Saibot 🎯 Captain Crunch');
+      g.hud.notice('Sweaty Steve, Loot Goblin are seeking! Hide!', false, 30);
+    });
+    await frames(12);
+  },
+};
+for (const [w, h] of VPS) {
+  await p.setViewportSize({ width: w, height: h });
+  for (const [st, fn] of Object.entries(modeStates)) { await fn(); await run(`${w}x${h}`, w, h, st); }
+}
 if (JSON_OUT) fs.writeFileSync(JSON_OUT, JSON.stringify({ url: URL, scale: SCALE, total, errs, out }, null, 1));
-log(`done: ${total} problem(s) across ${VPS.length} viewports x ${Object.keys(states).length + Object.keys(matchStates).length} states; page errors: ${errs.length}`);
+log(`done: ${total} problem(s) across ${VPS.length} viewports x ${Object.keys(states).length + Object.keys(matchStates).length + Object.keys(modeStates).length} states; page errors: ${errs.length}`);
 for (const e of errs) log('page error', e);
 await b.close();
 process.exit(total || errs.length ? 1 : 0);
