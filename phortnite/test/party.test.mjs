@@ -336,7 +336,7 @@ test('party: a second connection with the token takes over the first (a socket t
   assert.deepEqual(H.errors, []);
 });
 
-test('party: the lobby picks modes before the mode engine has its own handler', () => {
+test('party: the leader picks modes in the lobby (the Room\'s own mode handler)', () => {
   const H = makeRoom();
   const a = H.join('Ann', RES), b = H.join('Ben', RES);
   H.send(b, { t: 'mode', id: 'duos' });
