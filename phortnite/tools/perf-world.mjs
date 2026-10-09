@@ -419,6 +419,9 @@ try {
               g.update(1 / 60);
             }
             app.__ff.t += 0.5;
+            // nothing is drawn while fast-forwarding: flush GL so the HUD canvases' commands don't
+            // pile up in the renderer (it grew by GBs without this)
+            app.renderer.getContext().flush();
             const me = g.me;
             const focus = me && me.alive && !me.inBus ? me.pos : app.camera.position;
             app.world.update(0.5, app.camera, focus, g);

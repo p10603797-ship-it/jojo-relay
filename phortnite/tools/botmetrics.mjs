@@ -118,7 +118,10 @@ function startServer() {
 // Runs in the page once the solo game is in its warm-up. Exposes window.__M.
 function pageSetup(cfg) {
   const app = window.__phortnite, g = app.game;
-  app.renderer.render = () => {}; // CPU-only simulation
+  // CPU-only simulation. Still flush GL once a frame: with nothing drawn, the commands of the
+  // HUD's canvases piled up in the renderer until it ran out of memory (3-7 GB, no progress)
+  const gl = app.renderer.getContext();
+  app.renderer.render = () => { gl.flush(); };
   import(new URL('shared/constants.js', location.href).href).then((c) => { M.consts = c; }).catch(() => {});
   const M = (window.__M = {
     cfg, t0: -1, busT: -1, matchT: -1, elims: [], shots: 0, nearShots: 0, nearShotgun: 0, nearSec: 0, nearSgSec: 0, hits: 0, hitsBy: {}, shotsBy: {},
@@ -485,7 +488,7 @@ async function runCost(browser, url) {
     if (!(g && g.me && g.phase === 'lobby') && typeof app.playSolo === 'function') await app.playSolo();
   });
   await page.waitForFunction(() => { const g = window.__phortnite.game; return g && g.me && g.phase === 'lobby'; }, null, { timeout: 120000 });
-  await page.evaluate(() => { window.__phortnite.renderer.render = () => {}; });
+  await page.evaluate(() => { const r = window.__phortnite.renderer, gl = r.getContext(); r.render = () => { gl.flush(); }; });
   const out = {};
   for (const n of [0, 10, 30]) {
     await page.evaluate((nn) => { const g = window.__phortnite.game; g.send({ t: 'tweak', bots: nn }); g.startMatch(nn, 0); }, n);
