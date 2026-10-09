@@ -9,7 +9,7 @@
 //     transport's '_net' events
 // (no three.js / Rapier imports here: game plugins load in Node too, for the contract tests)
 import { MatchStats } from '../game/matchStats.js';
-import { rulesFromSettings } from '../../shared/modes/rules.js';
+import { rulesFromSettings, normalizeRules } from '../../shared/modes/rules.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -183,16 +183,24 @@ export class PartyBridge {
     }
   }
 
-  /** Back on a new connection with the game still running: catch up on what was missed. */
+  /**
+   * Back on a new connection with the game still running (a Wi-Fi blip): catch up on what was
+   * missed. Like a reload's welcome (Game.on_welcome) the match's own rules (a mystery mutator may
+   * have changed them), teams, roles and mode state count, then the mode's looks and loadouts are
+   * applied again to me and the bots this page runs.
+   */
   resumed(m) {
     const g = this.game, app = this.app;
     g.leader = m.leader;
     g.code = m.code;
-    if (m.settings) {
-      g.settingsState = m.settings;
-      try { g.rules = rulesFromSettings(m.settings); } catch (e) { /* keep */ }
+    if (m.settings) g.settingsState = m.settings;
+    if (m.rules || m.settings) {
+      try { g.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings); } catch (e) { /* keep */ }
     }
     g.partyInfo = m.party && typeof m.party === 'object' ? m.party : g.partyInfo;
+    const live = m.phase !== 'lobby';
+    if (Array.isArray(m.teams) && typeof g.setTeams === 'function') g.setTeams(m.teams);
+    if (m.area !== undefined) g.area = m.area && live && g.rules.area !== 'full' ? m.area : null;
     const ids = new Set();
     for (const p of m.players || []) {
       ids.add(p.id);
@@ -213,6 +221,12 @@ export class PartyBridge {
       g.phase = 'match';
       g.plug('onPhase', 'match', m);
     } else if (m.phase === 'ended' && g.phase !== 'ended') g.phase = 'ended';
+    // roles given or taken while we were away (a survivor turned zombie, a new Juggernaut) go
+    // through the usual 'role' handling (looks, team, 'YOU'RE A ZOMBIE!'); the mode state as 'ms'
+    const myRole = g.roleOf ? g.roleOf(g.myId) : null;
+    this.catchUpRoles(m.roles);
+    if (m.ms && typeof m.ms === 'object') g.onMessage({ ...m.ms, t: 'ms' });
+    else g.modeState = {};
     const me = g.me, s = m.me;
     if (me && s) {
       if (me.alive && !s.alive) {
@@ -224,11 +238,30 @@ export class PartyBridge {
         me.sh = s.sh;
         // the bus left while we were away
         if (me.inBus && !s.inBus) g.onMessage({ t: 'forcedrop', ids: [g.myId], x: s.x, y: s.y, z: s.z });
+        // the room's loadout for me: where the mode hands out every gun (nothing to loot) it is
+        // exactly what I should hold; elsewhere only a new role (zombie claws) replaces my loot
+        const roleNow = g.roleOf ? g.roleOf(g.myId) : null;
+        const noLoot = g.rules.floorLoot === false && g.rules.chests === false;
+        if (live && s.lo && typeof g.giveLoadout === 'function' && (noLoot || roleNow !== myRole)) g.giveLoadout(me, s.lo);
       }
+    }
+    if (live && typeof g.applyMode === 'function') {
+      if (me && me.alive) g.applyMode(me);
+      for (const b of g.bots ? g.bots.values() : []) g.applyMode(b);
     }
     app.onWelcome(g, m);
     app.lobby.render();
     app.lobby.toast('Back in the game! 💪');
+  }
+
+  /** Roles as the room has them now ([[id, role]]): every change goes through Game's 'role' handling. */
+  catchUpRoles(list) {
+    const g = this.game;
+    if (!g.roles) return;
+    const now = new Map();
+    for (const e of Array.isArray(list) ? list : []) if (Array.isArray(e) && e[1]) now.set(e[0], e[1]);
+    for (const id of [...g.roles.keys()]) if (!now.has(id)) g.onMessage({ t: 'role', id, role: null });
+    for (const [id, role] of now) if (g.roles.get(id) !== role) g.onMessage({ t: 'role', id, role });
   }
 
   /** Back after a reload while still alive in the match (the welcome made us a spectator). */
