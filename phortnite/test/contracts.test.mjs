@@ -208,13 +208,22 @@ test('mode registry: every CORE_MODES entry normalizes', () => {
 
 // ------------------------------------------------------------------ room
 test('room: settings, maxHumans and rules (legacy modes keep working)', () => {
+  // settings = {modeId, rules, info, custom} plus the legacy mirror fields {bots, mats, mode}
   const plain = new Room({ code: 'T', now: () => 0 });
-  assert.deepEqual(plain.settings, { bots: 8, mats: 0, mode: 'ffa' });
-  assert.deepEqual(plain.rules, normalizeRules({}));
+  const mirror = (s) => ({ bots: s.bots, mats: s.mats, mode: s.mode });
+  assert.equal(plain.settings.modeId, 'solo');
+  assert.equal(plain.settings.custom, false);
+  assert.deepEqual(plain.settings.info, modeInfo(findMode('solo')));
+  assert.deepEqual(mirror(plain.settings), { bots: 7, mats: 0, mode: 'ffa' }, 'a party starts with today\'s ~8 bots');
+  assert.deepEqual(plain.rules, normalizeRules({ bots: 8 }));
+  assert.deepEqual(plain.settings.rules, plain.rules);
   assert.equal(plain.maxHumans, 16);
-  assert.equal(new Room({ solo: true, now: () => 0 }).settings.bots, 19);
+  const solo = new Room({ solo: true, now: () => 0 });
+  assert.equal(solo.settings.bots, 19);
+  assert.deepEqual(solo.rules, normalizeRules({}), 'solo is today\'s Battle Royale');
   const squad = new Room({ now: () => 0, settings: { mode: 'squad', bots: 3 } });
-  assert.deepEqual(squad.settings, { bots: 3, mats: 0, mode: 'squad' });
+  assert.deepEqual(mirror(squad.settings), { bots: 3, mats: 0, mode: 'squad' });
+  assert.equal(squad.settings.modeId, 'squadbots');
   assert.equal(squad.rules.teams, 'humans');
   const ruled = new Room({ now: () => 0, settings: { rules: { teams: 2, storm: 'fast' } } });
   assert.equal(ruled.rules.teams, 2);

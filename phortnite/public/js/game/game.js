@@ -5,7 +5,8 @@ import * as THREE from 'three';
 import {
   WEAPONS, HEALS, PLAYER, ANIM, SEND_HZ, SKINS, BUILD, MAT_KEYS, PROTOCOL, weaponDamage, itemKind,
 } from '../../shared/constants.js';
-import { rulesFromSettings } from '../../shared/modes/rules.js';
+import { rulesFromSettings, normalizeRules } from '../../shared/modes/rules.js';
+import { rollInitialLoot } from '../../shared/loot.js';
 import { GAME_PLUGINS } from './plugins.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
 import { Bot } from '../actors/bot.js';
@@ -36,6 +37,8 @@ const AUTO_MIN = { rocket: 12 };
 const AUTO_ACQUIRE = 0.06; // s the crosshair must rest on an enemy before firing (like a human reaction)
 const AUTO_GRACE = 0.1; // s to keep firing when tracking slips off the target for a moment
 const GRAVITY = 9.81;
+const CHEST_ASK = 0.5; // s between two requests to open the same chest
+const PLAIN_MODS = { speed: 1, gravity: 1, jump: 1 };
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _f = new THREE.Vector3();
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -125,6 +128,10 @@ export class Game {
     this.autoLock = false;
     this.autoItem = null;
     this.autoCtl = {};
+    this.chestAsked = new Map(); // chest index -> game time of the last open request
+    this.startSpawns = null;     // the start message's spawns / loadouts, for bots handed over just after
+    this.startLo = null;
+    this.myPlace = 0;            // where I placed when eliminated (no respawn)
     this.unsub = net.onMessage((m) => this.onMessage(m));
     this.disposed = false;
     // game plugins (js/game/plugins.js), last so they can use everything above
@@ -182,6 +189,9 @@ export class Game {
   /** A player's mode role ('zombie', 'jugg', …) or null. */
   roleOf(id) { return this.roles.get(id) ?? null; }
 
+  /** Bullet drop multiplier: the mode's gravity (normal in the warm-up). */
+  gravK() { return this.phase === 'lobby' ? 1 : this.rules.gravity; }
+
   send(msg) { this.net.send(msg); }
 
   shake(k) { this.shakeK = Math.min(1.2, this.shakeK + k); }
@@ -209,9 +219,19 @@ export class Game {
     this.phase = m.phase;
     this.code = m.code;
     this.solo = m.solo;
+    if (m.checksum !== this.world.data.checksum) {
+      // a different island: every object id, loot spot and chest would disagree, so don't mix
+      this.app.leaveGame();
+      this.app.ui.alert('Your friend\'s game has a different island than yours (a different version of Phortnite). Everyone should reload the page, then try again.');
+      return;
+    }
     this.settingsState = m.settings;
-    this.rules = rulesFromSettings(m.settings);
-    if (m.checksum !== this.world.data.checksum) console.warn('World checksum mismatch — client and server versions differ');
+    this.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings);
+    this.setTeams(m.teams);
+    this.area = m.area && m.phase !== 'lobby' && this.rules.area !== 'full' ? m.area : null;
+    this.modeState = m.ms || {};
+    this.roles.clear();
+    for (const [id, role] of m.roles || []) this.roles.set(id, role);
     for (const p of m.players) this.roster.set(p.id, p);
     const info = this.roster.get(m.you) || { name: this.opts.name, skin: this.opts.skin };
     this.me = new LocalPlayer(this, m.you, info.name, info.skin);
@@ -221,6 +241,7 @@ export class Game {
     for (const b of m.builds) this.builds.add(b);
     this.loot.set(m.loot);
     for (const c of m.chests) this.world.setChestOpen(c, true);
+    if (m.chestsOff) this.allChestsOpen();
     for (const p of m.players) if (p.id !== m.you) this.ensureRemote(p);
     if (m.phase === 'lobby') {
       this.spawnWarmup();
@@ -289,12 +310,17 @@ export class Game {
   }
 
   on_start(m) {
-    this.phase = 'bus';
+    this.phase = m.bus ? 'bus' : 'match';
     this.leader = m.leader;
     this.settingsState = m.settings;
-    this.rules = rulesFromSettings(m.settings);
+    this.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings);
+    this.setTeams(m.teams);
+    this.area = m.area && this.rules.area !== 'full' ? m.area : null;
+    this.modeState = {};
+    this.roles.clear();
+    this.myPlace = 0;
     this.resetWorld();
-    this.loot.set(m.loot);
+    this.startLoot(m);
     for (const b of this.bots.values()) b.dispose();
     this.bots.clear();
     const ids = new Set(m.players.map((p) => p.id));
@@ -303,36 +329,158 @@ export class Game {
     }
     this.roster.clear();
     for (const p of m.players) this.roster.set(p.id, p);
+    const myTeam = this.teamOf(this.myId);
     for (const p of m.players) {
       if (p.id !== this.myId) {
         const r = this.ensureRemote(p);
-        if (r) { r.revive(); r.buf.length = 0; r.hasState = false; r.setNameVisible(!p.bot && p.team === this.teamOf(this.myId)); }
+        // teammates' names (bots too) are shown, enemies' are not
+        if (r) { r.revive(); r.buf.length = 0; r.hasState = false; r.setNameVisible(p.team === myTeam); }
       }
     }
     const me = this.me;
     me.char.endRagdoll();
     me.alive = true;
-    me.hp = PLAYER.maxHp;
-    me.sh = PLAYER.startShield;
+    me.dancing = false;
+    me.hp = this.rules.hp;
+    me.sh = this.rules.shield;
     me.infinite = false;
-    const mats = this.settingsState.mats | 0;
-    me.resetInventory({ slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
-    me.inBus = true;
-    me.mover.mode = 'bus';
-    me.mover.setEnabled(false);
-    me.char.setVisible(false);
+    this.startSpawns = m.spawns || null;
+    this.startLo = this.loadoutTable(m.lo);
+    this.giveLoadout(me, this.startLo.get(me.id) || null);
+    this.applyMode(me);
     this.input.resetToggles();
-    this.bus.start(m.bus);
     this.storm.clear();
     this.kills = 0;
     this.spectateId = 0;
     this.lastElim = null;
+    this.chestAsked.clear();
     this.hud.elim(null);
     this.hud.lobby(null);
-    this.hud.big('THE BUS IS LEAVING!<small>Jump out when you\'re over a good spot</small>');
-    this.sfx.ui('bus');
+    if (m.chestsOff) this.allChestsOpen();
     document.body.classList.remove('dead');
+    document.body.classList.toggle('nobuild', this.rules.build === 'off');
+    if (m.bus) {
+      me.inBus = true;
+      me.mover.mode = 'bus';
+      me.mover.setEnabled(false);
+      me.char.setVisible(false);
+      this.bus.start(m.bus);
+      this.hud.big('THE BUS IS LEAVING!<small>Jump out when you\'re over a good spot</small>');
+      this.sfx.ui('bus');
+    } else {
+      this.bus.stop();
+      this.placeAtSpawn(me, this.startSpawns && this.startSpawns[me.id]);
+      const info = this.settingsState && this.settingsState.info;
+      this.hud.big(`${info ? esc(`${info.emoji || ''} ${info.name || ''}`.trim()) : 'GO!'}<small>${this.rules.spawn === 'sky' ? 'Glide down and get ready!' : 'Go go go!'}</small>`);
+    }
     this.plug('onPhase', this.phase, m);
+  }
+
+  /** The start message's loadouts ([[Loadout, [ids]]]) as a Map id -> Loadout. */
+  loadoutTable(groups) {
+    const t = new Map();
+    if (Array.isArray(groups)) for (const [lo, ids] of groups) for (const id of ids || []) t.set(id, lo);
+    return t;
+  }
+
+  /** The seeded floor loot of a match / round: rolled here exactly as the room did (or the room's own list). */
+  startLoot(m) {
+    if (Array.isArray(m.loot)) { this.loot.set(m.loot); return; }
+    const list = rollInitialLoot(this.world.data, m.lootSeed >>> 0, this.rules, m.area || null);
+    this.loot.set(list);
+    // a different list than the room's (it should never happen): ask for the real one
+    if (m.lootN !== undefined && list.length !== m.lootN) this.send({ t: 'lootall' });
+  }
+
+  on_lootall(m) { if (Array.isArray(m.loot)) this.loot.set(m.loot); }
+
+  /** The team list changed mid-match (a game made a new team, e.g. infection's zombies). */
+  on_teams(m) { this.setTeams(m.teams); }
+
+  /** Team list {id, name, color} from the room (start / welcome / round). */
+  setTeams(list) {
+    this.teams.clear();
+    for (const t of list || []) this.teams.set(t.id, t);
+  }
+
+  allChestsOpen() {
+    const n = this.world.data.chests.length;
+    for (let i = 0; i < n; i++) this.world.setChestOpen(i, true);
+  }
+
+  /**
+   * The mode's rules on an actor this device simulates: movement multipliers (jump scaled so low
+   * gravity still jumps as high as the jump rule says), glider redeploy in sky-spawn modes,
+   * infinite building and ammo. In the warm-up everything is back to normal.
+   */
+  applyMode(a) {
+    const R = this.rules;
+    const mods = a.mover.mods;
+    if (this.phase === 'lobby') {
+      Object.assign(mods, PLAIN_MODS);
+      a.mover.glideAny = false;
+      a.infMats = false;
+      if (!a.isBot) a.unlimitedAmmo = false;
+      return;
+    }
+    mods.speed = R.speed;
+    mods.gravity = R.gravity;
+    mods.jump = R.jump * Math.sqrt(R.gravity);
+    a.mover.glideAny = R.spawn === 'sky';
+    a.infMats = R.build === 'infinite';
+    if (!a.isBot) a.unlimitedAmmo = R.ammo === 'infinite' || !!(a.loadoutInf);
+  }
+
+  /** Replace an actor's inventory with a loadout (null: the mode's start materials only), gun in hand. */
+  giveLoadout(a, lo) {
+    const mats = this.rules.mats | 0;
+    a.resetInventory(lo || { slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
+    a.loadoutInf = !!(lo && lo.infAmmo);
+    if (!a.isBot) a.unlimitedAmmo = this.rules.ammo === 'infinite' || a.loadoutInf;
+    for (let i = 1; i <= 5; i++) {
+      const s = a.inv.slots[i];
+      if (s && Object.prototype.hasOwnProperty.call(WEAPONS, s.k)) { a.select(i); break; }
+    }
+  }
+
+  /** Put an actor at a spawn [x, y, z, how] ('sky': skydiving; 'ground': standing). */
+  placeAtSpawn(a, sp) {
+    const x = sp ? sp[0] : 0, z = sp ? sp[2] : 0;
+    const sky = sp && sp[3] === 'sky';
+    const y = sp ? sp[1] : this.world.data.heightAt(x, z) + (sky ? 90 : 0);
+    a.inBus = false;
+    a.alive = true;
+    a.mover.setEnabled(true);
+    a.mover.teleport(x, y + (sky ? 0 : 0.3), z);
+    a.mover.mode = sky ? 'skydive' : 'air';
+    if (sky) a.mover.vel.set(0, -5, 0);
+    a.char.setVisible(true);
+    // face the middle of the play area
+    const A = this.area || { x: 0, z: 0 };
+    if (Math.hypot(A.x - x, A.z - z) > 3) a.yaw = Math.atan2(-(A.x - x), -(A.z - z));
+    if (a === this.me) document.body.classList.remove('inbus');
+  }
+
+  /** A respawned bot starts thinking afresh (bots-ai's Bot.onRespawn when it has one). */
+  botRespawned(bot, m) {
+    if (typeof bot.onRespawn === 'function') { bot.onRespawn(m); return; }
+    const b = bot.brain;
+    if (!b) return;
+    b.landAt = null;
+    b.spread = true;
+    b.skyT = bot.time;
+    b.mode = 'travel';
+    b.target = null;
+    b.trec = null;
+    b.lootRef = null;
+    b.destKind = '';
+    b.chestI = -1;
+    b.harvest = null;
+    b.breakT = 0;
+    b.stuckN = 0;
+    b.wallReq = false;
+    b.lastHp = bot.hp;
+    if (b.lastPos) b.lastPos.copy(bot.pos);
   }
 
   on_bots(m) {
@@ -341,10 +489,19 @@ export class Game {
       if (this.bots.has(id)) continue;
       const info = this.roster.get(id) || { id, name: 'Bot', skin: 0, bot: true };
       const bot = new Bot(this, info);
+      // the mode's bot difficulty (roster skill); bots-ai's Bot may also read it itself
+      if (typeof info.skill === 'number' && bot.configure) bot.configure(info.skill);
+      this.applyMode(bot);
       const r = this.remotes.get(id);
       const last = r && r.latest();
       if (r) { r.dispose(); this.remotes.delete(id); }
-      if (this.phase === 'bus' && (!last || last.a === ANIM.BUS)) {
+      const sp = !last && this.startSpawns && this.startSpawns[id];
+      if (this.phase !== 'lobby' && !last && this.startLo) this.giveLoadout(bot, this.startLo.get(id) || null);
+      if (sp && this.phase === 'match') {
+        // a sky / ground start: straight to its spot
+        this.placeAtSpawn(bot, sp);
+        if (sp[3] === 'sky') { bot.brain.spread = true; bot.brain.skyT = bot.time; }
+      } else if (this.phase === 'bus' && (!last || last.a === ANIM.BUS)) {
         bot.inBus = true;
         bot.mover.mode = 'bus';
         bot.mover.setEnabled(false);
@@ -376,6 +533,14 @@ export class Game {
     this.leader = m.leader;
     this.settingsState = m.settings;
     this.rules = rulesFromSettings(m.settings);
+    this.teams.clear();
+    this.area = null;
+    this.roles.clear();
+    this.modeState = {};
+    this.startSpawns = null;
+    this.startLo = null;
+    this.myPlace = 0;
+    document.body.classList.remove('nobuild');
     for (const b of this.bots.values()) b.dispose();
     this.bots.clear();
     this.roster.clear();
@@ -409,8 +574,10 @@ export class Game {
     me.sh = PLAYER.startShield; // the room's lobby value; saves a 0-shield flash
     me.mover.mode = 'ground';
     me.infinite = true;
+    me.dancing = false;
     me.resetInventory(WARMUP);
     me.select(1);
+    this.applyMode(me);
     me.yaw = Math.random() * Math.PI * 2;
     me.pitch = -0.05;
     this.input.resetToggles();
@@ -453,7 +620,7 @@ export class Game {
     const muzzle = shooter ? shooter.char.muzzleWorld(_v) : _v.set(m.o[0], m.o[1], m.o[2]);
     for (let i = 0; i + 2 < m.d.length; i += 3) {
       this.ballistics.fire({
-        ox: m.o[0], oy: m.o[1], oz: m.o[2], dx: m.d[i], dy: m.d[i + 1], dz: m.d[i + 2], speed: w.speed, grav: w.grav,
+        ox: m.o[0], oy: m.o[1], oz: m.o[2], dx: m.d[i], dy: m.d[i + 1], dz: m.d[i + 2], speed: w.speed, grav: w.grav * this.gravK(),
         owner: m.id, team: this.phase === 'lobby' ? m.id : this.teamOf(m.id), w: m.w, r: m.r, auth: false, rocket: w.projectile === 'rocket', visX: muzzle.x, visY: muzzle.y, visZ: muzzle.z,
       });
     }
@@ -518,6 +685,7 @@ export class Game {
     let line;
     if (m.c === 'storm') line = `<span class="${meV ? 'me' : ''}">${vName}</span> was lost in the storm`;
     else if (m.c === 'fall') line = `<span class="${meV ? 'me' : ''}">${vName}</span> fell too far`;
+    else if (m.c === 'lava') line = `<span class="${meV ? 'me' : ''}">${vName}</span> fell in the lava`;
     else if (m.c === 'left') line = `${vName} left the match`;
     else line = `<span class="${meK ? 'me' : ''}">${kName}</span> ${m.hs ? '🎯' : '✖'} <span class="${meV ? 'me' : ''}">${vName}</span>`;
     this.hud.killfeed(line);
@@ -528,8 +696,8 @@ export class Game {
       impulse.x = _v.x; impulse.z = _v.z; impulse.y = m.c === 'boom' ? 8 : 2.5;
     }
     if (meK && !meV) {
+      // (the 'ELIMINATED <name>' banner is build-feel's BuildClient)
       this.kills++;
-      this.hud.big(`ELIMINATED<small>${vName}</small>`);
       this.hud.hitmarker(false, true);
       this.sfx.hitmarker(false, false, true);
     }
@@ -539,7 +707,7 @@ export class Game {
         this.onMyDeath(m, killer);
         this.me.die(impulse);
       } else if (victim instanceof Bot) {
-        if (this.phase === 'match' || this.phase === 'bus') this.dropAll(victim);
+        if ((this.phase === 'match' || this.phase === 'bus') && !(m.rs > 0 && this.rules.respawnKeep)) this.dropAll(victim);
         victim.die(impulse);
       } else {
         victim.die(impulse);
@@ -553,20 +721,73 @@ export class Game {
       }, 3200);
     }
     if (this.spectateId === m.v) this.spectateId = m.k && m.k !== m.v ? m.k : 0;
+    // the last of my team fell after me: now the team has its placing
+    if (!meV && this.me && !this.me.alive && !this.myPlace && m.rs === 0 && this.lastElim && !this.lastElim.respawn
+      && this.phase !== 'lobby' && this.friendly(m.v, this.myId)) this.teamOut();
+  }
+
+  /** Who is still standing (from the roster): {players, teams (other than mine), mine (my team's players)}. */
+  standing() {
+    const myTeam = this.teamOf(this.myId);
+    const teams = new Set();
+    let players = 0, mine = 0;
+    for (const p of this.roster.values()) {
+      if (p.alive === false || p.spec) continue;
+      players++;
+      if (p.team === myTeam) mine++; else teams.add(p.team);
+    }
+    return { players, teams: teams.size, mine };
+  }
+
+  /** My team is out (I fell first): '#4 – Your team placed #4 – 6 players left'. */
+  teamOut() {
+    const st = this.standing();
+    if (st.mine) return; // someone is still standing
+    this.myPlace = st.teams + 1;
+    this.lastElim = {
+      ...this.lastElim, place: this.myPlace,
+      sub: `Your team placed #${this.myPlace} – ${st.players} player${st.players === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+    };
+    this.hud.elim(this.lastElim);
   }
 
   onMyDeath(m, killer) {
-    if (this.phase === 'match' || this.phase === 'bus') this.dropAll(this.me);
+    const respawning = m.rs > 0;
+    // with respawnKeep you come back with your stuff, so nothing is dropped
+    if ((this.phase === 'match' || this.phase === 'bus') && !(respawning && this.rules.respawnKeep)) this.dropAll(this.me);
     this.sfx.ui('elim');
     this.input.resetToggles();
     document.body.classList.add('dead');
-    this.spectateId = killer && killer !== this.me ? killer.id : 0;
+    // spectate a teammate who is still alive, else the killer
+    let mate = null;
+    for (const a of this.actors()) if (a !== this.me && a.alive && a.mode !== 'bus' && this.friendly(a.id, this.myId)) { mate = a; break; }
+    this.spectateId = mate ? mate.id : killer && killer !== this.me ? killer.id : 0;
     this.specYaw = this.me.yaw;
-    const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : killer ? `Eliminated by ${this.nameOf(m.k)}` : 'Eliminated';
-    this.lastElim = {
-      place: m.place, title: 'ELIMINATED', sub: `${how} · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
-      again: this.solo, spectate: true, leave: true,
-    };
+    const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : m.c === 'lava' ? 'The lava got you'
+      : killer ? `Eliminated by ${this.nameOf(m.k)}` : 'Eliminated';
+    if (respawning) {
+      // endscreen ignores {respawn: true} once mode-catalog's overlay counts down (modeState.rs)
+      this.lastElim = { respawn: true, title: 'ELIMINATED', sub: `${how} · Respawning in ${Math.ceil(m.rs)}…`, spectate: false, leave: true };
+    } else if (mate) {
+      // a teammate fights on: no placing yet (the team's comes when the last of us falls)
+      this.myPlace = 0;
+      this.lastElim = {
+        title: 'ELIMINATED', sub: `${how} · Your team fights on – spectating ${this.nameOf(mate.id)}`,
+        again: this.solo, spectate: true, leave: true,
+      };
+    } else {
+      // free for all: your place among the players; teams: your team's place among the teams
+      const st = this.standing();
+      const team = this.teams.has(this.teamOf(this.myId));
+      const place = team ? st.teams + 1 : m.place | 0;
+      const left = st.players;
+      this.myPlace = place;
+      this.lastElim = {
+        place, title: 'ELIMINATED',
+        sub: `${how} · ${team ? 'Your team' : 'You'} placed #${place} – ${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+        again: this.solo, spectate: true, leave: true,
+      };
+    }
     this.hud.elim(this.lastElim);
     this.input.exitLock();
     this.plug('onMyDeath', m);
@@ -585,7 +806,7 @@ export class Game {
     const mine = !!pend && pend.id === m.by;
     if (pend && !mine) {
       const a = this.actorById(pend.id);
-      if (a && a.inv && !a.infinite) a.addMats(pend.m, BUILD.cost);
+      if (a && a.inv && !a.infinite && !a.infMats) a.addMats(pend.m, BUILD.cost); // nothing was spent with infinite mats
     }
     const p = this.builds.add(m);
     this.pendingBuilds.delete(m.k);
@@ -618,7 +839,7 @@ export class Game {
     this.pendingBuilds.delete(m.k);
     this.builds.remove(m.k, false);
     const a = this.actorById(pend.id);
-    if (a && a.inv && !a.infinite) a.addMats(pend.m, BUILD.cost);
+    if (a && a.inv && !a.infinite && !a.infMats) a.addMats(pend.m, BUILD.cost); // nothing was spent with infinite mats
   }
 
   on_ox(m) {
@@ -686,20 +907,152 @@ export class Game {
 
   on_win(m) {
     this.phase = 'ended';
-    const meWon = m.id === this.myId || (!m.bot && m.team !== undefined && m.team === this.teamOf(this.myId));
+    const myTeam = this.teamOf(this.myId);
+    const meWon = !!m.id && (m.id === this.myId || (!!m.team && m.team === myTeam));
     this.input.exitLock();
-    if (!meWon && this.me && !this.me.alive && this.lastElim) {
+    document.body.classList.remove('dead');
+    if (this.me && !this.me.alive) document.body.classList.add('dead');
+    if (m.reason === 'humans-out') {
+      // every human is out: say honestly how we did, never crown a bot
+      const place = this.myPlace || (this.lastElim && this.lastElim.place) || 0;
+      const left = this.standing().players;
+      this.hud.elim({
+        place, title: 'MATCH OVER',
+        sub: `${place ? `${this.teams.has(myTeam) ? 'Your team' : 'You'} placed #${place} – ` : ''}${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+        again: this.solo, leave: true,
+      });
+    } else if (!meWon && this.me && !this.me.alive && this.lastElim && !this.lastElim.respawn) {
       // keep showing how we went out; just add who won
       this.hud.elim({ ...this.lastElim, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
     } else if (meWon) {
       this.sfx.ui('victory');
       if (this.me.alive) this.me.dancing = true;
-      this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true });
+      const team = m.name && m.name !== this.nameOf(this.myId) ? `${m.name} wins! ` : '';
+      this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${team}${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true });
     } else if (this.me && this.me.alive) {
       this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : 'Nobody survived', again: this.solo, leave: true });
     } else {
       this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: 'Returning to the island…', again: this.solo, leave: true });
     }
+    this.plug('onPhase', this.phase, m);
+  }
+
+  /** Someone is back in the match: {id, x, y, z, how: 'sky' | 'ground', lo (null = keep), hp, sh}. */
+  on_respawn(m) {
+    const rv = this.roster.get(m.id);
+    if (rv) rv.alive = true;
+    const a = this.actorById(m.id);
+    if (!a) return;
+    const mine = a === this.me || this.bots.has(m.id);
+    if (!mine) {
+      a.revive();
+      a.buf.length = 0;
+      a.hasState = false;
+      a.pos.set(m.x, m.y, m.z);
+      if (m.hp !== undefined) { a.hp = m.hp; a.sh = m.sh; }
+      return;
+    }
+    a.dancing = false;
+    a.respawn(m.x, m.y + (m.how === 'sky' ? 0 : 0.3), m.z);
+    if (m.how === 'sky') { a.mover.mode = 'skydive'; a.mover.vel.set(0, -5, 0); }
+    a.hp = m.hp ?? this.rules.hp;
+    a.sh = m.sh ?? this.rules.shield;
+    if (m.lo) this.giveLoadout(a, m.lo);
+    this.applyMode(a);
+    if (a === this.me) {
+      this.lastElim = null;
+      this.spectateId = 0;
+      this.input.resetToggles();
+      this.hud.elim(null);
+      document.body.classList.remove('dead');
+    } else {
+      this.botRespawned(a, m);
+    }
+  }
+
+  /** The mode state (scores, goal, time left, game HUD, respawn timers): modeState for the HUD plugins. */
+  on_ms(m) {
+    this.modeState = m;
+    // a simple countdown on the end screen while waiting to respawn (mode-catalog draws a nicer one)
+    const rs = m.rs && m.rs[this.myId];
+    if (this.me && !this.me.alive && this.lastElim && this.lastElim.respawn && rs !== undefined) {
+      const sub = this.lastElim.sub.replace(/Respawning in \d+…/, `Respawning in ${Math.max(1, rs)}…`);
+      if (sub !== this.lastElim.sub) { this.lastElim.sub = sub; this.hud.elim(this.lastElim); }
+    }
+  }
+
+  on_role(m) {
+    if (m.role) this.roles.set(m.id, m.role);
+    else this.roles.delete(m.id);
+  }
+
+  /** A new loadout mid-match for me or one of my bots (gun game, infection, …). */
+  on_lo(m) {
+    const a = m.id === this.myId ? this.me : this.bots.get(m.id);
+    if (a && m.lo) { this.giveLoadout(a, m.lo); this.applyMode(a); }
+  }
+
+  /** Mystery mutator: the match's rules changed. */
+  on_mut(m) {
+    if (!m.rules) return;
+    this.rules = normalizeRules(m.rules);
+    if (this.me && this.me.alive) this.applyMode(this.me);
+    for (const b of this.bots.values()) this.applyMode(b);
+  }
+
+  /**
+   * Best of N: {n, series, team, name} when a round is won (a short break follows), then
+   * {start: true, n, spawns, lootSeed, lo, …} when the next round begins.
+   */
+  on_round(m) {
+    if (!m.start) {
+      const who = m.name ? `${esc(m.name)} wins round ${m.n}!` : `Round ${m.n} is a draw`;
+      const won = m.team && m.team === this.teamOf(this.myId);
+      this.hud.big(`${won ? 'ROUND WON!' : `ROUND ${m.n}`}<small>${who}</small>`);
+      if (won) this.sfx.ui('victory');
+      return;
+    }
+    this.phase = m.bus ? 'bus' : 'match';
+    this.resetWorld();
+    this.startLoot(m);
+    this.setTeams(m.teams);
+    for (const p of m.players || []) this.roster.set(p.id, { ...(this.roster.get(p.id) || {}), ...p });
+    this.roles.clear();
+    this.modeState = {};
+    this.startSpawns = m.spawns || null;
+    this.startLo = this.loadoutTable(m.lo);
+    for (const r of this.remotes.values()) { r.revive(); r.buf.length = 0; r.hasState = false; }
+    const me = this.me;
+    me.char.endRagdoll();
+    me.alive = true;
+    me.dancing = false;
+    me.hp = this.rules.hp;
+    me.sh = this.rules.shield;
+    this.lastElim = null;
+    this.spectateId = 0;
+    this.hud.elim(null);
+    document.body.classList.remove('dead');
+    for (const a of [me, ...this.bots.values()]) {
+      a.char.endRagdoll();
+      a.alive = true;
+      a.hp = this.rules.hp;
+      a.sh = this.rules.shield;
+      this.giveLoadout(a, this.startLo.get(a.id) || null);
+      this.applyMode(a);
+      if (m.bus) {
+        a.inBus = true;
+        a.mover.mode = 'bus';
+        a.mover.setEnabled(false);
+        a.char.setVisible(false);
+        if (a !== me) {
+          const len = Math.hypot(m.bus.bx - m.bus.ax, m.bus.bz - m.bus.az) / m.bus.speed;
+          a.brain.dropAt = len * (0.12 + Math.random() * 0.68);
+        }
+      } else this.placeAtSpawn(a, this.startSpawns && this.startSpawns[a.id]);
+      if (a !== me) this.botRespawned(a, m);
+    }
+    if (m.bus) this.bus.start(m.bus);
+    this.hud.big(`ROUND ${m.n}<small>Fight!</small>`);
     this.plug('onPhase', this.phase, m);
   }
 
@@ -801,6 +1154,10 @@ export class Game {
 
   openChest(a, i) {
     if (this.world.chestOpen.has(i)) return;
+    // at most one request per chest every 0.5 s (the room answers a repeat with the chest's state)
+    const last = this.chestAsked.get(i);
+    if (last !== undefined && this.time - last < CHEST_ASK) return;
+    this.chestAsked.set(i, this.time);
     this.send({ t: 'chest', id: a.id, c: i });
   }
 
@@ -827,6 +1184,7 @@ export class Game {
   }
 
   tryPlaceBuild(a) {
+    if (this.rules.build === 'off' && this.phase !== 'lobby') return false;
     const onRamp = a.mover.groundInfo && a.mover.groundInfo.kind === 'build' ? this.builds.pieces.get(a.mover.groundInfo.key) : null;
     const t = this.builds.target(a.buildType, a.pos, a.yaw, a.pitch, onRamp);
     if (!t.free || !t.supported) return false;
@@ -850,7 +1208,7 @@ export class Game {
     this.pendingShots.set(shot, { owner: a.id, w: cur.k, r: cur.r | 0, left: pellets, hits: new Map() });
     for (let i = 0; i < dirs.length; i += 3) {
       this.ballistics.fire({
-        ox: origin.x, oy: origin.y, oz: origin.z, dx: dirs[i], dy: dirs[i + 1], dz: dirs[i + 2], speed: w.speed, grav: w.grav,
+        ox: origin.x, oy: origin.y, oz: origin.z, dx: dirs[i], dy: dirs[i + 1], dz: dirs[i + 2], speed: w.speed, grav: w.grav * this.gravK(),
         owner: a.id, team: this.phase === 'lobby' ? a.id : this.teamOf(a.id), w: cur.k, r: cur.r | 0, auth: true, rocket: w.projectile === 'rocket', shot,
         visX: muzzle.x, visY: muzzle.y, visZ: muzzle.z,
       });
@@ -1028,9 +1386,11 @@ export class Game {
       if (o2 && o2.hp > 0 && this.world.isAlive(info.id)) {
         this.send({ t: 'od', id: a.id, o: info.id, d: sdmg });
         const y = a.harvestYield(info);
-        if (y && !a.infinite) {
-          a.addMats(y[0], y[1]);
-          if (a === this.me) this.hud.damageNumber(_v2.set(h.x, h.y + 0.4, h.z), `+${y[1]}`, 'mat');
+        // rules.harvest: x1 / x2 / x3, or 0 = no materials from harvesting
+        const n = y ? Math.round(y[1] * (this.phase === 'lobby' ? 1 : this.rules.harvest)) : 0;
+        if (n > 0 && !a.infinite) {
+          a.addMats(y[0], n);
+          if (a === this.me) this.hud.damageNumber(_v2.set(h.x, h.y + 0.4, h.z), `+${n}`, 'mat');
         }
       }
     } else if (info && info.kind === 'barrel') {
@@ -1155,6 +1515,14 @@ export class Game {
     const s = this.input.update();
     this.plug('filterInput', s);
     const me = this.me;
+    if (this.rules.build === 'off' && this.phase !== 'lobby') {
+      // Zero Build: no building at all
+      s.build = null;
+      s.buildToggle = false;
+      s.buildFire = false;
+      s.buildHold = false;
+      if (me.buildMode) { me.buildMode = false; me.onInventory(); }
+    }
     if (s.map) this.hud.toggleFullMap();
 
     // hitboxes for this frame (positions from last frame are fine at 60 fps)
@@ -1289,7 +1657,7 @@ export class Game {
     // bullet drop: the shot must still come down on the target, not in the ground in front of it
     // (a shallow trajectory that dips below the feet lands many metres short, even for a rocket:
     // only a few cm of slack keep its blast within reach)
-    const drop = w.grav ? 0.5 * GRAVITY * w.grav * (len / w.speed) ** 2 : 0;
+    const drop = w.grav ? 0.5 * GRAVITY * w.grav * this.gravK() * (len / w.speed) ** 2 : 0;
     if (w.grav && aim.ty - drop < aim.targetFeet + (w.splash ? -0.1 : 0.1)) return false;
     // bullets leave from the shoulder (below the camera) and fall on the way: trace their real
     // path in a few straight pieces so we never fire into cover the camera can see over
@@ -1558,7 +1926,9 @@ export class Game {
     if (this.phase === 'bus' && this.bus.path) { extras.bus = this.bus.path; extras.busPos = this.bus.pos; }
     if (this.phase !== 'lobby') {
       const dots = [];
-      for (const r of this.remotes.values()) if (r.alive && !r.isBot && this.friendly(r.id, this.myId)) dots.push({ x: r.pos.x, z: r.pos.z, c: '#4fd2ff' });
+      // teammates (bots too: a duo partner may be a bot simulated here)
+      for (const r of this.remotes.values()) if (r.alive && r.mode !== 'bus' && this.friendly(r.id, this.myId)) dots.push({ x: r.pos.x, z: r.pos.z, c: '#4fd2ff' });
+      for (const b of this.bots.values()) if (b.alive && !b.inBus && this.friendly(b.id, this.myId)) dots.push({ x: b.pos.x, z: b.pos.z, c: '#4fd2ff' });
       if (dots.length) extras.dots = dots;
     }
     const mp = me.inBus ? this.bus.pos : me.alive ? me.pos : (this.actorById(this.spectateId) || me).pos;

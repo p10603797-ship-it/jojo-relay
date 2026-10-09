@@ -64,3 +64,24 @@ export function modeRules(id, opts) {
 export function modeInfo(entry) {
   return { name: entry.name, emoji: entry.emoji, color: entry.color, desc: entry.desc, tags: [...(entry.tags || [])] };
 }
+
+const TEAM_TAG = { 2: 'Duos', 3: 'Trios', 4: 'Squads', two: 'Two Teams', humans: 'Friends vs Bots' };
+const WIN_TAG = { elims: 'Elim Race', teamelims: 'Team Elims', time: 'Timed', gungame: 'Gun Game', infection: 'Infection', koth: 'King of the Hill', juggernaut: 'Juggernaut', lava: 'Floor is Lava' };
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+/** A few short chips describing a set of (normalized) rules, e.g. ['Duos', 'No Build', 'Respawn']. */
+export function modeTags(r) {
+  const tags = [];
+  if (has(TEAM_TAG, r.teams)) tags.push(TEAM_TAG[r.teams]);
+  if (has(WIN_TAG, r.win)) tags.push(WIN_TAG[r.win]);
+  if (r.build === 'off') tags.push('No Build');
+  else if (r.build === 'infinite') tags.push('Infinite Build');
+  if (r.respawn > 0) tags.push('Respawn');
+  if (r.storm === 'none') tags.push('No Storm');
+  if (r.gravity < 1) tags.push('Low Gravity');
+  if (r.oneShot) tags.push('One Shot');
+  if (r.bigHead) tags.push('Big Heads');
+  if (!r.pvp) tags.push('No Damage');
+  if (r.rounds > 1) tags.push(`Best of ${r.rounds}`);
+  return tags.slice(0, 5);
+}

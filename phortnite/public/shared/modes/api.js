@@ -14,13 +14,24 @@
 //   the core respawn rules apply.
 // - checkWin runs after every kill and at 10 Hz.
 // - A time limit (rules.timeLimit) ends any game, and the top score wins.
+//
+// How the Room plays it (shared/modes/runtime.js, shared/room.js):
+// - Messages: setRole -> {t:'role', id, role}; giveLoadout -> {t:'lo', id, lo} to the device that
+//   plays p (at setup they go into start.lo); setTeam -> a roster broadcast, and {t:'teams'} when
+//   the team is new; hud(ctx) -> ms.g in {t:'ms', sc, goal, tl, g, rs} (at most 4 Hz, when changed).
+// - An elimination with info.c 'left' (the player left the match) is never respawned.
+// - lastTeamStanding (games/core.js) counts players waiting to respawn as still in, and a match that
+//   only ever had one team never ends by it.
+// - When every human is out (and none respawns) the Room ends a 'last' result as 'humans-out'
+//   (win.id 0) instead of naming a bot.
 
 /**
  * A game. Every hook is optional.
  * @typedef {object} Game
  * @property {string} key                 the rules.win value that selects it
  * @property {string} label               display name ('Gun Game')
- * @property {boolean} [teamGame]          scores are kept per team (score keys are team ids), not per player
+ * @property {boolean|((rules: object) => boolean)} [teamGame]   scores are kept per team (score keys are
+ *   team ids), not per player; a function of the rules decides per match (core 'time')
  * @property {object} [defaults]           rule deltas the game wants (applied under the mode's own rules)
  * @property {(ctx: Ctx) => void} [setup]  after teams and spawns are assigned, before the 'start' broadcast
  * @property {(ctx: Ctx, dt: number) => void} [tick]   10 Hz (dt in seconds)
