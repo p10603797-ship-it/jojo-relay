@@ -326,6 +326,8 @@ export class Input {
       this.troot.style.setProperty('--tb-scale', String(sc));
       this.troot.style.setProperty('--tb-alpha', String(al));
     }
+    // (the HUD outside the buttons makes room for bigger ones: the elimination banner)
+    if (typeof document !== 'undefined' && document.documentElement) document.documentElement.style.setProperty('--ui-tb-scale', String(sc));
   }
 
   // ------------------------------------------------------------------ per frame

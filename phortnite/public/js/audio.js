@@ -3,7 +3,9 @@
 // Mix: every sound -> master (volume) -> +14 dB make-up -> compressor (-18 dB, 3:1) -> limiter
 // (-2 dB, 20:1, 1 ms) -> speakers. Your own gun sits around -20 dB RMS, peaks stay under -1 dBFS.
 // Music (sfx.musicBus, lobby-party's music.js) joins the master through a -14 dB trim, so it keeps
-// the loudness it had before the make-up gain.
+// the loudness it had before the make-up gain. The island's sounds (positional, loops, the reverb
+// and the 2D game sounds: hits, the storm siren, …) go through gameBus, which is off while the
+// lobby stage shows (setGame); menu clicks (ui) go straight to the master.
 //
 // Positional sounds: an HRTF panner within 40 m (equal-power beyond), a lowpass that closes from
 // 9 kHz in front to 2.5 kHz behind you (a front / back cue even on iPad speakers), air absorption
@@ -183,7 +185,7 @@ export class Sfx {
    * should start (later for far shots: sound travels at 343 m/s). dur: about how long it rings (s).
    * Returns null when the sound is out of range or would be the quietest of 28 voices.
    */
-  out(pos, vol = 1, maxDist = 120, dur = 0.6, travel = false) {
+  out(pos, vol = 1, maxDist = 120, dur = 0.6, travel = false, ui = false) {
     const ctx = this.ctx;
     const now = ctx.currentTime;
     this.t0 = now;
@@ -207,7 +209,9 @@ export class Sfx {
     const voice = this.voices[this.voices.length - 1];
     voice.g = g;
     if (!pos) {
-      g.connect(this.master);
+      // a 2D game sound (hit markers, the storm siren, …) is an island sound too: quiet while the
+      // lobby stage shows (gameBus); only the menus' own clicks go straight to the master
+      g.connect(ui || !this.gameBus ? this.master : this.gameBus);
       return g;
     }
     // behind you: duller; far away: duller still
@@ -716,7 +720,7 @@ export class Sfx {
 
   ui(kind = 'click') {
     if (!this.ok()) return;
-    const out = this.out(null, 0.3, 0, kind === 'victory' ? 1.2 : 0.6);
+    const out = this.out(null, 0.3, 0, kind === 'victory' ? 1.2 : 0.6, false, true);
     if (!out) return;
     const t = this.ctx.currentTime;
     if (kind === 'click') this.tone(out, t, 0.06, 'triangle', 900, 700, 0.3);
