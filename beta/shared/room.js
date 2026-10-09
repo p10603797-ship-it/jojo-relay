@@ -20,7 +20,7 @@ import { normalizeRules, rulesFromSettings, LEGACY_MODES } from './modes/rules.j
 import { findMode, modeInfo, modeTags } from './modes/index.js';
 import { GAMES } from './modes/games/index.js';
 import {
-  ModeRuntime, resolveArea, assignTeams, botCountFor, spawnCandidates, pickSpawns, rollBotSkill,
+  ModeRuntime, resolveArea, assignTeams, botCountFor, spawnCandidates, pickSpawns, rollBotSkill, nearLava,
 } from './modes/runtime.js';
 import { rollInitialLoot, rollChest, makeLoadout } from './loot.js';
 import { ROOM_PLUGINS } from './plugins/index.js';
@@ -36,6 +36,7 @@ const MAX_TOTAL = 32;
 const HUMANS_OUT_MS = 20000; // every human is out: bots play on this long (spectating) before the end
 const MYSTERY_EVERY = 60000;
 const ROUND_BREAK = 4000;
+const LAVA_PAD = 15; // m: storm circles keep their centre this far from a lava pool's edge
 // Mystery mode's mutators: [rule, value, banner]
 const MYSTERY = [
   ['gravity', 0.35, 'Moon gravity!'], ['speed', 1.5, 'Super speed!'], ['bigHead', true, 'Big heads!'],
@@ -162,6 +163,8 @@ export class Room {
     this.stormTick = 0;
     this.modeTickT = 0;
     this.starters = 0;
+    this.startTeams = 0;
+    this.sidesDealt = false;
     this.humansOutAt = 0;
     this.elimDepth = 0;
     this.pendingEnd = null;
@@ -268,6 +271,36 @@ export class Room {
     return null;
   }
 
+  /** The first human who is connected and not held away (join order), or null. */
+  firstPresent(except = 0) {
+    for (const p of this.players.values()) if (!p.bot && p.id !== except && !p.away && this.connOf(p)) return p;
+    return null;
+  }
+
+  /**
+   * Remove a player for good (left, a rejoin hold ran out, a held player was kicked): the mode
+   * hears about it (onKill) but never respawns them, and stops counting them (runtime.list), in
+   * every phase (a series' round break too, or the next round would revive a ghost). The win is
+   * checked once while they are still listed (out of the game, but their side still counts as one
+   * that played: lastTeamStanding never ends a match that only ever had one side, so a 1v1 whose
+   * other player left while waiting to respawn would never end otherwise). The caller re-checks
+   * the win afterwards, without them (a listed infection survivor or hider can block it).
+   */
+  removePlayer(p) {
+    const live = () => this.phase === 'match' || this.phase === 'bus';
+    p.leaving = true; // before the elimination, so the mode's onKill sees it
+    p.respawnAt = 0;
+    if (p.alive && live()) this.eliminate(p, null, { c: 'left' });
+    p.inMatch = false;
+    p.respawnAt = 0;
+    p.alive = false;
+    this.players.delete(p.id);
+    if (live()) this.checkWin();
+    this.runtime.list = this.runtime.list.filter((q) => q !== p);
+    if (p.watch) { p.watch = 0; this.tellWatch(p); }
+    this.broadcast({ t: 'note', msg: `${p.name} left` });
+  }
+
   roster() {
     return [...this.players.values()].map((p) => {
       const row = { id: p.id, name: p.name, skin: p.skin, bot: p.bot, alive: p.alive, kills: p.kills, spec: p.spectator, team: p.team };
@@ -319,7 +352,9 @@ export class Room {
     }
     this.players.set(id, p);
     this.conns.set(conn.id, { conn, pid: id, last: this.now() });
-    if (!this.leader || !this.players.get(this.leader)) this.leader = id;
+    // a leader who is away (held for a rejoin) cannot start: the newcomer leads
+    const lp = this.players.get(this.leader);
+    if (!lp || lp.away || !this.connOf(lp)) this.leader = id;
     this.send(conn, this.welcome(id));
     this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader }, conn.id);
     this.broadcast({ t: 'note', msg: `${p.name} joined the party` }, conn.id);
@@ -332,25 +367,18 @@ export class Room {
     if (!c) return;
     this.conns.delete(connId);
     const p = this.players.get(c.pid);
+    // its page is gone: it watches nobody now (held for a rejoin or not)
+    if (p && p.watch) { p.watch = 0; this.tellWatch(p); }
     // a room plugin may keep the player instead (e.g. held for a rejoin)
     if (this.plugAnswer('onLeave', this, c, p) === true) return;
-    if (p) {
-      // gone for good: the mode hears about it (onKill) but never respawns them, then stops counting them
-      p.leaving = true;
-      p.respawnAt = 0;
-      if (p.alive && (this.phase === 'match' || this.phase === 'bus')) this.eliminate(p, null, { c: 'left' });
-      p.inMatch = false;
-      p.respawnAt = 0;
-      this.players.delete(p.id);
-      this.runtime.list = this.runtime.list.filter((q) => q !== p);
-      this.broadcast({ t: 'note', msg: `${p.name} left` });
-    }
+    if (p) this.removePlayer(p);
     const humans = this.humans();
     if (!humans.length) {
       this.empty = true;
       return;
     }
-    if (this.leader === c.pid) this.leader = humans[0].id;
+    // someone who is here leads (a held player cannot start); all held: the first to come back will
+    if (this.leader === c.pid || !this.players.has(this.leader)) this.leader = (this.firstPresent() || humans[0]).id;
     this.reassignBots();
     this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader });
     if (this.phase === 'match' || this.phase === 'bus') this.checkWin();
@@ -384,15 +412,34 @@ export class Room {
     this.reassignBots(next.pid);
   }
 
-  reassignBots(to = this.leader) {
+  /**
+   * Hand every bot to player `to` ({t:'bots', own}). Mid-match a NEW owner also gets each live
+   * bot's mode kit ('lo' with kit, after 'bots' on the same channel): a bot taken over keeps its gun
+   * game rung or Juggernaut guns instead of starting again with a pickaxe. Only kits: 'lo' replaces
+   * the whole inventory, and a bot's other loadouts (a start or respawn loadout it has looted on
+   * top of) are better served by the start kit plus the gun it was seen holding (on_bots). An owner
+   * who keeps the bots (someone else left) gets no 'lo' at all: its bots keep what they carry.
+   * (resend false: the start message already carries the loadouts.)
+   */
+  reassignBots(to = this.leader, resend = true) {
     const owner = this.players.get(to);
     if (!owner) return;
     const own = [];
+    let moved = false;
     for (const p of this.players.values()) {
-      if (p.bot) { p.owner = owner.id; own.push(p.id); }
+      if (!p.bot) continue;
+      if (p.owner !== owner.id) moved = true;
+      p.owner = owner.id;
+      own.push(p.id);
     }
     const conn = this.connOf(owner);
-    if (conn) this.send(conn, { t: 'bots', own });
+    if (!conn) return;
+    this.send(conn, { t: 'bots', own });
+    if (resend && moved && (this.phase === 'match' || this.phase === 'bus' || this.phase === 'round')) {
+      for (const p of this.players.values()) if (p.bot && p.alive && p.lo && p.lo.kit) this.send(conn, { t: 'lo', id: p.id, lo: p.lo });
+      // and who watches which bot
+      for (const p of this.players.values()) if (!p.bot && p.watch) this.send(conn, { t: 'watch', from: p.id, id: p.watch });
+    }
   }
 
   welcome(id) {
@@ -486,6 +533,10 @@ export class Room {
     }
     this.teamList = assignTeams(humans, bots, R);
     const all = [...humans, ...bots];
+    // the side each player was dealt (a series ends early once only one of them is left; the
+    // game may move players between teams during a round, so p.team is not it afterwards)
+    for (const p of all) p.team0 = p.team;
+    this.startTeams = new Set(all.map((p) => p.team)).size;
     for (const p of all) {
       this.resetForMatch(p);
       p.kills = 0;
@@ -501,6 +552,8 @@ export class Room {
     // the mode's set-up, then everyone's loadout (its roles go out after the start: sendRoles)
     this.rolesHeld = true;
     try { this.runtime.setup(() => makeLoadout(R, Math.random)); } finally { this.rolesHeld = false; }
+    // a game that deals the sides itself every round (infection's zombies, hide & seek's seekers)
+    this.sidesDealt = !!(this.runtime.game && this.runtime.game.teamNames) || all.some((p) => p.team !== p.team0);
     if (R.timeLimit > 0) this.runtime.endsAt = now + (busTime + R.timeLimit) * 1000;
     this.stormTick = now;
     this.modeTickT = now;
@@ -511,7 +564,7 @@ export class Room {
       round: this.round ? { n: 1, series: {} } : null,
     });
     this.sendRoles(all);
-    this.reassignBots();
+    this.reassignBots(this.leader, false);
     this.plug('onStart', this);
     this.log('match start', { room: this.code, players: this.players.size, mode: this.settings.modeId });
   }
@@ -519,6 +572,7 @@ export class Room {
   /** Match-start state of a player taking part. */
   resetForMatch(p) {
     const R = this.rules;
+    p.watch = 0;
     p.alive = true;
     p.spectator = false;
     p.inMatch = true;
@@ -655,7 +709,7 @@ export class Room {
     const s = {
       i: 0, cx, cz, r, ncx: cx, ncz: cz, nr: r, state: 'wait', t0: now, tEnd: 0, phases: P.phases, moving: !!P.moving, cut: false,
     };
-    if (!(this.world.heightAt(cx, cz) > 1.5)) {
+    if (!(this.world.heightAt(cx, cz) > 1.5) || nearLava(this.world, cx, cz, LAVA_PAD)) {
       const l = this.landNear(cx, cz, r);
       s.cx = s.ncx = l.x; s.cz = s.ncz = l.z;
     }
@@ -669,7 +723,7 @@ export class Room {
   landNear(x, z) {
     let best = null, bd = Infinity;
     const consider = (px, pz) => {
-      if (!(this.world.heightAt(px, pz) > 1.5)) return;
+      if (!(this.world.heightAt(px, pz) > 1.5) || nearLava(this.world, px, pz, LAVA_PAD)) return;
       const d = (px - x) * (px - x) + (pz - z) * (pz - z);
       if (d < bd) { bd = d; best = { x: px, z: pz }; }
     };
@@ -696,13 +750,15 @@ export class Room {
       const a = Math.random() * Math.PI * 2;
       const d = Math.sqrt(Math.random()) * maxD;
       const x = s.cx + Math.cos(a) * d, z = s.cz + Math.sin(a) * d;
-      if (Math.hypot(x - A.x, z - A.z) + s.nr * 0.35 <= lim && this.world.heightAt(x, z) > 1.5) {
+      // never a circle around the volcano's lava pool (its crater is a pit: lava inside, storm outside)
+      if (Math.hypot(x - A.x, z - A.z) + s.nr * 0.35 <= lim && this.world.heightAt(x, z) > 1.5
+        && !nearLava(this.world, x, z, LAVA_PAD + Math.min(s.nr, 10))) {
         s.ncx = x; s.ncz = z;
         return;
       }
     }
     // nowhere new on land: stay put if that is land, else the nearest land
-    if (this.world.heightAt(s.cx, s.cz) > 1.5) { s.ncx = s.cx; s.ncz = s.cz; return; }
+    if (this.world.heightAt(s.cx, s.cz) > 1.5 && !nearLava(this.world, s.cx, s.cz, LAVA_PAD)) { s.ncx = s.cx; s.ncz = s.cz; return; }
     const l = this.landNear(s.cx, s.cz);
     s.ncx = l.x; s.ncz = l.z;
   }
@@ -889,8 +945,9 @@ export class Room {
     }
     let team = w ? w.team : 0;
     // best of N: a round is over, not the match (until a team has enough round wins); the
-    // series goes to the team with the most round wins
-    if (this.round && !humansOut) {
+    // series goes to the team with the most round wins. A forfeit (the other side left) goes to
+    // the side still here, whatever the round score.
+    if (this.round && !humansOut && !res.forfeit) {
       if (this.roundWon(team, res)) return;
       let best = 0, bw = 0, tie = false;
       for (const [k, n] of Object.entries(this.round.series)) {
@@ -908,7 +965,7 @@ export class Room {
     let name = '';
     if (w) {
       if (listed && this.rules.teams === 'humans') name = 'Your squad';
-      else if (listed) name = `${listed.name} Team`;
+      else if (listed && !(res.forfeit && this.sidesDealt)) name = `${listed.name} Team`;
       else name = w.name;
     }
     const sc = this.runtime.scores();
@@ -917,7 +974,7 @@ export class Room {
       : [...this.players.values()].filter((p) => p.inMatch && p.kills > 0).sort((a, b) => b.kills - a.kills).slice(0, 8).map((p) => [p.id, p.kills]);
     this.broadcast({
       t: 'win', id: this.winner, team, name, bot: w ? w.bot : false, early: this.teamsInGame() > 1,
-      reason: res.reason || 'last', scores, byTeam, mvp: this.mvp(),
+      reason: res.reason || 'last', scores, byTeam, mvp: this.mvp(), draw: !!res.draw && !w,
       round: this.round ? { n: this.round.n, series: this.round.series } : undefined,
     });
   }
@@ -955,6 +1012,30 @@ export class Room {
     const now = this.now();
     const R = this.rules;
     const r = this.round;
+    // a side left during the series (LEAVE PARTY, a rejoin hold that ran out): the side still
+    // here takes it now, instead of playing every remaining round against nobody. Sides are the
+    // teams players were dealt at the start (a round's infections or finds do not count), or each
+    // player when the game deals the sides itself every round (then it needs two players).
+    const present = this.runtime.list.filter((p) => this.players.has(p.id));
+    const side = (p) => (this.sidesDealt ? p.id : p.team0 ?? p.team);
+    const here = new Set(present.map(side));
+    const sides = this.sidesDealt ? this.starters : this.startTeams;
+    if (here.size < 2 && sides > 1) {
+      this.phase = 'match';
+      let res = { reason: 'left', forfeit: true };
+      if (here.size) {
+        const s0 = [...here][0];
+        const mine = present.filter((p) => side(p) === s0);
+        // back on the side they were dealt, so 'my team won' holds on every page
+        let moved = false;
+        for (const p of mine) if (p.team0 !== undefined && p.team !== p.team0) { p.team = p.team0; moved = true; }
+        if (moved) this.broadcast({ t: 'roster', players: this.roster(), leader: this.leader });
+        const face = mine.find((p) => !p.bot) || mine[0];
+        res = this.sidesDealt ? { id: face.id, reason: 'left', forfeit: true } : { team: face.team, reason: 'left', forfeit: true };
+      }
+      this.endMatch(res);
+      return;
+    }
     r.n++;
     this.resetWorldState();
     const all = this.runtime.list;
@@ -971,9 +1052,18 @@ export class Room {
     this.modeTickT = now;
     this.broadcast({
       t: 'round', n: r.n, series: r.series, start: true, bus: this.bus ? this.busMsg() : null, spawns,
-      lootSeed: this.lootSeed, lootN: this.loot.size, lo: this.startLoadouts(), players: this.roster(), teams: this.teamList,
+      lootSeed: this.lootSeed, lootN: this.loot.size, area: this.area, lo: this.startLoadouts(), players: this.roster(), teams: this.teamList,
     });
     this.sendRoles(all);
+  }
+
+  /** Tell the bots' device whom p is watching (p.watch, 0 = nobody). */
+  tellWatch(p) {
+    let owner = 0;
+    for (const q of this.players.values()) if (q.bot) { owner = q.owner; break; }
+    const op = owner ? this.players.get(owner) : null;
+    const conn = op ? this.connOf(op) : null;
+    if (conn) this.send(conn, { t: 'watch', from: p.id, id: p.watch | 0 });
   }
 
   /** The roles a game's set-up gave out, sent after the start (clients clear roles on start). */
@@ -1065,6 +1155,7 @@ export class Room {
     p.a = how === 'sky' ? ANIM.SKYDIVE : ANIM.IDLE;
     const lo = p.keepLoot ? null : this.runtime.respawnLoadout(p, () => makeLoadout(R, Math.random));
     p.keepLoot = false;
+    if (p.watch) { p.watch = 0; this.tellWatch(p); }
     this.broadcast({ t: 'respawn', id: p.id, x: r2(p.x), y: r2(p.y), z: r2(p.z), how, lo, hp: Math.ceil(p.hp), sh: Math.ceil(p.sh) });
     this.runtime.call('onRespawn', p);
   }
@@ -1332,6 +1423,13 @@ function cleanHeld(w) {
 
 // positions are clamped to the island (plus a margin) so the room never judges storm / hits far off the map
 const XZ_LIMIT = MAP.size / 2 + 60;
+// loot on the floor at most (an honest match starts with ~1500 items; 4000 is a ~300 KB welcome,
+// well under the P2P reassembly limit of 400 x 5000 characters)
+export const LOOT_CAP = 4000;
+const DROP_PER_S = 60;           // items one actor may drop a second
+const EMOTE_MS = 250;            // one emote per player every 250 ms
+const dropBudget = new WeakMap(); // player record -> {t0, n}
+const emoteT = new WeakMap();     // player record -> room time of the last emote
 
 function setState(p, s) {
   if (!Array.isArray(s) || s.length < 11) return;
@@ -1476,6 +1574,10 @@ const HANDLERS = {
     const base = w.dmg[r];
     const R = w.splash;
     if (this.damageAllowed() && !this.rules.headOnly) {
+      // judge the whole blast first, then apply it: the state when it went off counts for everyone
+      // in it (a gun game promotion, an infection, a Juggernaut handoff by the first victim must
+      // not change what it does to the others)
+      const hits = [];
       for (const p of this.players.values()) {
         if (!p.alive || p.inBus || p === a || this.sameTeam(p, a)) continue;
         const dx = p.x - x, dy = p.y + 0.9 - y, dz = p.z - z;
@@ -1483,8 +1585,9 @@ const HANDLERS = {
         if (d >= R) continue;
         const info = { w: m.w, c: 'boom' };
         const dmg = this.runtime.damageFor(a, p, base * (1 - 0.6 * d / R), info);
-        if (dmg > 0) this.applyDamage(p, dmg, a, info);
+        if (dmg > 0) hits.push([p, dmg, info]);
       }
+      for (const [p, dmg, info] of hits) this.applyDamage(p, dmg, a, info);
     }
     // structures
     const hit = [];
@@ -1583,8 +1686,22 @@ const HANDLERS = {
   dropi(c, m) {
     const a = this.actor(c.conn.id, m.id);
     if (!a || !Array.isArray(m.items)) return;
+    // dead actors and every phase may drop (death drops, swaps in the lobby): instead, drops land
+    // where the actor really is, the room's loot is capped, and each actor drops at most
+    // DROP_PER_S items a second (a flood would make the next joiner's welcome megabytes long)
+    if (this.loot.size >= LOOT_CAP) return;
+    const now = this.now();
+    const bud = dropBudget.get(a);
+    if (!bud || now - bud.t0 > 1000) dropBudget.set(a, { t0: now, n: 0 });
+    const b = dropBudget.get(a);
+    let x = num(m.x, a.x), y = num(m.y, a.y), z = num(m.z, a.z);
+    if (Math.hypot(x - a.x, z - a.z) > 4) { x = a.x; y = a.y; z = a.z; }
+    x = clampN(x, -XZ_LIMIT, XZ_LIMIT);
+    z = clampN(z, -XZ_LIMIT, XZ_LIMIT);
+    y = clampN(y, Math.max(-50, a.y - 6), Math.min(600, a.y + 6));
     const out = [];
     for (const it of m.items.slice(0, 12)) {
+      if (b.n >= DROP_PER_S || this.loot.size >= LOOT_CAP) break;
       if (!it || typeof it.k !== 'string') continue;
       const k = it.k;
       let item = null;
@@ -1593,9 +1710,10 @@ const HANDLERS = {
       else if (own(HEALS, k)) item = { k, n: clampN(num(it.n) | 0, 1, HEALS[k].stack) };
       else if (MAT_KEYS.includes(k)) item = { k, n: clampN(num(it.n) | 0, 1, MAX_MATS) };
       if (!item) continue;
+      b.n++;
       const ang = out.length * 1.3;
       const rad = it.near ? 0.4 : 0.8 + out.length * 0.15;
-      out.push(this.addLoot(item, num(m.x, a.x) + Math.cos(ang) * rad, num(m.y, a.y) + 0.05, num(m.z, a.z) + Math.sin(ang) * rad));
+      out.push(this.addLoot(item, x + Math.cos(ang) * rad, y + 0.05, z + Math.sin(ang) * rad));
     }
     if (out.length) this.broadcast({ t: 'l+', items: out });
   },
@@ -1614,8 +1732,27 @@ const HANDLERS = {
     this.openChest(ci);
   },
 
+  /**
+   * {t:'watch', id}: who this (eliminated) player spectates, 0 = nobody. The device running the bots
+   * hears about watched bots ({t:'watch', from, id}) and keeps them in its full simulation.
+   */
+  watch(c, m) {
+    const p = this.players.get(c.pid);
+    if (!p || p.bot) return;
+    let id = num(m.id) | 0;
+    const t = id ? this.players.get(id) : null;
+    if (!t || !t.bot) id = 0;
+    if ((p.watch | 0) === id) return;
+    p.watch = id;
+    this.tellWatch(p);
+  },
+
   emote(c, m) {
     const p = this.actor(c.conn.id, m.id);
-    if (p && p.alive) this.broadcast({ t: 'emote', id: p.id, e: num(m.e) | 0 }, c.conn.id);
+    if (!p || !p.alive) return;
+    const now = this.now();
+    if (now - (emoteT.get(p) ?? -1e12) < EMOTE_MS) return;
+    emoteT.set(p, now);
+    this.broadcast({ t: 'emote', id: p.id, e: num(m.e) | 0 }, c.conn.id);
   },
 };

@@ -9,6 +9,7 @@ import { MapView } from './mapview.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const _v = new THREE.Vector3();
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // damage numbers: a hit this close (m) and this soon (s) after a live number adds to its total
 const STACK_DIST = 1.2, STACK_TIME = 0.7;
@@ -136,6 +137,11 @@ export class Hud {
     this.el.shBreak = mk('div', 'shieldbreak', '', SHIELD_SVG, this.root);
     this.el.elimBanner = mk('div', 'elimbanner', '', '<div class="eb-streak"></div><div class="eb-main"><span class="eb-x">✖</span> ELIMINATED <b></b></div><div class="eb-count"></div>', this.root);
     this.el.editChips = mk('div', 'editchips', '', '', this.root);
+    // one-shot banners end their animation and lose .show: otherwise, when #hud shows again (after
+    // an end card or the lobby stage) the browser restarts the animation and old banners replay
+    for (const e of [this.el.big, this.el.elimBanner, this.el.shBreak, this.el.hit, this.el.sipHp, this.el.sipSh]) {
+      if (e) e.addEventListener('animationend', (ev) => { if (ev.target === e) e.classList.remove('show'); });
+    }
   }
 
   /** Elimination siphon: a short "+N" beside each bar that grew (green health, blue shield). */
@@ -161,7 +167,8 @@ export class Hud {
   inventory(p) {
     const inv = p.inv;
     for (const m of MAT_KEYS) {
-      this.set(`mat${m}`, p.infinite ? '∞' : inv.mats[m], (v) => { this.el.mats[m].lastChild.textContent = v; });
+      // (the warm-up's infinite flag, or a mode with infinite building: Playground, Infinite Build)
+      this.set(`mat${m}`, p.infinite || p.infMats ? '∞' : inv.mats[m], (v) => { this.el.mats[m].lastChild.textContent = v; });
       this.set(`matsel${m}`, p.buildMode && p.buildMat === m, (v) => this.el.mats[m].classList.toggle('sel', v));
     }
     for (let i = 0; i < 6; i++) {
@@ -170,7 +177,7 @@ export class Hud {
       this.set(`slot${i}`, key, () => {
         const el = this.slots[i];
         el.className = `slot${inv.sel === i && !p.buildMode ? ' sel' : ''}${s && (WEAPONS[s.k] && s.k !== 'pickaxe' || HEALS[s.k]) ? ` r${WEAPONS[s.k] ? s.r | 0 : HEALS[s.k].rarity}` : ''}`;
-        el.children[1].innerHTML = s ? ICON[s.k] || (WEAPONS[s.k] ? WEAPONS[s.k].short.toUpperCase() : s.k) : '';
+        el.children[1].innerHTML = s ? ICON[s.k] || (WEAPONS[s.k] ? WEAPONS[s.k].short.toUpperCase() : esc(s.k)) : '';
         el.children[2].textContent = s ? (HEALS[s.k] ? s.n : WEAPONS[s.k] && WEAPONS[s.k].mag ? s.m : '') : '';
       });
     }
@@ -273,7 +280,9 @@ export class Hud {
     n.oy = stack ? -10 : (Math.random() - 0.5) * 20;
     n.total = typeof amount === 'number' ? amount : 0;
     if (typeof amount === 'number' && kind !== 'mat') this.numStyle(n, kind, amount);
-    else { n.el.className = `dn ${kind}`; n.el.textContent = amount; n.el.style.fontSize = ''; }
+    // (a '+N' material number clears the size: forget the cached one, or the next damage number
+    // on this element keeps the stylesheet's size)
+    else { n.el.className = `dn ${kind}`; n.el.textContent = amount; n.el.style.fontSize = ''; n.size = 0; }
     n.el.style.display = 'block';
   }
 

@@ -1,19 +1,15 @@
 // Shared game rules for Phortnite. Imported by the browser client AND the Node server,
 // so this file must stay free of DOM / Node specific APIs.
+import { MAP, BUS, DROP } from './world/scale.js';
 
-export const VERSION = '1.1.0';
-export const PROTOCOL = 2; // bump whenever old and new builds can't share a party
+export const VERSION = '2.0.0';
+export const PROTOCOL = 3; // bump whenever old and new builds can't share a party
 
 export const TICK_HZ = 20;            // server snapshot rate
 export const SEND_HZ = 20;            // client state upload rate
 
-export const MAP = {
-  seed: 20261003,                     // one hand-tuned island, like the real thing
-  size: 640,                          // metres, terrain spans [-320, 320]
-  res: 160,                           // terrain cells per side (4 m cells)
-  islandRadius: 268,
-  waterY: 0,
-};
+// the island's size and the bus / drop reach live in world/scale.js
+export { MAP, BUS, DROP };
 
 export const BUILD = {
   cell: 4,                            // grid cell width (m)
@@ -48,12 +44,12 @@ export const PLAYER = {
   stepHeight: 0.5,
   fallSafe: 19,                       // impact speed below which there is no fall damage
   fallDmgPerMs: 7,
-  skydiveFall: 34,
-  skydiveDive: 50,
-  skydiveSpeed: 22,
-  glideFall: 8,
-  glideSpeed: 15,
-  glideHeight: 55,                    // glider deploys automatically this far above ground
+  skydiveFall: DROP.skydiveFall,
+  skydiveDive: DROP.skydiveDive,
+  skydiveSpeed: DROP.skydiveSpeed,
+  glideFall: DROP.glideFall,
+  glideSpeed: DROP.glideSpeed,
+  glideHeight: DROP.glideHeight,      // glider deploys automatically this far above ground
 };
 
 export const RARITY = [
@@ -192,7 +188,64 @@ export const STORM = {
   ],
 };
 
-export const BUS = { height: 135, speed: 30, length: 680, forceDrop: 0.84 };
+// The big island's classic storm: 8 phases (today's 6 stay on maps up to 700 m)
+const BIG_STORM_PHASES = [
+  { wait: 90, shrink: 60, ratio: 0.6, dps: 1 },
+  { wait: 75, shrink: 50, ratio: 0.55, dps: 1 },
+  { wait: 60, shrink: 40, ratio: 0.52, dps: 2 },
+  { wait: 45, shrink: 35, ratio: 0.5, dps: 4 },
+  { wait: 35, shrink: 30, ratio: 0.47, dps: 6 },
+  { wait: 30, shrink: 25, ratio: 0.42, dps: 8 },
+  { wait: 25, shrink: 20, ratio: 0.38, dps: 10 },
+  { wait: 20, shrink: 20, ratio: 0.0, dps: 12 },
+];
+const CLASSIC_PHASES = MAP.size <= 700 ? STORM.phases : BIG_STORM_PHASES;
+const timed = (phases, k) => phases.map((p) => ({ ...p, wait: Math.round(p.wait * k), shrink: Math.round(p.shrink * k) }));
+
+/**
+ * Storm presets (rules.storm). startRadius: the first circle on the whole island ('full' area;
+ * a smaller area starts at its radius x 1.25). start 'area': centred on the play area; 'region':
+ * around a random named place inside it. moving: later circles may poke out of the previous one.
+ * The last 2 phases of every preset drift the centre (Room.pickNextCircle). 'none' = no storm.
+ */
+export const STORM_PRESETS = {
+  classic: { startRadius: MAP.size <= 700 ? STORM.startRadius : 0.62 * MAP.size, start: 'area', phases: CLASSIC_PHASES },
+  fast: { startRadius: MAP.size <= 700 ? STORM.startRadius : 0.62 * MAP.size, start: 'area', phases: timed(CLASSIC_PHASES, 0.6) },
+  slow: { startRadius: MAP.size <= 700 ? STORM.startRadius : 0.62 * MAP.size, start: 'area', phases: timed(CLASSIC_PHASES, 1.6) },
+  final: {
+    startRadius: 140, start: 'region',
+    phases: [
+      { wait: 30, shrink: 35, ratio: 0.55, dps: 4 },
+      { wait: 25, shrink: 30, ratio: 0.45, dps: 7 },
+      { wait: 20, shrink: 25, ratio: 0.0, dps: 10 },
+    ],
+  },
+  zonewars: {
+    startRadius: 120, start: 'area', moving: true,
+    phases: [
+      { wait: 10, shrink: 25, ratio: 0.62, dps: 2 },
+      { wait: 15, shrink: 22, ratio: 0.55, dps: 3 },
+      { wait: 12, shrink: 20, ratio: 0.5, dps: 5 },
+      { wait: 10, shrink: 16, ratio: 0.45, dps: 8 },
+      { wait: 8, shrink: 14, ratio: 0.4, dps: 10 },
+      { wait: 6, shrink: 12, ratio: 0.0, dps: 12 },
+    ],
+  },
+  none: null,
+};
+
+/** Team look, by team id (1 = TEAM_COLORS[0]); solo players (FFA) have no listed team. */
+export const TEAM_COLORS = [
+  { name: 'Blue', color: '#3ea4ff' }, { name: 'Red', color: '#ff4d4d' }, { name: 'Green', color: '#5ad13a' },
+  { name: 'Yellow', color: '#ffd23f' }, { name: 'Purple', color: '#bd52ff' }, { name: 'Orange', color: '#ff8a00' },
+  { name: 'Pink', color: '#ff6fb1' }, { name: 'Teal', color: '#2fd6c3' }, { name: 'White', color: '#f1f1f1' },
+  { name: 'Lime', color: '#b6ff3d' }, { name: 'Brown', color: '#c08552' }, { name: 'Navy', color: '#5b7cff' },
+  { name: 'Gold', color: '#ffb22e' }, { name: 'Mint', color: '#8ff0c4' }, { name: 'Crimson', color: '#d1204f' },
+  { name: 'Sky', color: '#9fe3ff' },
+];
+
+/** Respawns and sky spawns start this far above the ground, skydiving. */
+export const SKY_SPAWN_HEIGHT = 90;
 
 export const SKINS = [
   { id: 0, name: 'Phantom',    outfit: '#2b2f45', accent: '#7cf2ff', pants: '#1c1f2e', skin: '#e9b48a', hair: '#141414', shoes: '#f1f1f1' },

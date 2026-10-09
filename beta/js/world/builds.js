@@ -414,7 +414,33 @@ export class Builds {
     p.d = p.d | 0;
     p.free = !this.pieces.has(p.k);
     p.supported = p.free && this.grid.canSupport(p);
+    // the 4 m grid level under your feet can be mostly underground on a slope (a knee-high stub of
+    // a wall, a floor 3 m under the grass): a wall or floor more than half a level deep in the
+    // ground goes one level up, when that one is supported too
+    if ((p.t === 'w' || p.t === 'f') && this.buriedDepth(p) > L / 2) {
+      const up = { ...p, cy: p.cy + 1 };
+      up.k = pieceKey(up.t, up.cx, up.cy, up.cz, up.o);
+      up.free = !this.pieces.has(up.k);
+      up.supported = up.free && this.grid.canSupport(up);
+      if (up.supported || !p.supported) return up;
+    }
     return p;
+  }
+
+  /** How deep (m) the ground reaches above a wall's or floor's bottom, on average along it. */
+  buriedDepth(p) {
+    const h = this.grid.heightAt;
+    if (typeof h !== 'function') return 0;
+    const y0 = p.cy * L;
+    let sum = 0, n = 0;
+    const at = (x, z) => { sum += Math.max(0, h(x, z) - y0); n++; };
+    if (p.t === 'w') {
+      if (p.o === 'x') for (const f of [0.1, 0.5, 0.9]) at((p.cx + f) * C, p.cz * C);
+      else for (const f of [0.1, 0.5, 0.9]) at(p.cx * C, (p.cz + f) * C);
+    } else {
+      for (const [fx, fz] of [[0.5, 0.5], [0.15, 0.15], [0.85, 0.15], [0.15, 0.85], [0.85, 0.85]]) at((p.cx + fx) * C, (p.cz + fz) * C);
+    }
+    return n ? sum / n : 0;
   }
 
   showGhost(p, ok) {

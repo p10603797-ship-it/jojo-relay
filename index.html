@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Phortnite">
   <meta name="theme-color" content="#1a0f3d">
-  <meta name="description" content="Phortnite — a free 3D battle royale you can play in the browser, on iPad, with friends on the same Wi-Fi.">
+  <meta name="description" content="Phortnite — a free 3D battle royale you can play in the browser, on iPad, with friends anywhere: invite them to your party and pick from loads of game modes.">
   <title>PHORTNITE</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -17,6 +17,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Russo+One&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/lobby.css">
+  <link rel="stylesheet" href="css/modes.css">
+  <link rel="stylesheet" href="css/map.css">
   <!-- Libraries come from the jsDelivr CDN so the site works on any static host.
        The bundled Node server (npm start) rewrites these to its own local copies. -->
   <!-- import maps polyfill for older Safari / iPadOS (only kicks in when needed) -->
@@ -87,63 +90,20 @@
     <div id="progress"><div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg"/></svg></div><span></span></div>
     <div id="busprompt"></div>
 
-    <div id="lobbypanel" class="panel">
-      <div class="lp-head"><span class="lp-title">PARTY</span><span class="lp-code"></span><button class="lp-min" aria-label="Minimise">–</button></div>
-      <div class="lp-body">
-        <div class="lp-hint"></div>
-        <ul class="lp-players"></ul>
-        <div class="lp-leader">
-          <label>Bots <input type="range" min="0" max="30" value="8" class="lp-bots"><b class="lp-botsv">8</b></label>
-          <label>Mode
-            <select class="lp-mode"><option value="ffa">Everyone for themselves</option><option value="squad">Friends team up vs bots</option></select>
-          </label>
-          <label>Start materials
-            <select class="lp-mats"><option value="0">0 (classic)</option><option value="200">200</option><option value="500">500</option><option value="999">999 (builder pro)</option></select>
-          </label>
-          <button class="btn yellow lp-start">START MATCH</button>
-        </div>
-        <div class="lp-wait">Waiting for the party leader to start…</div>
-        <div class="lp-share"></div>
-      </div>
-    </div>
+    <!-- the warm-up chip (js/ui/lobbyPanel.js) -->
+    <div id="lobbypanel" class="panel"></div>
 
-    <div id="elimscreen" class="hidden">
-      <div class="es-place"></div>
-      <div class="es-title"></div>
-      <div class="es-sub"></div>
-      <div class="es-btns">
-        <button class="btn es-again yellow">PLAY AGAIN</button>
-        <button class="btn es-spec">SPECTATE</button>
-        <button class="btn es-leave">LEAVE</button>
-      </div>
-    </div>
+    <!-- the death card / victory / match over (js/ui/endscreen.js) -->
+    <div id="elimscreen" class="hidden"></div>
   </div>
 
   <div id="fullmap" class="hidden"><canvas width="900" height="900"></canvas><div class="fm-close">Tap / M to close</div></div>
 
-  <!-- ===================================================== MENUS -->
-  <div id="menu" class="hidden">
-    <div class="logo">
-      <div class="logo-main">PHORTNITE</div>
-      <div class="logo-sub">BATTLE ROYALE · BUILD · PHIGHT</div>
-    </div>
-    <div class="menu-left">
-      <label class="namebox">Your name<input id="name" maxlength="16" autocomplete="off" spellcheck="false"></label>
-      <button class="btn big yellow" id="btn-solo">PLAY SOLO <small>vs bots</small></button>
-      <button class="btn big blue" id="btn-friends">PLAY WITH FRIENDS <small>same Wi-Fi</small></button>
-      <div class="row">
-        <button class="btn" id="btn-locker">LOCKER</button>
-        <button class="btn" id="btn-settings">SETTINGS</button>
-        <button class="btn" id="btn-help">HOW TO PLAY</button>
-      </div>
-      <button class="btn small" id="btn-fullscreen">⛶ FULL SCREEN</button>
-    </div>
-    <div class="menu-right">
-      <div class="skin-name" id="skin-name"></div>
-      <div class="skin-arrows"><button class="btn round" id="skin-prev">◀</button><button class="btn round" id="skin-next">▶</button></div>
-    </div>
-    <div class="menu-foot">A fan-made battle royale. Not affiliated with any game company.</div>
-  </div>
+  <!-- ===================================================== LOBBY -->
+  <!-- the party lobby over the stage (js/ui/lobby.js builds it; js/lobby/stage.js adds the nameplates) -->
+  <div id="lobby" class="hidden"></div>
+  <div id="toasts"></div>
+  <div id="netstatus" class="hidden"></div>
 
   <div id="modal" class="hidden"><div class="modal-card"><button class="modal-x" aria-label="Close">✕</button><div class="modal-body"></div></div></div>
 
@@ -154,7 +114,7 @@
     <div class="load-tip"></div>
   </div>
 
-  <div id="rotate">↻ Turn your iPad sideways to play</div>
+  <div id="rotate"><div>↻ Turn your iPad sideways to play</div><button class="btn yellow rot-lobby">↩ LOBBY</button></div>
 
   <script type="module" src="js/main.js"></script>
 </body>

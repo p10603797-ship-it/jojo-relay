@@ -1,9 +1,32 @@
 // DOM heads-up display. Writes only when values change to keep layout work tiny.
+// The warm-up panel, the end screen and the maps live in their own modules (lobbyPanel.js,
+// endscreen.js, mapview.js); Hud.lobby / elim / drawMap / minimap / toggleFullMap forward to them.
 import * as THREE from 'three';
-import { WEAPONS, HEALS, RARITY, SKINS, MAT_KEYS, AMMO, itemName } from '../../shared/constants.js';
+import { WEAPONS, HEALS, RARITY, MAT_KEYS, AMMO, itemName } from '../../shared/constants.js';
+import { LobbyPanel } from './lobbyPanel.js';
+import { EndScreen } from './endscreen.js';
+import { MapView } from './mapview.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const _v = new THREE.Vector3();
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// damage numbers: a hit this close (m) and this soon (s) after a live number adds to its total
+const STACK_DIST = 1.2, STACK_TIME = 0.7;
+const NUM_LIFE = 0.9; // s a number stays up after its last hit
+const dnSize = (dmg) => Math.round(Math.max(24, Math.min(52, 22 + dmg * 0.28)));
+
+/** Name + rarity of what the interact prompt offers (for the touch interact button). */
+function promptInfo(html) {
+  const r = /class="r(\d)"/.exec(html);
+  const text = html.replace(/<kbd>.*?<\/kbd>/g, '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  if (/^Open Chest/.test(text)) return { name: 'Chest', r: 5 };
+  return { name: text.replace(/^(Pick up|Swap for|Open)\s+/, ''), r: r ? +r[1] : -1 };
+}
+
+const SHIELD_SVG = '<svg viewBox="0 0 48 56" aria-hidden="true"><path d="M24 2 L44 9 V26 C44 40 35 49 24 54 C13 49 4 40 4 26 V9 Z" fill="#43b5ff" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>'
+  + '<path d="M24 4 L20 17 L28 24 L19 33 L25 41 L22 53" fill="none" stroke="#0b1c3a" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>'
+  + '<path d="M28 24 L38 20 M19 33 L9 30" fill="none" stroke="#0b1c3a" stroke-width="2.5" stroke-linecap="round"/></svg>';
 
 // Elimination siphon "+50" beside the health / shield bars (kept here so the feature is self-contained).
 // Each popup spans its bar's row of #bars (2 bars + 6px gap), so it stays centred at any bar height.
@@ -41,7 +64,6 @@ export class Hud {
       bus: $('#busprompt'), fps: $('#fps'), net: $('#netinfo'), poi: $('#poi'), buildbar: $('#buildbar'),
       lobby: $('#lobbypanel'), elim: $('#elimscreen'), fullmap: $('#fullmap'),
     };
-    this.mapCtx = this.el.map.getContext('2d');
     this.cache = {};
     this.slots = [];
     for (let i = 0; i < 6; i++) {
@@ -58,13 +80,16 @@ export class Hud {
       d.className = 'dn';
       d.style.display = 'none';
       this.el.dmg.appendChild(d);
-      this.nums.push({ el: d, t: 0, life: 0, pos: new THREE.Vector3(), active: false, dx: 0 });
+      this.nums.push({ el: d, t: 0, life: 0, pos: new THREE.Vector3(), active: false, dx: 0, ox: 0, oy: 0, total: 0, stack: false, hitT: 0, pop: 1, size: 0 });
     }
     this.noticeTimer = 0;
-    this.mapT = 0;
+    this.promptInfo = null;
+    this.onEditChip = null;
     this.initSiphon();
-    this.el.map.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.toggleFullMap(); });
-    this.el.fullmap.addEventListener('pointerdown', () => this.toggleFullMap(false));
+    this.initFeel();
+    this.mapView = new MapView(this, world);
+    this.lobbyPanel = new LobbyPanel(this);
+    this.endscreen = new EndScreen(this);
   }
 
   set(key, value, fn) {
@@ -93,6 +118,32 @@ export class Hud {
     this.el.sipHp = mk('hp');
   }
 
+  /** DOM for build 2.0 + hit feedback (index.html stays as it is): cone in the build bar, kill ring, shield-break icon, elimination banner, edit chips. */
+  initFeel() {
+    const mk = (tag, id, cls, html, parent) => {
+      let e = id ? document.getElementById(id) : null;
+      if (!e) {
+        e = document.createElement(tag);
+        if (id) e.id = id;
+        if (cls) e.className = cls;
+        if (html) e.innerHTML = html;
+        parent.appendChild(e);
+      }
+      return e;
+    };
+    const bb = this.el.buildbar;
+    if (bb && !bb.querySelector('[data-t=c]')) mk('div', null, 'bp', '<b>▲</b><span>Cone</span><kbd>V</kbd>', bb).dataset.t = 'c';
+    if (this.el.hit && !this.el.hit.querySelector('.ring')) mk('b', null, 'ring', '', this.el.hit);
+    this.el.shBreak = mk('div', 'shieldbreak', '', SHIELD_SVG, this.root);
+    this.el.elimBanner = mk('div', 'elimbanner', '', '<div class="eb-streak"></div><div class="eb-main"><span class="eb-x">✖</span> ELIMINATED <b></b></div><div class="eb-count"></div>', this.root);
+    this.el.editChips = mk('div', 'editchips', '', '', this.root);
+    // one-shot banners end their animation and lose .show: otherwise, when #hud shows again (after
+    // an end card or the lobby stage) the browser restarts the animation and old banners replay
+    for (const e of [this.el.big, this.el.elimBanner, this.el.shBreak, this.el.hit, this.el.sipHp, this.el.sipSh]) {
+      if (e) e.addEventListener('animationend', (ev) => { if (ev.target === e) e.classList.remove('show'); });
+    }
+  }
+
   /** Elimination siphon: a short "+N" beside each bar that grew (green health, blue shield). */
   siphon(dh, ds) {
     this.siphonPop(this.el.sipHp, this.el.hpFill.parentNode, dh);
@@ -116,7 +167,8 @@ export class Hud {
   inventory(p) {
     const inv = p.inv;
     for (const m of MAT_KEYS) {
-      this.set(`mat${m}`, p.infinite ? '∞' : inv.mats[m], (v) => { this.el.mats[m].lastChild.textContent = v; });
+      // (the warm-up's infinite flag, or a mode with infinite building: Playground, Infinite Build)
+      this.set(`mat${m}`, p.infinite || p.infMats ? '∞' : inv.mats[m], (v) => { this.el.mats[m].lastChild.textContent = v; });
       this.set(`matsel${m}`, p.buildMode && p.buildMat === m, (v) => this.el.mats[m].classList.toggle('sel', v));
     }
     for (let i = 0; i < 6; i++) {
@@ -125,7 +177,7 @@ export class Hud {
       this.set(`slot${i}`, key, () => {
         const el = this.slots[i];
         el.className = `slot${inv.sel === i && !p.buildMode ? ' sel' : ''}${s && (WEAPONS[s.k] && s.k !== 'pickaxe' || HEALS[s.k]) ? ` r${WEAPONS[s.k] ? s.r | 0 : HEALS[s.k].rarity}` : ''}`;
-        el.children[1].innerHTML = s ? ICON[s.k] || (WEAPONS[s.k] ? WEAPONS[s.k].short.toUpperCase() : s.k) : '';
+        el.children[1].innerHTML = s ? ICON[s.k] || (WEAPONS[s.k] ? WEAPONS[s.k].short.toUpperCase() : esc(s.k)) : '';
         el.children[2].textContent = s ? (HEALS[s.k] ? s.n : WEAPONS[s.k] && WEAPONS[s.k].mag ? s.m : '') : '';
       });
     }
@@ -164,48 +216,156 @@ export class Hud {
     this.set('chs', s, (v) => this.el.cross.style.setProperty('--s', `${v + 5}px`));
   }
 
+  /** Hit confirm: 4 lines; yellow for a headshot; a kill is a red X with an expanding ring. */
   hitmarker(head, kill) {
     const h = this.el.hit;
     h.classList.remove('show', 'head', 'kill');
-    void h.offsetWidth;
+    void h.offsetWidth; // restart the animation (once per hit, never per frame)
     if (head) h.classList.add('head');
     if (kill) h.classList.add('kill');
     h.classList.add('show');
   }
 
+  /** Someone's shield just broke from my hit: a cracked-shield icon pops by the crosshair. */
+  shieldBreak() {
+    const e = this.el.shBreak;
+    if (!e) return;
+    e.classList.remove('show');
+    void e.offsetWidth;
+    e.classList.add('show');
+  }
+
+  /**
+   * A damage number at a world position. Player hits (kind '', 'shield', 'head') close to a live
+   * number stack into its running total, which pops; a small number for the single hit flies off.
+   * kind 'build' / 'mat' are plain one-off numbers.
+   */
   damageNumber(pos, amount, kind = '') {
-    const n = this.nums.find((x) => !x.active) || this.nums[0];
+    const stackable = typeof amount === 'number' && kind !== 'build' && kind !== 'mat';
+    if (stackable) {
+      let best = null, bd = STACK_DIST * STACK_DIST;
+      for (const n of this.nums) {
+        if (!n.active || !n.stack || n.hitT > STACK_TIME) continue;
+        const d = n.pos.distanceToSquared(pos);
+        if (d <= bd) { bd = d; best = n; }
+      }
+      if (best) {
+        best.total += amount;
+        best.hitT = 0;
+        best.t = 0;
+        best.pop = 0;
+        this.numStyle(best, kind, best.total);
+        this.spawnNumber(pos, amount, kind, false); // the single hit flies off to the side
+        return;
+      }
+    }
+    this.spawnNumber(pos, amount, kind, stackable);
+  }
+
+  spawnNumber(pos, amount, kind, stack) {
+    let n = null;
+    for (const x of this.nums) if (!x.active) { n = x; break; }
+    if (!n) { n = this.nums[0]; for (const x of this.nums) if (!x.stack && x.t > n.t) n = x; }
     n.active = true;
+    n.stack = stack;
     n.t = 0;
-    n.life = kind === 'mat' ? 0.9 : 0.85;
+    n.hitT = 0;
+    n.pop = 0;
+    n.small = !stack && typeof amount === 'number' && kind !== 'build' && kind !== 'mat';
+    n.life = stack ? NUM_LIFE : n.small ? 0.55 : kind === 'mat' ? 0.9 : 0.85;
     n.pos.copy(pos);
-    n.dx = (Math.random() - 0.5) * 60;
-    n.ox = (Math.random() - 0.5) * 50;
-    n.oy = (Math.random() - 0.5) * 30;
-    n.el.className = `dn ${kind}`;
-    n.el.textContent = kind === 'mat' ? amount : Math.round(amount);
+    const side = Math.random() < 0.5 ? -1 : 1;
+    n.dx = stack ? 0 : side * (60 + Math.random() * 50);
+    n.ox = stack ? (Math.random() - 0.5) * 16 : side * 26;
+    n.oy = stack ? -10 : (Math.random() - 0.5) * 20;
+    n.total = typeof amount === 'number' ? amount : 0;
+    if (typeof amount === 'number' && kind !== 'mat') this.numStyle(n, kind, amount);
+    // (a '+N' material number clears the size: forget the cached one, or the next damage number
+    // on this element keeps the stylesheet's size)
+    else { n.el.className = `dn ${kind}`; n.el.textContent = amount; n.el.style.fontSize = ''; n.size = 0; }
     n.el.style.display = 'block';
+  }
+
+  numStyle(n, kind, value) {
+    const cls = `dn ${kind}${n.small ? ' small' : ''}${n.stack ? ' total' : ''}`;
+    if (n.el.className !== cls) n.el.className = cls;
+    n.el.textContent = Math.round(value);
+    const size = n.small ? 20 : kind === 'build' ? 22 : dnSize(value);
+    if (size !== n.size) { n.size = size; n.el.style.fontSize = `${size}px`; }
   }
 
   updateNumbers(dt, camera, w, h) {
     for (const n of this.nums) {
       if (!n.active) continue;
       n.t += dt;
-      if (n.t > n.life) { n.active = false; n.el.style.display = 'none'; continue; }
+      n.hitT += dt;
+      n.pop += dt;
+      if (n.t > n.life) { n.active = false; n.stack = false; n.el.style.display = 'none'; continue; }
       _v.copy(n.pos).project(camera);
       if (_v.z > 1) { n.el.style.opacity = 0; continue; }
+      const rise = n.stack ? 22 : 50;
       const x = (_v.x * 0.5 + 0.5) * w + n.ox + n.dx * n.t;
-      const y = (-_v.y * 0.5 + 0.5) * h + n.oy - 50 * n.t - 20;
+      const y = (-_v.y * 0.5 + 0.5) * h + n.oy - rise * n.t - 20;
       const k = n.t / n.life;
-      const sc = n.t < 0.1 ? 1.5 - n.t * 5 : 1;
-      n.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -50%) scale(${sc})`;
-      n.el.style.opacity = k > 0.6 ? (1 - k) / 0.4 : 1;
+      // pop: 1.6 -> 1 over 0.15 s on every hit
+      const sc = n.pop < 0.15 ? 1.6 - (n.pop / 0.15) * 0.6 : 1;
+      n.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -50%) scale(${sc.toFixed(3)})`;
+      n.el.style.opacity = k > 0.6 ? ((1 - k) / 0.4).toFixed(3) : 1;
     }
+  }
+
+  /** Bottom-centre banner for my elimination: 'ELIMINATED <name>', my count, and a streak (DOUBLE…). */
+  elimBanner(name, count, streak = '') {
+    const e = this.el.elimBanner;
+    if (!e) return;
+    e.children[0].textContent = streak || '';
+    e.children[1].lastChild.textContent = String(name || '').toUpperCase();
+    e.children[2].textContent = `${count} ELIMINATION${count === 1 ? '' : 'S'}`;
+    e.classList.toggle('streak', !!streak);
+    e.classList.remove('show');
+    void e.offsetWidth;
+    e.classList.add('show');
+  }
+
+  /** The edit choices (labels in pick order) or null to close. hints: show the 1-5 keys. */
+  editChips(labels, hints = false) {
+    const e = this.el.editChips;
+    if (!e) return;
+    if (!labels) { e.classList.remove('show'); return; }
+    e.textContent = '';
+    labels.forEach((label, i) => {
+      const b = document.createElement('button');
+      b.className = `chip hudbtn${label === 'RESET' ? ' reset' : ''}`;
+      b.innerHTML = `${hints ? `<kbd>${i + 1}</kbd>` : ''}${label}`;
+      b.addEventListener('pointerdown', (ev) => { ev.preventDefault(); ev.stopPropagation(); if (this.onEditChip) this.onEditChip(i); });
+      e.appendChild(b);
+    });
+    e.classList.add('show');
+  }
+
+  /** Clear transient messages for a new session, without replaying their animations. */
+  reset() {
+    const el = this.el;
+    el.notice.classList.remove('show', 'storm');
+    el.notice.textContent = '';
+    this.noticeTimer = 0;
+    el.big.classList.remove('show');
+    el.big.innerHTML = '';
+    el.kf.textContent = '';
+    if (el.hitdirs) el.hitdirs.textContent = '';
+    for (const n of this.nums) { n.active = false; n.stack = false; n.el.style.display = 'none'; }
+    el.hit.classList.remove('show', 'head', 'kill');
+    if (el.shBreak) el.shBreak.classList.remove('show');
+    if (el.elimBanner) el.elimBanner.classList.remove('show');
+    this.editChips(null);
+    if (el.prompt) { el.prompt.classList.remove('show'); el.prompt.innerHTML = ''; }
+    this.cache.prompt = '';
+    this.promptInfo = null;
   }
 
   killfeed(html) {
     const d = document.createElement('div');
-    d.className = 'kf';
+    d.className = /class="me"/.test(html) ? 'kf mine' : 'kf';
     d.innerHTML = html;
     this.el.kf.appendChild(d);
     while (this.el.kf.children.length > 5) this.el.kf.firstChild.remove();
@@ -220,6 +380,8 @@ export class Hud {
   }
 
   big(html) {
+    // my eliminations have their own banner now (elimBanner, from js/world/buildClient.js)
+    if (/^ELIMINATED<small>/.test(html)) return;
     const b = this.el.big;
     b.innerHTML = html;
     b.classList.remove('show');
@@ -251,6 +413,7 @@ export class Hud {
     this.set('prompt', html || '', (v) => {
       this.el.prompt.innerHTML = v;
       this.el.prompt.classList.toggle('show', !!v);
+      this.promptInfo = v ? promptInfo(v) : null;
     });
   }
 
@@ -281,149 +444,17 @@ export class Hud {
     }
   }
 
-  // ------------------------------------------------------------------ maps
-  drawMap(ctx, size, cx, cz, span, me, storm, extras) {
-    const world = this.world;
-    const d = world.data;
-    const src = world.mapCanvas;
-    const k = src.width / d.size;          // map px per metre
-    const s = size / span;                 // screen px per metre
-    ctx.save();
-    ctx.fillStyle = '#2a6f9f';
-    ctx.fillRect(0, 0, size, size);
-    const sx = (cx - span / 2 + d.half) * k, sy = (cz - span / 2 + d.half) * k;
-    ctx.drawImage(src, sx, sy, span * k, span * k, 0, 0, size, size);
-    const toX = (x) => (x - cx) * s + size / 2, toY = (z) => (z - cz) * s + size / 2;
-    if (storm) {
-      ctx.fillStyle = 'rgba(120, 40, 220, 0.4)';
-      ctx.beginPath();
-      ctx.rect(0, 0, size, size);
-      ctx.arc(toX(storm.cx), toY(storm.cz), storm.r * s, 0, Math.PI * 2, true);
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.arc(toX(storm.ncx), toY(storm.ncz), storm.nr * s, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    if (extras.bus) {
-      const b = extras.bus;
-      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-      ctx.lineWidth = 3;
-      ctx.setLineDash([10, 6]);
-      ctx.beginPath();
-      ctx.moveTo(toX(b.ax), toY(b.az));
-      ctx.lineTo(toX(b.bx), toY(b.bz));
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (extras.busPos) {
-        ctx.fillStyle = '#2f8cff';
-        ctx.beginPath();
-        ctx.arc(toX(extras.busPos.x), toY(extras.busPos.z), 6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    if (extras.names) {
-      ctx.font = `${Math.max(11, size / 50)}px "Luckiest Guy", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.fillStyle = '#fff';
-      for (const p of d.pois) {
-        ctx.strokeText(p.name.toUpperCase(), toX(p.x), toY(p.z));
-        ctx.fillText(p.name.toUpperCase(), toX(p.x), toY(p.z));
-      }
-    }
-    if (extras.dots) {
-      for (const dot of extras.dots) {
-        ctx.fillStyle = dot.c;
-        ctx.beginPath();
-        ctx.arc(toX(dot.x), toY(dot.z), 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    if (me) {
-      ctx.translate(toX(me.x), toY(me.z));
-      ctx.rotate(-me.yaw);
-      ctx.fillStyle = '#ffd23f';
-      ctx.strokeStyle = '#000';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(0, -9);
-      ctx.lineTo(6, 7);
-      ctx.lineTo(0, 3);
-      ctx.lineTo(-6, 7);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
+  // ------------------------------------------------------------------ maps (js/ui/mapview.js)
+  drawMap(ctx, size, cx, cz, span, me, storm, extras) { this.mapView.drawMap(ctx, size, cx, cz, span, me, storm, extras); }
 
-  minimap(dt, me, storm, extras) {
-    this.mapT -= dt;
-    if (this.mapT > 0) return;
-    this.mapT = 1 / 15;
-    const c = this.el.map;
-    this.drawMap(this.mapCtx, c.width, me.x, me.z, 230, me, storm, extras);
-    if (!this.el.fullmap.classList.contains('hidden')) {
-      const fc = this.el.fullmap.querySelector('canvas');
-      this.drawMap(fc.getContext('2d'), fc.width, 0, 0, this.world.data.size, me, storm, { ...extras, names: true });
-    }
-  }
+  minimap(dt, me, storm, extras) { this.mapView.minimap(dt, me, storm, extras); }
 
-  toggleFullMap(on) {
-    const fm = this.el.fullmap;
-    const show = on ?? fm.classList.contains('hidden');
-    fm.classList.toggle('hidden', !show);
-  }
+  toggleFullMap(on) { this.mapView.toggleFullMap(on); }
 
-  // ------------------------------------------------------------------ lobby + end screens
-  lobby(state) {
-    const L = this.el.lobby;
-    if (!state) { L.classList.remove('show'); return; }
-    L.classList.add('show');
-    $('.lp-code', L).textContent = state.solo ? 'SOLO' : state.code;
-    $('.lp-title', L).textContent = state.solo ? 'WARM-UP' : 'PARTY';
-    $('.lp-hint', L).textContent = state.solo
-      ? 'Practice on the island with unlimited ammo & materials. Start the match when ready!'
-      : 'Warm up on the island (no damage) while friends join with the party code from Play with Friends.';
-    const ul = $('.lp-players', L);
-    ul.innerHTML = '';
-    for (const p of state.players) {
-      if (p.bot) continue;
-      const li = document.createElement('li');
-      const skin = SKINS[p.skin] || SKINS[0];
-      li.innerHTML = `<i style="background:${skin.outfit}"></i><span></span>${p.id === state.leader ? '<span class="crown">♛ LEADER</span>' : ''}`;
-      li.children[1].textContent = p.name + (p.id === state.you ? ' (you)' : '');
-      ul.appendChild(li);
-    }
-    const isLeader = state.leader === state.you;
-    $('.lp-leader', L).style.display = isLeader ? 'block' : 'none';
-    $('.lp-wait', L).style.display = isLeader ? 'none' : 'block';
-    const bots = $('.lp-bots', L), botsv = $('.lp-botsv', L), mats = $('.lp-mats', L), mode = $('.lp-mode', L);
-    if (document.activeElement !== mode) mode.value = state.settings.mode || 'ffa';
-    mode.closest('label').style.display = state.solo ? 'none' : '';
-    if (document.activeElement !== bots) { bots.value = state.settings.bots; botsv.textContent = state.settings.bots; }
-    if (document.activeElement !== mats) mats.value = String(state.settings.mats);
-    $('.lp-share', L).innerHTML = state.share || '';
-  }
+  // ------------------------------------------------------------------ lobby + end screens (lobbyPanel.js, endscreen.js)
+  lobby(state) { this.lobbyPanel.show(state); }
 
-  elim(opts) {
-    const E = this.el.elim;
-    if (!opts) { E.classList.add('hidden'); return; }
-    E.classList.remove('hidden', 'win', 'spectating');
-    if (opts.win) E.classList.add('win');
-    if (opts.spectating) E.classList.add('spectating');
-    $('.es-place', E).textContent = opts.place ? `#${opts.place}` : '';
-    $('.es-title', E).textContent = opts.title || '';
-    $('.es-sub', E).textContent = opts.sub || '';
-    $('.es-again', E).style.display = opts.again ? '' : 'none';
-    $('.es-spec', E).style.display = opts.spectate ? '' : 'none';
-    $('.es-leave', E).style.display = opts.leave ? '' : 'none';
-  }
+  elim(opts) { this.endscreen.show(opts); }
 }
 
 export function lootLabel(item) {

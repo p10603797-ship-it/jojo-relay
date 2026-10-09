@@ -1,16 +1,22 @@
 // A game session: one connection to a room (solo or LAN). Owns the local player, bots,
 // remote players, loot, storm, bus, combat resolution and the third-person camera.
+// Game plugins (js/game/plugins.js) hook into messages, input, the frame, the HUD and phases.
 import * as THREE from 'three';
 import {
   WEAPONS, HEALS, PLAYER, ANIM, SEND_HZ, SKINS, BUILD, MAT_KEYS, PROTOCOL, weaponDamage, itemKind,
 } from '../../shared/constants.js';
+import { rulesFromSettings, normalizeRules } from '../../shared/modes/rules.js';
+import { rollInitialLoot } from '../../shared/loot.js';
+import { GAME_PLUGINS } from './plugins.js';
+import { cleanRow, cleanTeam } from './roster.js';
+import { seriesRows } from './modeClient.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
-import { Bot } from '../actors/bot.js';
+import { Bot, forgetGame } from '../actors/bot.js';
 import { RemotePlayer } from '../actors/remote.js';
 import { forwardFromAngles } from '../actors/combatant.js';
 import { Ballistics, raySphere, rayCapsule } from '../combat/ballistics.js';
 import { LootView, StormView, BusView } from './views.js';
-import { RAY_SOLID } from '../physics.js';
+import { RAY_SOLID, RAY_SHOT } from '../physics.js';
 import { lootLabel } from '../ui/hud.js';
 
 // warm-up loadout: each spawn picks one gun of each pair so every gun gets tried out ([rarity, guns...])
@@ -33,8 +39,11 @@ const AUTO_MIN = { rocket: 12 };
 const AUTO_ACQUIRE = 0.06; // s the crosshair must rest on an enemy before firing (like a human reaction)
 const AUTO_GRACE = 0.1; // s to keep firing when tracking slips off the target for a moment
 const GRAVITY = 9.81;
+const CHEST_ASK = 0.5; // s between two requests to open the same chest
+const PLAIN_MODS = { speed: 1, gravity: 1, jump: 1 };
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _f = new THREE.Vector3();
+const _near = []; // interactions(): the floor loot next to me
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Aim assist (a setting, touch + controller only): angles in rad, rates in rad/s.
@@ -100,6 +109,15 @@ export class Game {
     this.specYaw = 0;
     this.specPitch = -0.2;
     this.settingsState = { bots: 8, mats: 0 };
+    // game mode: rules from the room settings (shared/modes/rules.js); the mode runtime's messages fill the rest
+    this.rules = rulesFromSettings(this.settingsState);
+    this.modeState = {};       // the latest mode state from the room ('ms': scores, goal, time left, game HUD, respawns)
+    this.roles = new Map();    // player id -> role ('zombie', 'jugg', …); see roleOf
+    this.area = null;          // the play area {x, z, r}, or null for the whole island
+    this.teams = new Map();    // team id -> {id, name, color}
+    // things features want on the minimap and full map, one entry per feature:
+    // mapExtras[key] = { dots: [{x, z, c}], rings: [{x, z, r, c}], pins: [{x, z, c, label}] } (js/ui/mapview.js)
+    this.mapExtras = {};
     this.kills = 0;
     this.aliveCount = 1;
     this.hurtK = 0;
@@ -113,8 +131,28 @@ export class Game {
     this.autoLock = false;
     this.autoItem = null;
     this.autoCtl = {};
+    this.chestAsked = new Map(); // chest index -> game time of the last open request
+    this.startSpawns = null;     // the start message's spawns / loadouts, for bots handed over just after
+    this.startLo = null;
+    this.myPlace = 0;            // where I placed when eliminated (no respawn)
+    this.match = 0;              // the room's match number (a rejoin tells the room which match this page is in)
+    this.watchers = new Map();   // remote player id -> the bot of mine they spectate (farsim keeps it near)
+    this.watchSent = 0;          // the spectate target last told to the room
     this.unsub = net.onMessage((m) => this.onMessage(m));
     this.disposed = false;
+    // game plugins (js/game/plugins.js), last so they can use everything above
+    this.plugins = [];
+    for (const P of GAME_PLUGINS) {
+      try { this.plugins.push(new P(this)); } catch (e) { console.error('game plugin', P.name, e); }
+    }
+  }
+
+  /** Call hook `name` on every game plugin that has it (an error is logged, the game carries on). */
+  plug(name, a, b) {
+    for (const pl of this.plugins) {
+      if (typeof pl[name] !== 'function') continue;
+      try { pl[name](a, b); } catch (e) { console.error('game plugin', name, e); }
+    }
   }
 
   // ------------------------------------------------------------------ helpers
@@ -154,6 +192,12 @@ export class Game {
   /** Teammates (squad mode) can't hurt each other and see each other's names. */
   friendly(a, b) { return a !== b && this.phase !== 'lobby' && this.teamOf(a) === this.teamOf(b); }
 
+  /** A player's mode role ('zombie', 'jugg', …) or null. */
+  roleOf(id) { return this.roles.get(id) ?? null; }
+
+  /** Bullet drop multiplier: the mode's gravity (normal in the warm-up). */
+  gravK() { return this.phase === 'lobby' ? 1 : this.rules.gravity; }
+
   send(msg) { this.net.send(msg); }
 
   shake(k) { this.shakeK = Math.min(1.2, this.shakeK + k); }
@@ -166,6 +210,7 @@ export class Game {
     if (h) {
       try { h.call(this, m); } catch (e) { console.error('message', m.t, e); }
     }
+    if (!this.disposed) this.plug('onMessage', m);
   }
 
   on_welcome(m) {
@@ -180,9 +225,21 @@ export class Game {
     this.phase = m.phase;
     this.code = m.code;
     this.solo = m.solo;
+    this.match = m.match | 0;
+    if (m.checksum !== this.world.data.checksum) {
+      // a different island: every object id, loot spot and chest would disagree, so don't mix
+      this.app.leaveGame();
+      this.app.ui.alert('Your friend\'s game has a different island than yours (a different version of Phortnite). Everyone should reload the page, then try again.');
+      return;
+    }
     this.settingsState = m.settings;
-    if (m.checksum !== this.world.data.checksum) console.warn('World checksum mismatch — client and server versions differ');
-    for (const p of m.players) this.roster.set(p.id, p);
+    this.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings);
+    this.setTeams(m.teams);
+    this.area = m.area && m.phase !== 'lobby' && this.rules.area !== 'full' ? m.area : null;
+    this.modeState = m.ms || {};
+    this.roles.clear();
+    for (const [id, role] of m.roles || []) this.roles.set(id, role);
+    for (const p of m.players) this.roster.set(p.id, cleanRow(p));
     const info = this.roster.get(m.you) || { name: this.opts.name, skin: this.opts.skin };
     this.me = new LocalPlayer(this, m.you, info.name, info.skin);
     this.world.restoreAll();
@@ -191,6 +248,7 @@ export class Game {
     for (const b of m.builds) this.builds.add(b);
     this.loot.set(m.loot);
     for (const c of m.chests) this.world.setChestOpen(c, true);
+    if (m.chestsOff) this.allChestsOpen();
     for (const p of m.players) if (p.id !== m.you) this.ensureRemote(p);
     if (m.phase === 'lobby') {
       this.spawnWarmup();
@@ -200,11 +258,12 @@ export class Game {
       this.me.mover.mode = 'dead';
       this.me.char.setVisible(false);
       if (m.bus) this.bus.start(m.bus);
-      this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next round. Spectating…', leave: true });
+      this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next match. Spectating…', leave: true });
     }
     this.hud.show(true);
     this.updateLobby();
     this.input.enabled = true;
+    this.plug('onPhase', this.phase, m);
   }
 
   ensureRemote(p) {
@@ -221,8 +280,9 @@ export class Game {
 
   on_roster(m) {
     this.leader = m.leader;
-    const ids = new Set(m.players.map((p) => p.id));
-    for (const p of m.players) {
+    const players = m.players.map(cleanRow);
+    const ids = new Set(players.map((p) => p.id));
+    for (const p of players) {
       this.roster.set(p.id, { ...(this.roster.get(p.id) || {}), ...p });
       this.ensureRemote(p);
     }
@@ -240,6 +300,7 @@ export class Game {
 
   on_settings(m) {
     this.settingsState = m.settings;
+    this.rules = rulesFromSettings(m.settings);
     this.updateLobby();
   }
 
@@ -257,11 +318,21 @@ export class Game {
   }
 
   on_start(m) {
-    this.phase = 'bus';
+    this.phase = m.bus ? 'bus' : 'match';
+    this.watchers.clear();
+    this.watchSent = 0;
+    this.match = m.match | 0;
     this.leader = m.leader;
     this.settingsState = m.settings;
+    this.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings);
+    this.setTeams(m.teams);
+    this.area = m.area && this.rules.area !== 'full' ? m.area : null;
+    this.lootArea = m.area || null; // the area the room rolled the loot in (the next rounds' too)
+    this.modeState = {};
+    this.roles.clear();
+    this.myPlace = 0;
     this.resetWorld();
-    this.loot.set(m.loot);
+    this.startLoot(m);
     for (const b of this.bots.values()) b.dispose();
     this.bots.clear();
     const ids = new Set(m.players.map((p) => p.id));
@@ -269,36 +340,172 @@ export class Game {
       if (!ids.has(id)) { r.dispose(); this.remotes.delete(id); }
     }
     this.roster.clear();
-    for (const p of m.players) this.roster.set(p.id, p);
+    for (const p of m.players) this.roster.set(p.id, cleanRow(p));
+    const myTeam = this.teamOf(this.myId);
     for (const p of m.players) {
       if (p.id !== this.myId) {
         const r = this.ensureRemote(p);
-        if (r) { r.revive(); r.buf.length = 0; r.hasState = false; r.setNameVisible(!p.bot && p.team === this.teamOf(this.myId)); }
+        // teammates' names (bots too) are shown, enemies' are not
+        if (r) { r.revive(); r.buf.length = 0; r.hasState = false; r.setNameVisible(p.team === myTeam); }
       }
     }
     const me = this.me;
     me.char.endRagdoll();
     me.alive = true;
-    me.hp = PLAYER.maxHp;
-    me.sh = PLAYER.startShield;
+    me.dancing = false;
+    me.hp = this.rules.hp;
+    me.sh = this.rules.shield;
     me.infinite = false;
-    const mats = this.settingsState.mats | 0;
-    me.resetInventory({ slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
-    me.inBus = true;
-    me.mover.mode = 'bus';
-    me.mover.setEnabled(false);
-    me.char.setVisible(false);
+    this.startSpawns = m.spawns || null;
+    this.startLo = this.loadoutTable(m.lo);
+    this.giveLoadout(me, this.startLo.get(me.id) || null);
+    this.applyMode(me);
     this.input.resetToggles();
-    this.bus.start(m.bus);
     this.storm.clear();
     this.kills = 0;
     this.spectateId = 0;
     this.lastElim = null;
+    this.chestAsked.clear();
     this.hud.elim(null);
     this.hud.lobby(null);
-    this.hud.big('THE BUS IS LEAVING!<small>Jump out when you\'re over a good spot</small>');
-    this.sfx.ui('bus');
+    if (m.chestsOff) this.allChestsOpen();
     document.body.classList.remove('dead');
+    document.body.classList.toggle('nobuild', this.rules.build === 'off');
+    if (m.bus) {
+      me.inBus = true;
+      me.mover.mode = 'bus';
+      me.mover.setEnabled(false);
+      me.char.setVisible(false);
+      this.bus.start(m.bus);
+      this.hud.big('THE BUS IS LEAVING!<small>Jump out when you\'re over a good spot</small>');
+      this.sfx.ui('bus');
+    } else {
+      this.bus.stop();
+      this.placeAtSpawn(me, this.startSpawns && this.startSpawns[me.id]);
+      const info = this.settingsState && this.settingsState.info;
+      this.hud.big(`${info ? esc(`${info.emoji || ''} ${info.name || ''}`.trim()) : 'GO!'}<small>${this.rules.spawn === 'sky' ? 'Glide down and get ready!' : 'Go go go!'}</small>`);
+    }
+    this.plug('onPhase', this.phase, m);
+  }
+
+  /** The start message's loadouts ([[Loadout, [ids]]]) as a Map id -> Loadout. */
+  loadoutTable(groups) {
+    const t = new Map();
+    if (Array.isArray(groups)) for (const [lo, ids] of groups) for (const id of ids || []) t.set(id, lo);
+    return t;
+  }
+
+  /** The seeded floor loot of a match / round: rolled here exactly as the room did (or the room's own list). */
+  startLoot(m) {
+    if (Array.isArray(m.loot)) { this.loot.set(m.loot); return; }
+    const list = rollInitialLoot(this.world.data, m.lootSeed >>> 0, this.rules, m.area || null);
+    this.loot.set(list);
+    // a different list than the room's (it should never happen): ask for the real one
+    if (m.lootN !== undefined && list.length !== m.lootN) this.send({ t: 'lootall' });
+  }
+
+  on_lootall(m) { if (Array.isArray(m.loot)) this.loot.set(m.loot); }
+
+  /** The team list changed mid-match (a game made a new team, e.g. infection's zombies). */
+  on_teams(m) { this.setTeams(m.teams); }
+
+  /** Team list {id, name, color} from the room (start / welcome / round). */
+  setTeams(list) {
+    this.teams.clear();
+    for (const t of Array.isArray(list) ? list : []) { const c = cleanTeam(t); this.teams.set(c.id, c); }
+  }
+
+  allChestsOpen() {
+    const n = this.world.data.chests.length;
+    for (let i = 0; i < n; i++) this.world.setChestOpen(i, true);
+  }
+
+  /**
+   * The mode's rules on an actor this device simulates: movement multipliers (jump scaled so low
+   * gravity still jumps as high as the jump rule says), glider redeploy in sky-spawn modes,
+   * infinite building and ammo. In the warm-up everything is back to normal.
+   */
+  applyMode(a) {
+    const R = this.rules;
+    const mods = a.mover.mods;
+    if (this.phase === 'lobby') {
+      Object.assign(mods, PLAIN_MODS);
+      a.mover.glideAny = false;
+      a.infMats = false;
+      if (!a.isBot) a.unlimitedAmmo = false;
+      return;
+    }
+    mods.speed = R.speed;
+    mods.gravity = R.gravity;
+    mods.jump = R.jump * Math.sqrt(R.gravity);
+    a.mover.glideAny = R.spawn === 'sky';
+    a.infMats = R.build === 'infinite';
+    if (!a.isBot) a.unlimitedAmmo = R.ammo === 'infinite' || !!(a.loadoutInf);
+  }
+
+  /** Replace an actor's inventory with a loadout (null: the mode's start materials only), gun in hand. */
+  giveLoadout(a, lo) {
+    const mats = this.rules.mats | 0;
+    a.resetInventory(lo || { slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
+    a.loadoutInf = !!(lo && lo.infAmmo);
+    // a mode's kit (gun game rung, the Juggernaut's guns, zombie claws) is never dropped on death
+    a.kitLoadout = !!(lo && lo.kit);
+    if (!a.isBot) a.unlimitedAmmo = this.rules.ammo === 'infinite' || a.loadoutInf;
+    for (let i = 1; i <= 5; i++) {
+      const s = a.inv.slots[i];
+      if (s && Object.prototype.hasOwnProperty.call(WEAPONS, s.k)) { a.select(i); break; }
+    }
+  }
+
+  /** A bot taken over from another device: the gun its snapshot showed it holding ('ar:3'), in hand. */
+  giveHeld(bot, held) {
+    if (typeof held !== 'string') return;
+    const [k, r] = held.split(':');
+    if (!Object.prototype.hasOwnProperty.call(WEAPONS, k) || WEAPONS[k].melee) return;
+    for (let i = 1; i <= 5; i++) { const s = bot.inv.slots[i]; if (s && s.k === k) { bot.select(i); return; } }
+    if (typeof bot.addItem !== 'function') return;
+    bot.addItem({ k, r: Math.max(0, Math.min(4, parseInt(r, 10) || 0)), m: WEAPONS[k].mag });
+    for (let i = 1; i <= 5; i++) { const s = bot.inv.slots[i]; if (s && s.k === k) { bot.select(i); break; } }
+  }
+
+  /** Put an actor at a spawn [x, y, z, how] ('sky': skydiving; 'ground': standing). */
+  placeAtSpawn(a, sp) {
+    const x = sp ? sp[0] : 0, z = sp ? sp[2] : 0;
+    const sky = sp && sp[3] === 'sky';
+    const y = sp ? sp[1] : this.world.data.heightAt(x, z) + (sky ? 90 : 0);
+    a.inBus = false;
+    a.alive = true;
+    a.mover.setEnabled(true);
+    a.mover.teleport(x, y + (sky ? 0 : 0.3), z);
+    a.mover.mode = sky ? 'skydive' : 'air';
+    if (sky) a.mover.vel.set(0, -5, 0);
+    a.char.setVisible(true);
+    // face the middle of the play area
+    const A = this.area || { x: 0, z: 0 };
+    if (Math.hypot(A.x - x, A.z - z) > 3) a.yaw = Math.atan2(-(A.x - x), -(A.z - z));
+    if (a === this.me) document.body.classList.remove('inbus');
+  }
+
+  /** A respawned bot starts thinking afresh (bots-ai's Bot.onRespawn when it has one). */
+  botRespawned(bot, m) {
+    if (typeof bot.onRespawn === 'function') { bot.onRespawn(m); return; }
+    const b = bot.brain;
+    if (!b) return;
+    b.landAt = null;
+    b.spread = true;
+    b.skyT = bot.time;
+    b.mode = 'travel';
+    b.target = null;
+    b.trec = null;
+    b.lootRef = null;
+    b.destKind = '';
+    b.chestI = -1;
+    b.harvest = null;
+    b.breakT = 0;
+    b.stuckN = 0;
+    b.wallReq = false;
+    b.lastHp = bot.hp;
+    if (b.lastPos) b.lastPos.copy(bot.pos);
   }
 
   on_bots(m) {
@@ -307,10 +514,25 @@ export class Game {
       if (this.bots.has(id)) continue;
       const info = this.roster.get(id) || { id, name: 'Bot', skin: 0, bot: true };
       const bot = new Bot(this, info);
+      // the mode's bot difficulty (roster skill); bots-ai's Bot may also read it itself
+      if (typeof info.skill === 'number' && bot.configure) bot.configure(info.skill);
+      this.applyMode(bot);
       const r = this.remotes.get(id);
       const last = r && r.latest();
       if (r) { r.dispose(); this.remotes.delete(id); }
-      if (this.phase === 'bus' && (!last || last.a === ANIM.BUS)) {
+      const sp = !last && this.startSpawns && this.startSpawns[id];
+      if (this.phase !== 'lobby' && this.startLo) {
+        // taken over mid-match (the old owner went quiet or left): at least the mode's start kit
+        // and mats (the room sends the bot's current mode loadout right after: 'lo'), plus the gun
+        // it was seen holding
+        this.giveLoadout(bot, this.startLo.get(id) || null);
+        if (last) this.giveHeld(bot, last.w);
+      }
+      if (sp && this.phase === 'match') {
+        // a sky / ground start: straight to its spot
+        this.placeAtSpawn(bot, sp);
+        if (sp[3] === 'sky') { bot.brain.spread = true; bot.brain.skyT = bot.time; }
+      } else if (this.phase === 'bus' && (!last || last.a === ANIM.BUS)) {
         bot.inBus = true;
         bot.mover.mode = 'bus';
         bot.mover.setEnabled(false);
@@ -326,6 +548,9 @@ export class Game {
         bot.sh = r.sh;
         if (last.a === ANIM.DEAD || info.alive === false) { bot.alive = false; bot.char.setVisible(false); bot.mover.setEnabled(false); bot.mover.mode = 'dead'; }
       }
+      // a teammate bot this device runs gets a name tag, like a teammate on another device has
+      // (RemotePlayer.setNameVisible in on_start); enemies stay anonymous
+      if (this.phase !== 'lobby' && this.friendly(id, this.myId) && bot.char && bot.char.setName) bot.char.setName(info.name || 'Bot', '#ffd27a');
       this.bots.set(id, bot);
     }
     for (const [id, bot] of this.bots) {
@@ -339,12 +564,23 @@ export class Game {
 
   on_lobby(m) {
     this.phase = 'lobby';
+    this.watchers.clear();
+    this.kills = 0; // (the HUD's kill count is the match's)
     this.leader = m.leader;
     this.settingsState = m.settings;
+    this.rules = rulesFromSettings(m.settings);
+    this.teams.clear();
+    this.area = null;
+    this.roles.clear();
+    this.modeState = {};
+    this.startSpawns = null;
+    this.startLo = null;
+    this.myPlace = 0;
+    document.body.classList.remove('nobuild');
     for (const b of this.bots.values()) b.dispose();
     this.bots.clear();
     this.roster.clear();
-    for (const p of m.players) this.roster.set(p.id, p);
+    for (const p of m.players) this.roster.set(p.id, cleanRow(p));
     for (const [id, r] of this.remotes) {
       if (!this.roster.has(id) || r.isBot) { r.dispose(); this.remotes.delete(id); } else { r.revive(); r.setNameVisible(true); }
     }
@@ -363,6 +599,7 @@ export class Game {
       this.autoRestart = false;
       this.send({ t: 'start', bots: this.settingsState.bots, mats: this.settingsState.mats, mode: this.settingsState.mode });
     }
+    this.plug('onPhase', this.phase, m);
   }
 
   spawnWarmup() {
@@ -373,15 +610,20 @@ export class Game {
     me.sh = PLAYER.startShield; // the room's lobby value; saves a 0-shield flash
     me.mover.mode = 'ground';
     me.infinite = true;
+    me.dancing = false;
     me.resetInventory(WARMUP);
     me.select(1);
+    this.applyMode(me);
     me.yaw = Math.random() * Math.PI * 2;
     me.pitch = -0.05;
     this.input.resetToggles();
   }
 
   on_s(m) {
-    if (m.phase !== this.phase && m.phase === 'match' && this.phase === 'bus') this.phase = 'match';
+    if (m.phase !== this.phase && m.phase === 'match' && this.phase === 'bus') {
+      this.phase = 'match';
+      this.plug('onPhase', this.phase, m);
+    }
     if (this.phase !== 'bus' && this.phase !== 'lobby') this.bus.stop();
     const now = performance.now();
     for (const row of m.p) {
@@ -414,7 +656,7 @@ export class Game {
     const muzzle = shooter ? shooter.char.muzzleWorld(_v) : _v.set(m.o[0], m.o[1], m.o[2]);
     for (let i = 0; i + 2 < m.d.length; i += 3) {
       this.ballistics.fire({
-        ox: m.o[0], oy: m.o[1], oz: m.o[2], dx: m.d[i], dy: m.d[i + 1], dz: m.d[i + 2], speed: w.speed, grav: w.grav,
+        ox: m.o[0], oy: m.o[1], oz: m.o[2], dx: m.d[i], dy: m.d[i + 1], dz: m.d[i + 2], speed: w.speed, grav: w.grav * this.gravK(),
         owner: m.id, team: this.phase === 'lobby' ? m.id : this.teamOf(m.id), w: m.w, r: m.r, auth: false, rocket: w.projectile === 'rocket', visX: muzzle.x, visY: muzzle.y, visZ: muzzle.z,
       });
     }
@@ -436,6 +678,13 @@ export class Game {
     if (!t) return;
     t.hp = m.hp;
     t.sh = m.sh;
+    // my hit, as the room applied it: the number, the hitmarker and its sound
+    if (m.a && m.a === this.myId && m.tg !== this.myId && m.c !== 'storm' && m.c !== 'fall' && m.c !== 'lava' && m.amt > 0) {
+      const p = Number.isFinite(m.x) && Number.isFinite(m.y) && (m.x || m.y || m.z) ? _v3.set(m.x, m.y + 0.3, m.z) : _v3.set(t.pos.x, t.pos.y + 1.6, t.pos.z);
+      this.hud.damageNumber(p, m.amt, m.hs ? 'head' : m.shd ? 'shield' : '');
+      this.hud.hitmarker(!!m.hs, false);
+      this.sfx.hitmarker(!!m.hs, !!m.shd, false);
+    }
     if (this.me && m.tg === this.me.id) {
       this.hurtK = Math.min(1, this.hurtK + (m.c === 'storm' ? 0.25 : 0.45));
       if (m.c !== 'storm' && m.c !== 'fall') {
@@ -479,6 +728,7 @@ export class Game {
     let line;
     if (m.c === 'storm') line = `<span class="${meV ? 'me' : ''}">${vName}</span> was lost in the storm`;
     else if (m.c === 'fall') line = `<span class="${meV ? 'me' : ''}">${vName}</span> fell too far`;
+    else if (m.c === 'lava') line = `🌋 <span class="${meV ? 'me' : ''}">${vName}</span> melted`;
     else if (m.c === 'left') line = `${vName} left the match`;
     else line = `<span class="${meK ? 'me' : ''}">${kName}</span> ${m.hs ? '🎯' : '✖'} <span class="${meV ? 'me' : ''}">${vName}</span>`;
     this.hud.killfeed(line);
@@ -489,8 +739,8 @@ export class Game {
       impulse.x = _v.x; impulse.z = _v.z; impulse.y = m.c === 'boom' ? 8 : 2.5;
     }
     if (meK && !meV) {
+      // (the 'ELIMINATED <name>' banner is build-feel's BuildClient)
       this.kills++;
-      this.hud.big(`ELIMINATED<small>${vName}</small>`);
       this.hud.hitmarker(false, true);
       this.sfx.hitmarker(false, false, true);
     }
@@ -500,7 +750,7 @@ export class Game {
         this.onMyDeath(m, killer);
         this.me.die(impulse);
       } else if (victim instanceof Bot) {
-        if (this.phase === 'match' || this.phase === 'bus') this.dropAll(victim);
+        if ((this.phase === 'match' || this.phase === 'bus') && !(m.rs > 0 && this.rules.respawnKeep)) this.dropAll(victim);
         victim.die(impulse);
       } else {
         victim.die(impulse);
@@ -514,28 +764,98 @@ export class Game {
       }, 3200);
     }
     if (this.spectateId === m.v) this.spectateId = m.k && m.k !== m.v ? m.k : 0;
+    // the last of my team fell after me: now the team has its placing
+    if (!meV && this.me && !this.me.alive && !this.myPlace && m.rs === 0 && this.lastElim && !this.lastElim.respawn
+      && this.phase !== 'lobby' && this.friendly(m.v, this.myId)) this.teamOut();
+  }
+
+  /** Who is still standing (from the roster): {players, teams (other than mine), mine (my team's players)}. */
+  standing() {
+    const myTeam = this.teamOf(this.myId);
+    const teams = new Set();
+    let players = 0, mine = 0;
+    for (const p of this.roster.values()) {
+      if (p.alive === false || p.spec) continue;
+      players++;
+      if (p.team === myTeam) mine++; else teams.add(p.team);
+    }
+    return { players, teams: teams.size, mine };
+  }
+
+  /** My team is out (I fell first): '#4 – Your team placed #4 – 6 players left'. */
+  teamOut() {
+    const st = this.standing();
+    if (st.mine) return; // someone is still standing
+    if (this.inSeries()) {
+      // best of N: no placing; the round card comes next (after the last round, the end card)
+      if (this.lastElim && this.lastElim.how) this.lastElim = { ...this.lastElim, sub: `${this.lastElim.how} · Round ${(this.series && this.series.n) || 1} of ${this.rules.rounds}` };
+      return;
+    }
+    this.myPlace = st.teams + 1;
+    this.lastElim = {
+      ...this.lastElim, place: this.myPlace,
+      sub: `Your team placed #${this.myPlace} – ${st.players} player${st.players === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+    };
+    this.hud.elim(this.lastElim);
   }
 
   onMyDeath(m, killer) {
-    if (this.phase === 'match' || this.phase === 'bus') this.dropAll(this.me);
+    const respawning = m.rs > 0;
+    // with respawnKeep you come back with your stuff, so nothing is dropped
+    if ((this.phase === 'match' || this.phase === 'bus') && !(respawning && this.rules.respawnKeep)) this.dropAll(this.me);
     this.sfx.ui('elim');
     this.input.resetToggles();
     document.body.classList.add('dead');
-    this.spectateId = killer && killer !== this.me ? killer.id : 0;
+    // spectate a teammate who is still alive, else the killer
+    let mate = null;
+    for (const a of this.actors()) if (a !== this.me && a.alive && a.mode !== 'bus' && this.friendly(a.id, this.myId)) { mate = a; break; }
+    this.spectateId = mate ? mate.id : killer && killer !== this.me ? killer.id : 0;
     this.specYaw = this.me.yaw;
-    const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : killer ? `Eliminated by ${this.nameOf(m.k)}` : 'Eliminated';
-    this.lastElim = {
-      place: m.place, title: 'ELIMINATED', sub: `${how} · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
-      again: this.solo, spectate: true, leave: true,
-    };
+    const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : m.c === 'lava' ? 'You melted in the lava'
+      : killer ? `Eliminated by ${this.nameOf(m.k)}` : 'Eliminated';
+    // best of N: no placing and no PLAY AGAIN (it would end the series), the series score instead
+    const series = this.inSeries() ? this.series || { n: 1, series: {} } : null;
+    if (respawning) {
+      // endscreen ignores {respawn: true} once mode-catalog's overlay counts down (modeState.rs)
+      this.lastElim = { respawn: true, title: 'ELIMINATED', sub: `${how} · Respawning in ${Math.ceil(m.rs)}…`, spectate: false, leave: true };
+    } else if (mate) {
+      // a teammate fights on: no placing yet (the team's comes when the last of us falls)
+      this.myPlace = 0;
+      this.lastElim = {
+        title: 'ELIMINATED', sub: `${how} · Your team fights on – spectating ${this.nameOf(mate.id)}`,
+        again: this.solo && !series, spectate: true, leave: true,
+      };
+      if (series) Object.assign(this.lastElim, { series: seriesRows(this, series), how });
+    } else if (series) {
+      // out of this round: the round card (who took it, the score, the next round) follows
+      this.myPlace = 0;
+      this.lastElim = {
+        title: 'ELIMINATED', sub: `${how} · Round ${series.n} of ${this.rules.rounds}`,
+        series: seriesRows(this, series), best: this.rules.rounds, spectate: true, leave: true, how,
+      };
+    } else {
+      // free for all: your place among the players; teams: your team's place among the teams
+      const st = this.standing();
+      const team = this.teams.has(this.teamOf(this.myId));
+      const place = team ? st.teams + 1 : m.place | 0;
+      const left = st.players;
+      this.myPlace = place;
+      this.lastElim = {
+        place, title: 'ELIMINATED',
+        sub: `${how} · ${team ? 'Your team' : 'You'} placed #${place} – ${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+        again: this.solo, spectate: true, leave: true,
+      };
+    }
     this.hud.elim(this.lastElim);
     this.input.exitLock();
+    this.plug('onMyDeath', m);
   }
 
   /** Should losing the mouse pointer open the pause menu? */
   wantsPause() { return !!(this.me && this.me.alive && this.phase !== 'ended'); }
 
   dropAll(actor) {
+    if (actor.kitLoadout) return;
     const items = actor.allItems();
     if (items.length) this.send({ t: 'dropi', id: actor.id, items, x: actor.pos.x, y: actor.pos.y, z: actor.pos.z });
   }
@@ -545,7 +865,7 @@ export class Game {
     const mine = !!pend && pend.id === m.by;
     if (pend && !mine) {
       const a = this.actorById(pend.id);
-      if (a && a.inv && !a.infinite) a.addMats(pend.m, BUILD.cost);
+      if (a && a.inv && !a.infinite && !a.infMats) a.addMats(pend.m, BUILD.cost); // nothing was spent with infinite mats
     }
     const p = this.builds.add(m);
     this.pendingBuilds.delete(m.k);
@@ -578,7 +898,7 @@ export class Game {
     this.pendingBuilds.delete(m.k);
     this.builds.remove(m.k, false);
     const a = this.actorById(pend.id);
-    if (a && a.inv && !a.infinite) a.addMats(pend.m, BUILD.cost);
+    if (a && a.inv && !a.infinite && !a.infMats) a.addMats(pend.m, BUILD.cost); // nothing was spent with infinite mats
   }
 
   on_ox(m) {
@@ -623,6 +943,7 @@ export class Game {
     }
     const drops = a.addItem(m.item);
     if (drops.length) this.send({ t: 'dropi', id: a.id, items: drops.map((d) => ({ ...d, near: true })), x: a.pos.x, y: a.pos.y, z: a.pos.z });
+    if (drops.length && typeof a.swappedOutOf === 'function') a.swappedOutOf(drops);
     if (a === this.me) this.sfx.pickup();
   }
 
@@ -646,20 +967,190 @@ export class Game {
 
   on_win(m) {
     this.phase = 'ended';
-    const meWon = m.id === this.myId || (!m.bot && m.team !== undefined && m.team === this.teamOf(this.myId));
+    const myTeam = this.teamOf(this.myId);
+    // best of N: every end card shows the final series score
+    const fin = m.round ? { series: seriesRows(this, m.round), best: this.rules.rounds } : { series: undefined };
+    const meWon = !!m.id && (m.id === this.myId || (!!m.team && m.team === myTeam));
+    // Floor is Lava's clock ran out with several still standing: they all won
+    const survived = !m.id && m.reason === 'survived' && !!this.me && this.me.alive;
+    // the clock ran out with the scores level (and nobody was crowned)
+    const draw = !m.id && !m.name && (m.draw || m.reason === 'time');
     this.input.exitLock();
-    if (!meWon && this.me && !this.me.alive && this.lastElim) {
+    document.body.classList.remove('dead');
+    if (this.me && !this.me.alive) document.body.classList.add('dead');
+    if (m.reason === 'humans-out') {
+      // every human is out: say honestly how we did, never crown a bot
+      const place = this.myPlace || (this.lastElim && this.lastElim.place) || 0;
+      const left = this.standing().players;
+      this.hud.elim({
+        place, title: 'MATCH OVER',
+        sub: `${place ? `${this.teams.has(myTeam) ? 'Your team' : 'You'} placed #${place} – ` : ''}${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
+        again: this.solo, leave: true, ...fin,
+      });
+    } else if (!meWon && this.me && !this.me.alive && this.lastElim && !this.lastElim.respawn) {
       // keep showing how we went out; just add who won
-      this.hud.elim({ ...this.lastElim, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
-    } else if (meWon) {
+      // (PLAY AGAIN again: a best-of-N series held it back until now)
+      this.hud.elim({ ...this.lastElim, ...fin, again: this.solo, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
+    } else if (meWon || survived) {
       this.sfx.ui('victory');
       if (this.me.alive) this.me.dancing = true;
-      this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true });
+      const team = m.name && m.name !== this.nameOf(this.myId) ? `${m.name} wins! ` : '';
+      const why = survived ? 'You survived the lava! Everyone still standing wins. '
+        : m.reason === 'left' ? 'The other team left. ' : team;
+      this.hud.elim({ win: true, place: 1, title: survived ? 'YOU SURVIVED!' : 'PHICTORY ROYALE!', sub: `${why}${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the lobby in a few seconds`, again: this.solo, leave: true, ...fin });
+    } else if (draw) {
+      this.hud.elim({ title: "IT'S A DRAW!", sub: 'Time ran out with the scores level', again: this.solo, leave: true, ...fin });
     } else if (this.me && this.me.alive) {
-      this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : 'Nobody survived', again: this.solo, leave: true });
+      this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : m.reason === 'survived' ? 'Time is up!' : 'Nobody survived', again: this.solo, leave: true, ...fin });
     } else {
-      this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: 'Returning to the island…', again: this.solo, leave: true });
+      this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: m.reason === 'survived' ? 'The ones still standing won' : 'Back to the lobby in a few seconds…', again: this.solo, leave: true, ...fin });
     }
+    this.plug('onPhase', this.phase, m);
+  }
+
+  /** Someone is back in the match: {id, x, y, z, how: 'sky' | 'ground', lo (null = keep), hp, sh}. */
+  on_respawn(m) {
+    const rv = this.roster.get(m.id);
+    if (rv) rv.alive = true;
+    const a = this.actorById(m.id);
+    if (!a) return;
+    const mine = a === this.me || this.bots.has(m.id);
+    if (!mine) {
+      a.revive();
+      a.buf.length = 0;
+      a.hasState = false;
+      a.pos.set(m.x, m.y, m.z);
+      if (m.hp !== undefined) { a.hp = m.hp; a.sh = m.sh; }
+      return;
+    }
+    a.dancing = false;
+    a.respawn(m.x, m.y + (m.how === 'sky' ? 0 : 0.3), m.z);
+    if (m.how === 'sky') { a.mover.mode = 'skydive'; a.mover.vel.set(0, -5, 0); }
+    a.hp = m.hp ?? this.rules.hp;
+    a.sh = m.sh ?? this.rules.shield;
+    if (m.lo) this.giveLoadout(a, m.lo);
+    this.applyMode(a);
+    if (a === this.me) {
+      this.lastElim = null;
+      this.spectateId = 0;
+      this.input.resetToggles();
+      this.hud.elim(null);
+      document.body.classList.remove('dead');
+    } else {
+      this.botRespawned(a, m);
+    }
+  }
+
+  /** The mode state (scores, goal, time left, game HUD, respawn timers): modeState for the HUD plugins. */
+  on_ms(m) {
+    this.modeState = m;
+    // a simple countdown on the end screen while waiting to respawn (mode-catalog draws a nicer one)
+    const rs = m.rs && m.rs[this.myId];
+    if (this.me && !this.me.alive && this.lastElim && this.lastElim.respawn && rs !== undefined) {
+      const sub = this.lastElim.sub.replace(/Respawning in \d+…/, `Respawning in ${Math.max(1, rs)}…`);
+      if (sub !== this.lastElim.sub) { this.lastElim.sub = sub; this.hud.elim(this.lastElim); }
+    }
+  }
+
+  on_role(m) {
+    if (m.role) this.roles.set(m.id, m.role);
+    else this.roles.delete(m.id);
+  }
+
+  /** A new loadout mid-match for me or one of my bots (gun game, infection, …). */
+  on_lo(m) {
+    const a = m.id === this.myId ? this.me : this.bots.get(m.id);
+    if (a && m.lo) { this.giveLoadout(a, m.lo); this.applyMode(a); }
+  }
+
+  /** Mystery mutator: the match's rules changed. */
+  on_mut(m) {
+    if (!m.rules) return;
+    this.rules = normalizeRules(m.rules);
+    if (this.me && this.me.alive) this.applyMode(this.me);
+    for (const b of this.bots.values()) this.applyMode(b);
+  }
+
+  /**
+   * Best of N: {n, series, team, name} when a round is won (a short break follows), then
+   * {start: true, n, spawns, lootSeed, lo, …} when the next round begins.
+   */
+  on_round(m) {
+    if (!m.start) {
+      // the round card replaces whatever card is up (a death card, spectating): the round's
+      // result, the series score and the countdown to the next round, for the living and the dead
+      // (a friend watching a series they joined late sees a neutral result: their team never plays)
+      const row = this.roster.get(this.myId);
+      const watching = !!row && !!row.spec;
+      const won = !watching && !!m.team && m.team === this.teamOf(this.myId);
+      const series = { n: m.n, series: m.series || {} };
+      this.hud.elim({
+        round: true, win: won, title: watching ? `ROUND ${m.n} OVER` : won ? `ROUND ${m.n} WON!` : m.team ? `ROUND ${m.n} LOST` : `ROUND ${m.n}: DRAW`,
+        sub: m.name ? `${m.name} wins round ${m.n}!` : `Nobody won round ${m.n}`,
+        series: seriesRows(this, series), best: this.rules.rounds, next: Number.isFinite(m.ends) ? m.ends : 4, leave: true,
+      });
+      if (won) this.sfx.ui('victory');
+      return;
+    }
+    this.phase = m.bus ? 'bus' : 'match';
+    this.resetWorld();
+    // the play area of the series (an older host leaves it out of the round message: the start's)
+    this.startLoot({ ...m, area: m.area || this.lootArea || null });
+    this.setTeams(m.teams);
+    for (const p0 of m.players || []) { const p = cleanRow(p0); this.roster.set(p.id, { ...(this.roster.get(p.id) || {}), ...p }); }
+    this.roles.clear();
+    this.modeState = {};
+    this.startSpawns = m.spawns || null;
+    this.startLo = this.loadoutTable(m.lo);
+    // who plays this round: the room's roster rows (a friend who joined mid-series watches until
+    // the next match; the room never spawns them, so neither do we)
+    const inRound = (id) => { const row = this.roster.get(id); return !!row && !row.spec && row.alive !== false; };
+    for (const r of this.remotes.values()) {
+      if (!inRound(r.id)) continue;
+      r.revive(); r.buf.length = 0; r.hasState = false;
+    }
+    const me = this.me;
+    const meIn = inRound(this.myId);
+    if (meIn) {
+      me.char.endRagdoll();
+      me.alive = true;
+      me.dancing = false;
+      me.hp = this.rules.hp;
+      me.sh = this.rules.shield;
+      this.lastElim = null;
+      this.spectateId = 0;
+      this.hud.elim(null);
+      document.body.classList.remove('dead');
+    } else {
+      me.alive = false;
+      me.mover.setEnabled(false);
+      me.mover.mode = 'dead';
+      me.char.setVisible(false);
+      document.body.classList.add('dead');
+      this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next match. Spectating…', leave: true });
+    }
+    for (const a of [...(meIn ? [me] : []), ...this.bots.values()]) {
+      a.char.endRagdoll();
+      a.alive = true;
+      a.hp = this.rules.hp;
+      a.sh = this.rules.shield;
+      this.giveLoadout(a, this.startLo.get(a.id) || null);
+      this.applyMode(a);
+      if (m.bus) {
+        a.inBus = true;
+        a.mover.mode = 'bus';
+        a.mover.setEnabled(false);
+        a.char.setVisible(false);
+        if (a !== me) {
+          const len = Math.hypot(m.bus.bx - m.bus.ax, m.bus.bz - m.bus.az) / m.bus.speed;
+          a.brain.dropAt = len * (0.12 + Math.random() * 0.68);
+        }
+      } else this.placeAtSpawn(a, this.startSpawns && this.startSpawns[a.id]);
+      if (a !== me) this.botRespawned(a, m);
+    }
+    if (m.bus) this.bus.start(m.bus);
+    this.hud.big(`ROUND ${m.n | 0}<small>Fight!</small>`);
+    this.plug('onPhase', this.phase, m);
   }
 
   on_forcedrop(m) {
@@ -722,9 +1213,10 @@ export class Game {
 
   onLanded(a, speed) {
     if (speed > 8) this.fx.dust(a.pos.x, a.pos.y, a.pos.z, Math.min(2, speed / 12), [0.75, 0.7, 0.6]);
+    this.plug('onLanded', a, speed);
   }
 
-  onJump() {}
+  onJump(a) { this.plug('onJump', a); }
 
   /**
    * Something audible happened (shot, footstep, build, chest, explosion): bots in earshot get a
@@ -759,6 +1251,10 @@ export class Game {
 
   openChest(a, i) {
     if (this.world.chestOpen.has(i)) return;
+    // at most one request per chest every 0.5 s (the room answers a repeat with the chest's state)
+    const last = this.chestAsked.get(i);
+    if (last !== undefined && this.time - last < CHEST_ASK) return;
+    this.chestAsked.set(i, this.time);
     this.send({ t: 'chest', id: a.id, c: i });
   }
 
@@ -775,16 +1271,21 @@ export class Game {
 
   nearestTree(pos, r) {
     let best = null, bd = r * r;
-    for (const o of this.world.data.objects) {
-      if (o.kind !== 'tree') continue;
+    const look = (o) => {
+      if (o.kind !== 'tree') return;
       const dx = o.x - pos.x, dz = o.z - pos.z;
       const d = dx * dx + dz * dz;
       if (d < bd && this.world.isAlive(o.id)) { bd = d; best = o.id; }
-    }
+    };
+    const data = this.world.data;
+    // the world's 32 m object hash (23k objects on the big island)
+    if (data.objectsNear) data.objectsNear(pos.x, pos.z, r, look);
+    else for (const o of data.objects) look(o);
     return best;
   }
 
   tryPlaceBuild(a) {
+    if (this.rules.build === 'off' && this.phase !== 'lobby') return false;
     const onRamp = a.mover.groundInfo && a.mover.groundInfo.kind === 'build' ? this.builds.pieces.get(a.mover.groundInfo.key) : null;
     const t = this.builds.target(a.buildType, a.pos, a.yaw, a.pitch, onRamp);
     if (!t.free || !t.supported) return false;
@@ -808,7 +1309,7 @@ export class Game {
     this.pendingShots.set(shot, { owner: a.id, w: cur.k, r: cur.r | 0, left: pellets, hits: new Map() });
     for (let i = 0; i < dirs.length; i += 3) {
       this.ballistics.fire({
-        ox: origin.x, oy: origin.y, oz: origin.z, dx: dirs[i], dy: dirs[i + 1], dz: dirs[i + 2], speed: w.speed, grav: w.grav,
+        ox: origin.x, oy: origin.y, oz: origin.z, dx: dirs[i], dy: dirs[i + 1], dz: dirs[i + 2], speed: w.speed, grav: w.grav * this.gravK(),
         owner: a.id, team: this.phase === 'lobby' ? a.id : this.teamOf(a.id), w: cur.k, r: cur.r | 0, auth: true, rocket: w.projectile === 'rocket', shot,
         visX: muzzle.x, visY: muzzle.y, visZ: muzzle.z,
       });
@@ -892,12 +1393,14 @@ export class Game {
   sendHits(ps) {
     for (const [tg, e] of ps.hits) {
       this.send({ t: 'hit', id: ps.owner, tg, w: ps.w, r: ps.r, d: Math.round(e.dist), n: e.n, nh: e.nh, x: e.x, y: e.y, z: e.z });
-      if (ps.owner === this.myId) {
+      // in a match the numbers and hitmarkers come from the room's damage echo (on_dmg): what the
+      // mode really did (headshots only, the Juggernaut's armour, gun game rungs, no-damage modes);
+      // in the warm-up (nobody gets hurt) the raw number shows what the gun would do
+      if (ps.owner === this.myId && this.phase === 'lobby') {
         const t = this.actorById(tg);
         const dmg = e.n * weaponDamage(ps.w, ps.r, e.dist, false) + e.nh * weaponDamage(ps.w, ps.r, e.dist, true);
         const shield = t && t.sh > 0;
-        const live = this.phase === 'match' || this.phase === 'bus';
-        this.hud.damageNumber(_v.set(e.x, e.y + 0.3, e.z), live ? dmg : dmg, e.nh ? 'head' : shield ? 'shield' : '');
+        this.hud.damageNumber(_v.set(e.x, e.y + 0.3, e.z), dmg, e.nh ? 'head' : shield ? 'shield' : '');
         this.hud.hitmarker(e.nh > 0, false);
         this.sfx.hitmarker(e.nh > 0, shield, false);
       }
@@ -963,7 +1466,7 @@ export class Game {
       const t = this.actorById(best.id);
       this.fx.hitPlayer(px, py, pz, t && t.sh > 0, false);
       this.send({ t: 'hit', id: a.id, tg: best.id, w: 'pickaxe', r: 0, d: 1, n: 1, nh: 0, x: px, y: py, z: pz });
-      if (a === this.me) {
+      if (a === this.me && this.phase === 'lobby') { // (in a match: the room's echo, on_dmg)
         this.hud.damageNumber(_v2.set(px, py + 0.3, pz), w.dmg[0], t && t.sh > 0 ? 'shield' : '');
         this.hud.hitmarker(false, false);
         this.sfx.hitmarker(false, false, false);
@@ -986,9 +1489,11 @@ export class Game {
       if (o2 && o2.hp > 0 && this.world.isAlive(info.id)) {
         this.send({ t: 'od', id: a.id, o: info.id, d: sdmg });
         const y = a.harvestYield(info);
-        if (y && !a.infinite) {
-          a.addMats(y[0], y[1]);
-          if (a === this.me) this.hud.damageNumber(_v2.set(h.x, h.y + 0.4, h.z), `+${y[1]}`, 'mat');
+        // rules.harvest: x1 / x2 / x3, or 0 = no materials from harvesting
+        const n = y ? Math.round(y[1] * (this.phase === 'lobby' ? 1 : this.rules.harvest)) : 0;
+        if (n > 0 && !a.infinite) {
+          a.addMats(y[0], n);
+          if (a === this.me) this.hud.damageNumber(_v2.set(h.x, h.y + 0.4, h.z), `+${n}`, 'mat');
         }
       }
     } else if (info && info.kind === 'barrel') {
@@ -1015,6 +1520,13 @@ export class Game {
       // an enemy too far away to be drawn still stops the ray but is never a target
       if (th > minD && th < best) { best = th; target = t.far ? 0 : t.id; feet = t.body[1] - t.body[6]; }
       if (tb > minD && tb < best) { best = tb; target = t.far ? 0 : t.id; feet = t.body[1] - t.body[6]; }
+    }
+    // colliders are only streamed near players: an enemy 180-250 m away inside a house far from
+    // everyone is not 'in the open' (the bullets, which stream their path, would hit the wall)
+    if (target) {
+      this.physics.ensureAlong(o.x, o.z, o.x + f.x * best, o.z + f.z * best);
+      const h2 = this.physics.raycast(o.x + f.x * minD, o.y + f.y * minD, o.z + f.z * minD, f.x, f.y, f.z, best - minD, RAY_SOLID);
+      if (h2) { best = h2.dist + minD; target = 0; }
     }
     const a = this.aim;
     a.target = target;
@@ -1111,7 +1623,16 @@ export class Game {
     if (!this.me) return;
     this.time += dt;
     const s = this.input.update();
+    this.plug('filterInput', s);
     const me = this.me;
+    if (this.rules.build === 'off' && this.phase !== 'lobby') {
+      // Zero Build: no building at all
+      s.build = null;
+      s.buildToggle = false;
+      s.buildFire = false;
+      s.buildHold = false;
+      if (me.buildMode) { me.buildMode = false; me.onInventory(); }
+    }
     if (s.map) this.hud.toggleFullMap();
 
     // hitboxes for this frame (positions from last frame are fine at 60 fps)
@@ -1195,6 +1716,7 @@ export class Game {
     this.interactions(s);
     this.network(dt);
     this.updateHud(dt);
+    this.plug('update', dt);
   }
 
   /**
@@ -1245,12 +1767,13 @@ export class Game {
     // bullet drop: the shot must still come down on the target, not in the ground in front of it
     // (a shallow trajectory that dips below the feet lands many metres short, even for a rocket:
     // only a few cm of slack keep its blast within reach)
-    const drop = w.grav ? 0.5 * GRAVITY * w.grav * (len / w.speed) ** 2 : 0;
+    const drop = w.grav ? 0.5 * GRAVITY * w.grav * this.gravK() * (len / w.speed) ** 2 : 0;
     if (w.grav && aim.ty - drop < aim.targetFeet + (w.splash ? -0.1 : 0.1)) return false;
     // bullets leave from the shoulder (below the camera) and fall on the way: trace their real
     // path in a few straight pieces so we never fire into cover the camera can see over
     const n = drop > 0.02 ? 4 : 1;
     const end = Math.max(0, 1 - 0.1 / len); // enemies aren't solid, so stop just short of the aim point
+    this.physics.ensureAlong(o.x, o.z, aim.tx, aim.tz); // (the whole path's colliders, like a bullet's)
     let px = o.x, py = o.y, pz = o.z;
     for (let i = 1; i <= n; i++) {
       const f = (end * i) / n;
@@ -1408,7 +1931,10 @@ export class Game {
     const o = this.camera.position;
     const dx = x - o.x, dy = y - o.y, dz = z - o.z;
     const l = Math.hypot(dx, dy, dz);
-    return l < 0.5 || !this.physics.raycast(o.x, o.y, o.z, dx / l, dy / l, dz / l, l - 0.4, RAY_SOLID);
+    if (l < 0.5) return true;
+    this.physics.ensureAlong(o.x, o.z, x, z); // (colliders far from everyone are not streamed in yet)
+    // leaves hide you too, except right up close
+    return !this.physics.raycast(o.x, o.y, o.z, dx / l, dy / l, dz / l, l - 0.4, l < 3 ? RAY_SOLID : RAY_SHOT);
   }
 
   cycleSpectate() {
@@ -1423,7 +1949,12 @@ export class Game {
     if (!me.alive || me.inBus || !me.canAct()) { this.hud.prompt(''); this.input.setInteractLabel(''); return; }
     // auto pickup
     let slotBusy = this.slotPickPending(me);
-    for (const it of this.loot.items.values()) {
+    // (LootView's 16 m grid: only the items next to me, not every item on the island)
+    const near = _near;
+    near.length = 0;
+    if (this.loot.forNear) this.loot.forNear(me.pos.x, me.pos.z, 1.7, (it) => { near.push(it); });
+    else for (const it of this.loot.items.values()) near.push(it);
+    for (const it of near) {
       const dx = it.x - me.pos.x, dz = it.z - me.pos.z, dy = it.y - me.pos.y;
       if (dx * dx + dz * dz >= 1.7 * 1.7 || Math.abs(dy) >= 1.6 || !me.canAutoPick(it.item)) continue;
       const kind = itemKind(it.item.k);
@@ -1433,6 +1964,7 @@ export class Game {
       }
       this.pick(me, it);
     }
+    near.length = 0;
     const chest = this.nearestChest(me.pos, 2.8);
     const l = chest ? null : this.loot.nearest(me.pos, 2.6, (it) => !me.pendingPick.has(it.id));
     const touch = this.input.touchMode;
@@ -1462,11 +1994,31 @@ export class Game {
     this.sendT = 1 / SEND_HZ;
     const me = this.me;
     if (me.alive && !me.inBus) this.send({ t: 'u', s: me.stateArray() });
+    this.syncWatch();
     if (this.bots.size) {
       const b = [];
       for (const bot of this.bots.values()) if (bot.alive && !bot.inBus) b.push([bot.id, ...bot.stateArray()]);
       if (b.length) this.send({ t: 'ub', b });
     }
+  }
+
+  /**
+   * Who I am watching while out of the match ({t:'watch', id}, 0 = nobody): the device running
+   * the bots keeps a watched bot (and the fight around it) in the full simulation (farsim.js).
+   */
+  syncWatch() {
+    const live = this.phase === 'match' || this.phase === 'bus';
+    const id = live && this.me && !this.me.alive ? this.spectateId | 0 : 0;
+    if (id === this.watchSent) return;
+    this.watchSent = id;
+    this.send({ t: 'watch', id });
+  }
+
+  /** Someone on another device watches one of my bots ({t:'watch', from, id}; id 0: stopped). */
+  on_watch(m) {
+    const from = m.from | 0, id = m.id | 0;
+    if (!from) return;
+    if (id) this.watchers.set(from, id); else this.watchers.delete(from);
   }
 
   updateHud(dt) {
@@ -1501,7 +2053,9 @@ export class Game {
     } else if (this.phase === 'lobby') stormText = 'WARM-UP';
     const alive = this.phase === 'lobby' ? [...this.roster.values()].filter((p) => !p.bot).length : this.aliveCount;
     hud.stats(stormText, shrinking, alive, this.kills);
-    const out = me.alive && !me.inBus ? this.storm.outside(me.pos.x, me.pos.z) : -1;
+    // (in the bus, dead, on the lobby stage or with no storm at all (the warm-up, storm-less modes)
+    // there is no storm roar or tint: -Infinity, never 'just inside')
+    const out = st && me.alive && !me.inBus && !this.app.stageOn ? this.storm.outside(me.pos.x, me.pos.z) : -Infinity;
     hud.stormTint(out > 0 ? 1 : out > -15 ? 0.15 : 0);
     if (out > 0 && Math.random() < 0.5) this.fx.stormWisp(me.pos.x, me.pos.y, me.pos.z);
     this.sfx.setStorm(out > -20 && st ? Math.min(1, (out + 20) / 25) : 0);
@@ -1510,19 +2064,26 @@ export class Game {
     const lowHp = me.alive && me.hp < 30 ? 0.25 + Math.sin(this.time * 4) * 0.1 : 0;
     hud.hurt(Math.max(this.hurtK, lowHp));
     // map
-    const extras = {};
+    const extras = { layers: this.mapExtras };
     if (this.phase === 'bus' && this.bus.path) { extras.bus = this.bus.path; extras.busPos = this.bus.pos; }
     if (this.phase !== 'lobby') {
       const dots = [];
-      for (const r of this.remotes.values()) if (r.alive && !r.isBot && this.friendly(r.id, this.myId)) dots.push({ x: r.pos.x, z: r.pos.z, c: '#4fd2ff' });
+      // teammates (bots too: a duo partner may be a bot simulated here)
+      for (const r of this.remotes.values()) if (r.alive && r.mode !== 'bus' && this.friendly(r.id, this.myId)) dots.push({ x: r.pos.x, z: r.pos.z, c: '#4fd2ff' });
+      for (const b of this.bots.values()) if (b.alive && !b.inBus && this.friendly(b.id, this.myId)) dots.push({ x: b.pos.x, z: b.pos.z, c: '#4fd2ff' });
       if (dots.length) extras.dots = dots;
     }
     const mp = me.inBus ? this.bus.pos : me.alive ? me.pos : (this.actorById(this.spectateId) || me).pos;
     hud.minimap(dt, { x: mp.x, z: mp.z, yaw: me.alive || me.inBus ? me.yaw : this.specYaw }, st && { ...st, ...this.storm.vis }, extras);
-    // location name
+    // location name: the world's regionAt(x, z) when it has one (every named place), else the POI list
     let poi = '';
-    for (const p of this.world.data.pois) {
-      if (Math.hypot(p.x - mp.x, p.z - mp.z) < 55) { poi = p.name; break; }
+    if (this.world.regionAt) {
+      const reg = this.world.regionAt(mp.x, mp.z);
+      if (reg) poi = reg.name;
+    } else {
+      for (const p of this.world.data.pois) {
+        if (Math.hypot(p.x - mp.x, p.z - mp.z) < 55) { poi = p.name; break; }
+      }
     }
     hud.poi(poi);
     if (poi && poi !== this.lastPoi && me.alive && !me.inBus && this.phase !== 'lobby') hud.notice(poi.toUpperCase(), false, 2.5);
@@ -1531,6 +2092,7 @@ export class Game {
     hud.update(dt);
     if (!this.solo) hud.net(this.net.rtt ? `${Math.round(this.net.rtt)} ms` : '');
     if (this.phase === 'lobby') this.updateLobby(true);
+    this.plug('hud', dt);
   }
 
   updateLobby(throttle = false) {
@@ -1550,6 +2112,11 @@ export class Game {
     this.send({ t: 'start', bots, mats, mode: mode || this.settingsState.mode });
   }
 
+  /** A best-of-N series is being played (between its rounds too): no placings, no PLAY AGAIN. */
+  inSeries() {
+    return (this.rules.rounds | 0) > 1 && (this.phase === 'match' || this.phase === 'bus');
+  }
+
   playAgain() {
     if (this.phase === 'lobby') this.startMatch(this.settingsState.bots, this.settingsState.mats);
     else { this.autoRestart = true; this.send({ t: 'end' }); }
@@ -1558,16 +2125,21 @@ export class Game {
   dispose() {
     this.disposed = true;
     this.unsub();
+    this.plug('dispose');
     this.net.close();
     if (this.me) this.me.dispose();
     for (const b of this.bots.values()) b.dispose();
     for (const r of this.remotes.values()) r.dispose();
     this.bots.clear();
     this.remotes.clear();
+    forgetGame(this);
     this.loot.clear();
-    this.scene.remove(this.storm.mesh);
-    this.scene.remove(this.bus.mesh);
     this.resetWorld();
+    // GPU buffers and shaders this Game made for itself (a party switch makes a new Game; the
+    // shared floor-loot meshes stay for the next one)
+    this.storm.dispose();
+    this.bus.dispose();
+    this.ballistics.dispose();
     this.builds.showGhost(null);
     this.hud.elim(null);
     this.hud.lobby(null);

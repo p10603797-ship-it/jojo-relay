@@ -30,29 +30,32 @@ const hash = (n) => {
 class ValueNoise {
   constructor(seed) {
     this.seed = seed;
-    this.lat = new Map();
+    this.lat = [];   // lattice per period (sparse array: periods are small integers)
   }
   lattice(P) {
-    let a = this.lat.get(P);
+    let a = this.lat[P];
     if (!a) {
       const r = mulberry32(this.seed * 131 + P * 7919);
       a = new Float32Array(P * P);
       for (let i = 0; i < a.length; i++) a[i] = r();
-      this.lat.set(P, a);
+      this.lat[P] = a;
     }
     return a;
   }
   sample(u, v, Px, Py = Px) {
-    const P = Math.max(Px, Py);
-    const a = this.lattice(P);
+    const P = Px > Py ? Px : Py;
+    const a = this.lat[P] || this.lattice(P);
     const x = u * Px, y = v * Py;
     let xi = Math.floor(x), yi = Math.floor(y);
-    const fx = smooth(x - xi), fy = smooth(y - yi);
-    xi = ((xi % Px) + Px) % Px;
-    yi = ((yi % Py) + Py) % Py;
-    const x1 = (xi + 1) % Px, y1 = (yi + 1) % Py;
+    let fx = x - xi, fy = y - yi;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    xi %= Px; if (xi < 0) xi += Px;
+    yi %= Py; if (yi < 0) yi += Py;
+    const x1 = xi + 1 === Px ? 0 : xi + 1, y1 = yi + 1 === Py ? 0 : yi + 1;
     const a00 = a[yi * P + xi], a10 = a[yi * P + x1], a01 = a[y1 * P + xi], a11 = a[y1 * P + x1];
-    return mix(mix(a00, a10, fx), mix(a01, a11, fx), fy);
+    const b0 = a00 + (a10 - a00) * fx, b1 = a01 + (a11 - a01) * fx;
+    return b0 + (b1 - b0) * fy;
   }
   fbm(u, v, P, oct = 4, gain = 0.5, Py = P) {
     let sum = 0, amp = 1, norm = 0, px = P, py = Py;
@@ -113,7 +116,7 @@ function put(img, i, r, g, b, h) {
 export function grass(size = 512, seed = 1) {
   const img = makeImg(size);
   const n = new ValueNoise(seed);
-  const c1 = hex(0x4f9d33), c2 = hex(0x6cbf3f), c3 = hex(0x3b7f28), dry = hex(0x9fbf4a);
+  const c1 = hex(0x3f9440), c2 = hex(0x5cb04e), c3 = hex(0x2a6c34), dry = hex(0x8fb24e);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const u = x / size, v = y / size, i = y * size + x;
@@ -462,6 +465,463 @@ export function noiseTile(size = 256, seed = 13, P = 4, oct = 5) {
   return img;
 }
 
+// ------------------------------------------------------------------ biome surfaces
+// All tileable; colours are final albedo (no tinting needed). Every generator: (size, seed, opts).
+
+const rgb = (h) => hex(h);
+function shade3(c, k) { return [c[0] * k, c[1] * k, c[2] * k]; }
+function mix3(a, b, t) { return [mix(a[0], b[0], t), mix(a[1], b[1], t), mix(a[2], b[2], t)]; }
+
+export function snow(size = 512, seed = 41) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const base = rgb(0xf4f8fd), blue = rgb(0xb4c8e2);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const f = n.fbm(u, v, 4, 3);
+      const drift = n.sample(u + f * 0.3, v * 0.5, 6, 3);
+      const t = smooth(clamp01((f - 0.4) * 2.6)) * 0.7 + drift * 0.2;
+      const c = mix3(base, blue, t);
+      const sp = hash(i * 7 + seed) > 0.992 ? 1.08 : 1;
+      put(img, i, c[0] * sp, c[1] * sp, c[2] * sp, f * 0.6 + drift * 0.3);
+    }
+  }
+  return img;
+}
+
+export function ice(size = 512, seed = 42) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const w = new Worley(seed + 5, 5);
+  const deep = rgb(0x7fb8d8), light = rgb(0xd6f0fb);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const c = w.sample(u, v);
+      const crack = 1 - smooth(clamp01((c.f2 - c.f1) * 18));
+      const f = n.fbm(u, v, 3, 3);
+      const streak = smooth(clamp01((n.sample(u + v * 0.6, v, 2, 16) - 0.6) * 4));
+      let col = mix3(deep, light, 0.35 + f * 0.5 + hash(c.id) * 0.15);
+      col = mix3(col, [1, 1, 1], streak * 0.35);
+      col = shade3(col, 1 - crack * 0.35);
+      put(img, i, col[0], col[1], col[2], 0.6 - crack * 0.5 + f * 0.1);
+    }
+  }
+  return img;
+}
+
+/** Sand with wind ripples (desert sand, red sand); base / dark colours. */
+export function dunes(size = 512, seed = 43, { base = 0xd9824e, dark = 0xb4633a, ripples = 14 } = {}) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const b = rgb(base), d = rgb(dark);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const warp = n.fbm(u, v, 3, 2) * 2.5;
+      const rip = Math.sin((v * ripples + u * 2 + warp) * Math.PI * 2) * 0.5 + 0.5;
+      const patch = n.fbm(u, v, 5, 2);
+      const grain = hash(i + seed * 977);
+      const c = mix3(b, d, clamp01(patch * 0.7 + rip * 0.25));
+      const k = 0.9 + grain * 0.16;
+      put(img, i, c[0] * k, c[1] * k, c[2] * k, rip * 0.5 + grain * 0.25);
+    }
+  }
+  return img;
+}
+
+export function strata(size = 512, seed = 44) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const bands = [rgb(0xe8c89a), rgb(0xd98a52), rgb(0xb4583a), rgb(0xcf7a48), rgb(0x8a4a32), rgb(0xe0a46a), rgb(0xc0603e), rgb(0xa8583c)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const warp = n.fbm(u, v, 3, 2) * 0.6;
+      const bv = (v * 8 + warp + 8) % 8;
+      const bi = Math.floor(bv), bt = bv - bi;
+      const c0 = bands[bi % 8], c1 = bands[(bi + 1) % 8];
+      let c = mix3(c0, c1, smooth(clamp01((bt - 0.82) * 6)));
+      const grain = n.sample(u, v, 128, 32);
+      const crack = n.sample(u, v, 24, 3) > 0.86 && n.sample(u, v, 64, 16) > 0.5 ? 0.78 : 1;
+      const lip = bt < 0.06 ? 0.75 : 1;
+      c = shade3(c, (0.85 + grain * 0.25) * crack * lip);
+      put(img, i, c[0], c[1], c[2], grain * 0.4 + (1 - bt) * 0.4 + (crack < 1 ? -0.3 : 0));
+    }
+  }
+  return img;
+}
+
+export function mud(size = 512, seed = 45) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const c1 = rgb(0x5e4a34), c2 = rgb(0x3e3022), wet = rgb(0x2e2a22);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const f = n.fbm(u, v, 4, 4);
+      const puddle = smooth(clamp01((n.fbm(u + 0.4, v, 3, 2) - 0.58) * 6));
+      let c = mix3(c1, c2, f);
+      const k = 0.85 + n.sample(u, v, 96) * 0.25;
+      c = mix3(shade3(c, k), wet, puddle * 0.8);
+      put(img, i, c[0], c[1], c[2], f * 0.5 * (1 - puddle) + 0.1);
+    }
+  }
+  return img;
+}
+
+export function junglefloor(size = 512, seed = 46) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const w = new Worley(seed + 3, 22);
+  const moss = rgb(0x2e5a24), dark = rgb(0x1f3a18), litter = [rgb(0x5a6a2a), rgb(0x6a4a2a), rgb(0x3f6a2a), rgb(0x7a5a2a)];
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const c = w.sample(u, v);
+      const leaf = smooth(clamp01((0.42 - c.f1) * 5));
+      const f = n.fbm(u, v, 6, 3);
+      let col = mix3(dark, moss, f);
+      const lc = litter[Math.floor(hash(c.id + 11) * 4)];
+      col = mix3(col, lc, leaf * (hash(c.id) > 0.35 ? 0.85 : 0));
+      const k = 0.85 + n.sample(u, v, 128) * 0.25;
+      put(img, i, col[0] * k, col[1] * k, col[2] * k, leaf * 0.6 + f * 0.3);
+    }
+  }
+  return img;
+}
+
+export function ash(size = 512, seed = 47) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const w = new Worley(seed + 1, 9);
+  const c1 = rgb(0x3e3a38), c2 = rgb(0x24211f), fleck = rgb(0x8a8480);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const f = n.fbm(u, v, 5, 4);
+      const c = w.sample(u, v);
+      const crack = 1 - smooth(clamp01((c.f2 - c.f1) * 14));
+      let col = mix3(c1, c2, f);
+      if (hash(i * 3 + seed) > 0.985) col = mix3(col, fleck, 0.6);
+      col = shade3(col, 1 - crack * 0.4);
+      put(img, i, col[0], col[1], col[2], f * 0.4 + (1 - crack) * 0.4);
+    }
+  }
+  return img;
+}
+
+/** Lava: black crust plates with glowing cracks. img.emissive (Uint8, 0..255) marks the glow. */
+export function lava(size = 512, seed = 48) {
+  const img = makeImg(size);
+  img.emissive = new Uint8Array(size * size);
+  const n = new ValueNoise(seed);
+  const w = new Worley(seed + 7, 7);
+  const crust = rgb(0x2a1e1a), hot = rgb(0xff7a1a), white = rgb(0xffe08a);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const c = w.sample(u, v);
+      const e = c.f2 - c.f1;
+      const glow = 1 - smooth(clamp01(e * 7 + n.sample(u, v, 16) * 0.35 - 0.05));
+      const f = n.fbm(u, v, 6, 3);
+      let col = shade3(crust, 0.8 + f * 0.5);
+      col = mix3(col, mix3(hot, white, smooth(clamp01((glow - 0.6) * 2.5))), glow);
+      put(img, i, col[0], col[1], col[2], (1 - glow) * 0.8 + f * 0.2);
+      img.emissive[i] = clamp01(glow * 1.1) * 255;
+    }
+  }
+  return img;
+}
+
+/** Asphalt; lines: a dashed yellow centre line along v (at u = 0.5) and white edge lines (road ribbons). */
+export function asphalt(size = 512, seed = 49, { lines = true } = {}) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const base = rgb(0x4a4d52), dark = rgb(0x2f3236), yellow = rgb(0xf2c53d), white = rgb(0xeeeeea);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const f = n.fbm(u, v, 6, 3);
+      const grain = hash(i + seed * 31);
+      const crack = n.sample(u, v, 20, 6) > 0.86 ? 0.7 : 1;
+      let c = shade3(mix3(base, dark, f * 0.6), (0.88 + grain * 0.18) * crack);
+      let h = grain * 0.3 + f * 0.2;
+      if (lines) {
+        const wear = 0.75 + n.sample(u, v, 64) * 0.25;
+        if (Math.abs(u - 0.5) < 0.012 && (v * 4) % 1 < 0.55) { c = mix3(c, yellow, wear); h += 0.1; }
+        if (Math.abs(u - 0.06) < 0.008 || Math.abs(u - 0.94) < 0.008) { c = mix3(c, white, wear * 0.9); h += 0.1; }
+      }
+      put(img, i, c[0], c[1], c[2], h);
+    }
+  }
+  return img;
+}
+
+export function cobble(size = 512, seed = 50) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const w = new Worley(seed + 2, 12);
+  const c1 = rgb(0x9a948a), c2 = rgb(0x7a7268), gap = rgb(0x4a4640);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const c = w.sample(u, v);
+      const e = c.f2 - c.f1;
+      const stone = smooth(clamp01(e * 9));
+      const dome = clamp01(1 - c.f1 * 1.7);
+      let col = mix3(c1, c2, hash(c.id) * 0.8 + n.sample(u, v, 64) * 0.2);
+      col = shade3(col, 0.8 + dome * 0.3);
+      col = mix3(gap, col, stone);
+      put(img, i, col[0], col[1], col[2], stone * (0.5 + dome * 0.5));
+    }
+  }
+  return img;
+}
+
+export function field(size = 512, seed = 51) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const c1 = rgb(0x8a6040), c2 = rgb(0x5e3f28), sprout = rgb(0x6a8a3a);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const w = n.sample(u, v, 4, 2) * 0.05;
+      const row = Math.sin((u + w) * 16 * Math.PI * 2) * 0.5 + 0.5;
+      const f = n.fbm(u, v, 8, 3);
+      let c = mix3(c2, c1, row * 0.7 + f * 0.3);
+      if (row > 0.85 && n.sample(u, v, 32, 128) > 0.62) c = mix3(c, sprout, 0.7);
+      const k = 0.88 + hash(i + seed) * 0.16;
+      put(img, i, c[0] * k, c[1] * k, c[2] * k, row * 0.7 + f * 0.2);
+    }
+  }
+  return img;
+}
+
+export function wheat(size = 512, seed = 52) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const gold = rgb(0xe8c25a), deep = rgb(0xb8902e), pale = rgb(0xf4dc8a);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const stalk = n.sample(u, v, 128, 8);
+      const tuft = n.fbm(u, v, 6, 3);
+      let c = mix3(deep, gold, stalk);
+      c = mix3(c, pale, smooth(clamp01((tuft - 0.6) * 4)) * 0.5);
+      const gapK = n.sample(u, v, 256, 16) < 0.25 ? 0.7 : 1;
+      put(img, i, c[0] * gapK, c[1] * gapK, c[2] * gapK, stalk * 0.6 + tuft * 0.3);
+    }
+  }
+  return img;
+}
+
+// ------------------------------------------------------------------ building looks
+export function glass(size = 512, seed = 61) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const top = rgb(0xa8d4ee), bottom = rgb(0x4f7fa8), frame = rgb(0x39424c);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const pu = (u * 2) % 1, pv = (v * 2) % 1;
+      const edge = Math.min(pu, 1 - pu, pv, 1 - pv);
+      let c = mix3(bottom, top, 1 - pv);
+      const refl = smooth(clamp01(1 - Math.abs(((pu - pv * 0.6 + 2) % 1) - 0.35) * 9)) * 0.35;
+      c = mix3(c, [1, 1, 1], refl + n.sample(u, v, 8) * 0.06);
+      let h = 0.2;
+      if (edge < 0.025) { c = frame; h = 1; }
+      put(img, i, c[0], c[1], c[2], h);
+    }
+  }
+  return img;
+}
+
+export function plaster(size = 512, seed = 62, { base = 0xeadfc8, bricks = 0 } = {}) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const col = rgb(base), brick = shade3(col, 0.72);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const f = n.fbm(u, v, 6, 4);
+      const pores = hash(i * 13 + seed) > 0.97 ? 0.9 : 1;
+      let c = shade3(col, (0.88 + f * 0.18) * pores);
+      let h = f * 0.3;
+      if (bricks) {
+        // patches where the plaster has fallen off and bricks show through
+        const patch = smooth(clamp01((n.fbm(u + 0.3, v, 3, 3) - (1 - bricks * 0.75)) * 8));
+        if (patch > 0) {
+          const row = Math.floor(v * 16), off = row % 2 ? 0.0625 : 0;
+          const bu = ((u + off) * 8) % 1, bv = (v * 16) % 1;
+          const mortar = bu < 0.07 || bv < 0.12;
+          c = mix3(c, mortar ? shade3(col, 0.9) : shade3(brick, 0.9 + hash(row * 64 + Math.floor((u + off) * 8)) * 0.2), patch);
+          h = mix(h, mortar ? 0 : 0.6, patch);
+        }
+      }
+      put(img, i, c[0], c[1], c[2], h);
+    }
+  }
+  return img;
+}
+
+export function logs(size = 512, seed = 64, { base = 0x9a6a3e, rows = 6 } = {}) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const col = rgb(base), gap = rgb(0x3a2a1a);
+  const ph = size / rows;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const row = Math.floor(y / ph), ry = (y - row * ph) / ph;
+      const round = Math.sqrt(clamp01(1 - (ry * 2 - 1) * (ry * 2 - 1)));
+      const grain = 0.85 + 0.15 * Math.sin((ry * 6 + n.fbm(u, v, 3, 3, 0.5, 24) * 4 + hash(row) * 7) * Math.PI);
+      const tint = 0.85 + hash(row * 7 + seed) * 0.25;
+      let c = shade3(col, (0.45 + round * 0.6) * grain * tint);
+      if (round < 0.25) c = mix3(gap, c, round * 4);
+      put(img, i, c[0], c[1], c[2], round);
+    }
+  }
+  return img;
+}
+
+export function rooftile(size = 512, seed = 67, { base = 0xc0603a } = {}) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const col = rgb(base);
+  const rows = 8, cols = 8;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const row = Math.floor(v * rows), rv = v * rows - row;
+      const cu = (u * cols + (row % 2) * 0.5) % 1;
+      const barrel = Math.sin(cu * Math.PI);
+      const tint = 0.85 + hash(row * 31 + Math.floor(u * cols + (row % 2) * 0.5)) * 0.25;
+      let k = (0.55 + barrel * 0.5) * tint * (0.75 + rv * 0.3);
+      if (rv > 0.93) k *= 0.55;
+      k *= 0.92 + n.sample(u, v, 64) * 0.16;
+      put(img, i, col[0] * k, col[1] * k, col[2] * k, barrel * 0.8 + rv * 0.2);
+    }
+  }
+  return img;
+}
+
+/** Large stone blocks (sandstone, castle, ice blocks): rows of blocks with irregular widths. */
+export function blocks(size = 512, seed = 69, { base = 0xd8b680, rows = 4, cols = 3, mortar = 0.025, moss = 0, lines = 0 } = {}) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const col = rgb(base), mossC = rgb(0x5d7a3a);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const row = Math.floor(v * rows), rv = v * rows - row;
+      const off = hash(row * 13 + seed) * 0.6;
+      const bu = (u * cols + off) % cols;
+      const bi = Math.floor(bu), lu = bu - bi;
+      const id = row * 16 + bi;
+      const e = Math.min(lu / cols * rows, (1 - lu) / cols * rows, rv, 1 - rv) / rows;
+      const f = n.fbm(u, v, 8, 4);
+      let c = shade3(col, (0.74 + hash(id + seed) * 0.36) * (0.84 + f * 0.26));
+      if (lines) c = shade3(c, 0.94 + 0.06 * Math.sin((v * rows * 6 + f) * Math.PI * 2));
+      let h = 0.7 + f * 0.2;
+      const bevel = clamp01(e / mortar);
+      if (e < mortar) { c = shade3(col, 0.55); h = 0.1; } else h *= 0.6 + 0.4 * clamp01(bevel - 1);
+      if (moss) { const m = smooth(clamp01((n.fbm(u, v, 4, 3) - (1 - moss)) * 5)) * (1 - v); c = mix3(c, mossC, m * 0.7); }
+      put(img, i, c[0], c[1], c[2], h);
+    }
+  }
+  return img;
+}
+
+export function panel(size = 512, seed = 70, { base = 0xc9ced4 } = {}) {
+  const img = makeImg(size);
+  const n = new ValueNoise(seed);
+  const col = rgb(base);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size, i = y * size + x;
+      const pu = (u * 2) % 1, pv = (v * 2) % 1;
+      const seam = Math.min(pu, 1 - pu, pv, 1 - pv);
+      const f = n.fbm(u, v, 6, 4);
+      const pid = Math.floor(u * 2) + Math.floor(v * 2) * 2;
+      let k = (0.86 + hash(pid + seed) * 0.12) * (0.92 + f * 0.12);
+      let h = 0.6 + f * 0.1;
+      if (seam < 0.012) { k *= 0.55; h = 0; }
+      // a bolt near each panel corner
+      const bx = Math.min(Math.abs(pu - 0.08), Math.abs(pu - 0.92)), by = Math.min(Math.abs(pv - 0.08), Math.abs(pv - 0.92));
+      if (bx * bx + by * by < 0.0004) { k *= 1.15; h = 1; }
+      // rain streaks
+      k *= 1 - smooth(clamp01((n.sample(u, v, 32, 2) - 0.7) * 3)) * 0.12;
+      put(img, i, col[0] * k, col[1] * k, col[2] * k, h);
+    }
+  }
+  return img;
+}
+
 export const GENERATORS = {
   grass, sand, rock, dirt, planks, brick, metal, siding, shingles, concrete, bark, foliage, noiseTile,
+  snow, ice, dunes, strata, mud, junglefloor, ash, lava, asphalt, cobble, field, wheat,
+  glass, plaster, logs, rooftile, blocks, panel,
 };
+
+// ------------------------------------------------------------------ layers by name
+// One texture for every ground surface and building look (SURFACES and LOOKS in
+// shared/world/keys.js), e.g. for the renderer's texture arrays. dirt, sand, rock and today's
+// looks (siding, brick, metalwall, roof, floor, trim, foundation, concrete) are today's textures;
+// grass is today's with deeper, slightly bluer greens. Unknown keys get concrete.
+// The lava layer carries emissive (Uint8, the glow mask); 'asphalt' has lane lines (u across the
+// road: a dashed centre line at u = 0.5, edge lines near 0 and 1); 'asphaltPlain' has none.
+const LAYERS = {
+  // surfaces
+  grass: (s) => grass(s, 1),
+  dirt: (s) => dirt(s, 4),
+  sand: (s) => sand(s, 2),
+  rock: (s) => rock(s, 3),
+  snow: (s) => snow(s, 41),
+  ice: (s) => ice(s, 42),
+  redsand: (s) => dunes(s, 43),
+  strata: (s) => strata(s, 44),
+  mud: (s) => mud(s, 45),
+  junglefloor: (s) => junglefloor(s, 46),
+  ash: (s) => ash(s, 47),
+  lava: (s) => lava(s, 48),
+  asphalt: (s) => asphalt(s, 49),
+  asphaltPlain: (s) => asphalt(s, 49, { lines: false }),
+  cobble: (s) => cobble(s, 50),
+  field: (s) => field(s, 51),
+  wheat: (s) => wheat(s, 52),
+  // looks
+  siding: (s) => siding(s, 8),
+  brick: (s) => brick(s, 6),
+  metalwall: (s) => metal(s, 7),
+  roof: (s) => shingles(s, 9),
+  floor: (s) => planks(s, 5),
+  trim: (s) => concrete(s, 10),
+  foundation: (s) => concrete(s, 10),
+  glass: (s) => glass(s, 61),
+  stucco: (s) => plaster(s, 62),
+  adobe: (s) => plaster(s, 63, { base: 0xc98f5e, bricks: 0.5 }),
+  logs: (s) => logs(s, 64),
+  planks: (s) => planks(s, 65, { base: 0xb98a58, rows: 8, vertical: true }),
+  corrugated: (s) => metal(s, 66, { ribs: 32, base: 0x9aa4ae }),
+  rooftile: (s) => rooftile(s, 67),
+  shingle: (s) => shingles(s, 68),
+  sandstone: (s) => blocks(s, 69, { base: 0xd8b680, rows: 4, cols: 2, lines: 1 }),
+  concrete: (s) => concrete(s, 10),
+  panel: (s) => panel(s, 70),
+  castle: (s) => blocks(s, 72, { base: 0x9e9a92, rows: 5, cols: 3, mortar: 0.03, moss: 0.18 }),
+};
+
+/** SURFACES / LOOKS keys that have a generator of their own (the rest fall back to concrete). */
+export const LAYER_KEYS = Object.keys(LAYERS);
+
+/**
+ * The texture image ({ size, color, height, emissive? }, like every generator) for a SURFACES or
+ * LOOKS key. size: pixels at normal quality; low (the Low preset) halves it (512 -> 256).
+ */
+export function layerTexture(key, size = 512, low = false) {
+  const S = low ? size >> 1 : size;
+  const make = Object.prototype.hasOwnProperty.call(LAYERS, key) ? LAYERS[key] : LAYERS.concrete;
+  return make(S);
+}

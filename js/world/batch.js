@@ -1,93 +1,542 @@
-// Merges many small static geometries into a few big meshes (one per material+chunk)
-// while remembering which vertex range belongs to which object, so individual objects
-// can be hidden (destroyed) and restored without extra draw calls.
+// Buildings and props, batched: every building part and prop of a 128 m chunk goes into one mesh
+// (one material for every look: a texture array indexed by a per-vertex layer), with the glass of
+// the chunk in a second, see-through mesh. Parts are written straight into typed arrays.
+// Chunks further than the near distance are hidden and their buildings drawn as simple boxes
+// (HLOD proxies: 10 triangles per building, all in one mesh), so a view from the bus costs a
+// couple of draw calls for every building on the island.
+//
+// Destruction: setVisible(id, false) collapses an object's vertices (its triangles vanish) and
+// setVisible(id, true) writes them again, with no extra draw calls.
 import * as THREE from 'three';
+import * as M from './models.js';
+import { lookLayer } from '../gfx/textures.js';
+
+export const BATCH_CHUNK = 128;
+const PAINTS = [0xf1e7d0, 0x9fc6ea, 0xf3d473, 0xb7dca0];
+const ROOFS = [0xa53c2b, 0x3e5574, 0x6c4a32, 0x4b6f3d];
+const STUCCO = [0xfff4e4, 0xf7dccb, 0xe4efd9, 0xdde7f2];
+const CONTAINERS = [0xc0392b, 0x2e6db4, 0x3f8f4f, 0xe08a1e];
+const CARS = [0xd23c2c, 0x2e7dd1, 0xf0c419, 0xeeeeee, 0x37a35a];
+const PLAIN = 255;     // layer value: no texture (vertex colour only)
+const GLOW = 128;      // layer flag: emissive
+/** Props that wear a building look (the rest are plain vertex colours). */
+const PROP_LOOK = { container: 'corrugated', crate: 'planks', fence: 'planks', bench: 'planks', stall: 'planks', sign: 'panel', dumpster: 'metalwall' };
+// A chunk drawn only as HLOD boxes for this long (ms) gives its GPU buffers back; three.js uploads
+// them again from the arrays kept here when the chunk is near again. Without this, every chunk
+// the camera ever came near stays on the GPU for the rest of the session (the whole island).
+const RELEASE_MS = 20000;
+
+/** The colour a part is painted (vertex colour, multiplied with its look's texture). */
+export function partColor(o, house) {
+  if (o.tint !== undefined && o.tint !== null) return o.tint;
+  const paint = (o.paint ?? (house && house.paint) ?? 0) | 0;
+  switch (o.look) {
+    case 'siding': return PAINTS[paint % PAINTS.length];
+    case 'roof': return ROOFS[paint % ROOFS.length];
+    case 'metalwall': return 0xa3b4c2;
+    case 'trim': return house && house.style === 'metal' ? 0x6d7b88 : 0xf6f3ec;
+    case 'foundation': return 0xb3ada2;
+    case 'slab': return 0xd2cdc3;
+    case 'stucco': return STUCCO[paint % STUCCO.length];
+    default: return 0xffffff;
+  }
+}
+
+const _c = new THREE.Color();
+const _m = new THREE.Matrix4();
+
+class Chunk {
+  constructor(key, cx, cz) {
+    this.key = key; this.cx = cx; this.cz = cz;
+    this.items = [];      // flat [o, which (0 opaque / 1 glass), geometry | null, ...]
+    this.verts = [0, 0];
+    this.inds = [0, 0];
+    this.meshes = [null, null];
+    this.near = true;
+    this.farAt = 0;       // when it went far (performance.now())
+    this.released = false; // its GPU buffers were given back (see RELEASE_MS)
+    this.houses = [];     // houses whose centre is in this chunk (their HLOD proxies)
+  }
+}
 
 export class Batch {
-  constructor() {
-    this.groups = new Map();  // key -> { mat, items: [{ id, geo }] }
-    this.ranges = new Map();  // id -> [{ attr, start, count, orig }]
+  /**
+   * @param {object} world   { data, root, T }
+   * @param {object} opts    { near: metres (HLOD beyond) }
+   */
+  constructor(world, opts = {}) {
+    this.world = world;
+    this.data = world.data;
+    this.near = opts.near || 280;
+    this.ranges = new Map();  // id -> { c, which, start, count, hidden }
+    this.chunks = new Map();  // key -> Chunk
+    this.list = [];
+    this.meshes = [];
+    this.layers = world.T && world.T.layers;
+    this.materials = [this.makeMaterial(false), this.makeMaterial(true)];
+    this.writeMs = 0;
+    this.A = M.writePart && M.partArrays ? M.partArrays(1, true) : null;
   }
 
-  add(matKey, chunk, id, geo) {
-    const key = `${matKey}|${chunk}`;
-    let g = this.groups.get(key);
-    if (!g) this.groups.set(key, (g = { mat: matKey, items: [] }));
-    g.items.push({ id, geo });
+  // ------------------------------------------------------------------ materials
+  makeMaterial(glass) {
+    const L = this.layers;
+    const mat = new THREE.MeshStandardMaterial(glass
+      ? { vertexColors: true, roughness: 0.08, metalness: 0.15, transparent: true, opacity: 0.42, depthWrite: false, envMapIntensity: 1.6 }
+      : { vertexColors: true, roughness: 0.82, metalness: 0 });
+    const uniforms = {
+      tLooks: { value: L ? L.looks.albedo : null },
+      tLooksN: { value: L ? L.looks.normal : null },
+    };
+    mat.userData.textures = L ? [L.looks.albedo, L.looks.normal] : [];
+    mat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, uniforms);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float aLayer;\nvarying float vLayer;\nvarying float vGlow;\nvarying vec2 vLUv;')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvLUv = uv;\nvGlow = aLayer >= 127.5 && aLayer < 254.5 ? 1.0 : 0.0;\nvLayer = aLayer >= 254.5 ? -1.0 : aLayer - vGlow * 128.0;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+uniform sampler2DArray tLooks, tLooksN;
+varying float vLayer;
+varying float vGlow;
+varying vec2 vLUv;
+mat3 lookFrame(vec3 eye_pos, vec3 surf_norm, vec2 uv) {
+  vec3 q0 = dFdx(eye_pos.xyz), q1 = dFdy(eye_pos.xyz);
+  vec2 st0 = dFdx(uv.st), st1 = dFdy(uv.st);
+  vec3 N = surf_norm;
+  vec3 q1perp = cross(q1, N), q0perp = cross(N, q0);
+  vec3 T = q1perp * st0.x + q0perp * st1.x;
+  vec3 B = q1perp * st0.y + q0perp * st1.y;
+  float det = max(dot(T, T), dot(B, B));
+  float scale = (det == 0.0) ? 0.0 : inversesqrt(det);
+  return mat3(T * scale, B * scale, N);
+}`)
+        .replace('#include <map_fragment>', `
+float lL = floor(vLayer + 0.5);
+vec4 lTex = lL >= 0.0 ? texture(tLooks, vec3(vLUv, lL)) : vec4(1.0);
+diffuseColor.rgb *= lTex.rgb;
+`)
+        .replace('#include <normal_fragment_maps>', `
+if (lL >= 0.0) {
+  vec3 lN = texture(tLooksN, vec3(vLUv, lL)).xyz * 2.0 - 1.0;
+  lN.xy *= 0.9;
+  normal = normalize(lookFrame(-vViewPosition, normal, vLUv) * lN);
+}
+`)
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * 2.2;');
+    };
+    mat.customProgramCacheKey = () => (glass ? 'looks-glass' : 'looks');
+    return mat;
   }
 
-  build(materials, parent, { castShadow = true, receiveShadow = true } = {}) {
-    const meshes = [];
-    for (const g of this.groups.values()) {
-      let vCount = 0, iCount = 0;
-      for (const it of g.items) {
-        vCount += it.geo.attributes.position.count;
-        iCount += it.geo.index.count;
+  // ------------------------------------------------------------------ build
+  chunkOf(x, z) {
+    const h = this.data.half;
+    const cx = Math.floor((x + h) / BATCH_CHUNK), cz = Math.floor((z + h) / BATCH_CHUNK);
+    const key = cz * 1000 + cx;
+    let c = this.chunks.get(key);
+    if (!c) { c = new Chunk(key, cx, cz); this.chunks.set(key, c); this.list.push(c); }
+    return c;
+  }
+
+  /** Geometry of a prop, positioned in the world. */
+  propGeometry(o) {
+    let g;
+    if (M.propGeometry) {
+      g = M.propGeometry(o.type, o.color | 0).clone();
+      _m.makeRotationY(o.yaw || 0).setPosition(o.x, o.y - (o.hy || 0), o.z);
+      g.applyMatrix4(_m);
+    } else if (o.type === 'container') {
+      g = M.containerGeometry(o, CONTAINERS[(o.color | 0) % CONTAINERS.length]);
+    } else if (o.type === 'car') {
+      g = M.carGeometry(CARS[(o.color | 0) % CARS.length]);
+      g.rotateY(o.yaw || 0);
+      g.translate(o.x, o.y, o.z);
+    } else {
+      g = M.crateGeometry();
+      if (o.yaw) g.rotateY(o.yaw);
+      g.translate(o.x, o.y, o.z);
+    }
+    return g;
+  }
+
+  /** Add every part and prop of the world and build the chunk meshes. */
+  build(objects) {
+    const t0 = performance.now();
+    const fast = !!this.A;
+    const houses = this.data.houses;
+    for (const o of objects) {
+      if (o.kind !== 'part' && o.kind !== 'prop') continue;
+      const c = this.chunkOf(o.x, o.z);
+      if (o.kind === 'part') {
+        const which = o.look === 'glass' ? 1 : 0;
+        const geo = fast ? null : M.partGeometry(o, partColor(o, houses[o.house]));
+        c.items.push(o, which, geo);
+        c.verts[which] += geo ? geo.attributes.position.count : M.PART_VERTS || 24;
+        c.inds[which] += geo ? geo.index.count : M.PART_INDICES || 36;
+      } else {
+        const geo = this.propGeometry(o);
+        c.items.push(o, 0, geo);
+        c.verts[0] += geo.attributes.position.count;
+        c.inds[0] += geo.index ? geo.index.count : geo.attributes.position.count;
       }
-      const pos = new Float32Array(vCount * 3), nor = new Float32Array(vCount * 3);
-      const uv = new Float32Array(vCount * 2), col = new Float32Array(vCount * 3);
-      const idx = vCount > 65535 ? new Uint32Array(iCount) : new Uint16Array(iCount);
-      let v = 0, i = 0;
-      const pending = [];
-      for (const it of g.items) {
-        const a = it.geo.attributes;
-        const n = a.position.count;
-        pos.set(a.position.array, v * 3);
-        nor.set(a.normal.array, v * 3);
-        uv.set(a.uv.array, v * 2);
-        col.set(a.color.array, v * 3);
-        const src = it.geo.index.array;
-        for (let k = 0; k < src.length; k++) idx[i + k] = src[k] + v;
-        pending.push({ id: it.id, start: v, count: n });
-        v += n;
-        i += src.length;
-        it.geo.dispose();
+    }
+    for (const c of this.list) this.writeChunk(c);
+    houses.forEach((h, i) => this.chunkOf(h.x, h.z).houses.push(i));
+    this.buildHlod();
+    this.buildSigns(objects);
+    this.writeMs = performance.now() - t0;
+    return this.meshes;
+  }
+
+  writeChunk(c) {
+    for (let which = 0; which < 2; which++) {
+      const V = c.verts[which], I = c.inds[which];
+      if (!V) continue;
+      const arr = {
+        pos: new Float32Array(V * 3), nor: new Int8Array(V * 3), uv: new Float32Array(V * 2), col: new Uint8Array(V * 3), layer: new Uint8Array(V),
+        idx: V > 65535 ? new Uint32Array(I) : new Uint16Array(I), v: 0, i: 0,
+      };
+      const items = c.items;
+      for (let k = 0; k < items.length; k += 3) {
+        if (items[k + 1] !== which) continue;
+        const o = items[k];
+        const v0 = arr.v;
+        this.writeObject(arr, o, items[k + 2], true);
+        this.ranges.set(o.id, { c, which, start: v0, count: arr.v - v0, hidden: false });
       }
       const geo = new THREE.BufferGeometry();
-      const posAttr = new THREE.BufferAttribute(pos, 3);
-      posAttr.setUsage(THREE.DynamicDrawUsage);
-      geo.setAttribute('position', posAttr);
-      geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-      geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      geo.setIndex(new THREE.BufferAttribute(idx, 1));
+      const pa = new THREE.BufferAttribute(arr.pos, 3);
+      pa.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('position', pa);
+      geo.setAttribute('normal', new THREE.BufferAttribute(arr.nor, 3, true));
+      geo.setAttribute('uv', new THREE.BufferAttribute(arr.uv, 2));
+      geo.setAttribute('color', new THREE.BufferAttribute(arr.col, 3, true));
+      geo.setAttribute('aLayer', new THREE.BufferAttribute(arr.layer, 1));
+      geo.setIndex(new THREE.BufferAttribute(arr.idx, 1));
       geo.computeBoundingSphere();
       geo.computeBoundingBox();
-      const mesh = new THREE.Mesh(geo, materials[g.mat]);
-      mesh.castShadow = castShadow;
-      mesh.receiveShadow = receiveShadow;
+      const mesh = new THREE.Mesh(geo, this.materials[which]);
+      mesh.castShadow = which === 0;
+      mesh.receiveShadow = true;
       mesh.matrixAutoUpdate = false;
-      mesh.updateMatrix();
-      parent.add(mesh);
-      meshes.push(mesh);
-      for (const p of pending) {
-        let list = this.ranges.get(p.id);
-        if (!list) this.ranges.set(p.id, (list = []));
-        list.push({ attr: posAttr, start: p.start, count: p.count, orig: pos.slice(p.start * 3, (p.start + p.count) * 3), hidden: false });
-      }
+      mesh.name = which ? 'glass' : 'buildings';
+      if (which) mesh.renderOrder = 2;
+      this.world.root.add(mesh);
+      c.meshes[which] = mesh;
+      this.meshes.push(mesh);
     }
-    this.groups.clear();
-    return meshes;
+    // the geometries the slow path built are not needed any more
+    for (let k = 2; k < c.items.length; k += 3) if (c.items[k]) { c.items[k].dispose(); c.items[k] = null; }
+    c.items = null;
   }
 
-  setVisible(id, visible) {
-    const list = this.ranges.get(id);
-    if (!list) return;
-    for (const r of list) {
-      if (r.hidden === !visible) continue;
-      r.hidden = !visible;
-      const arr = r.attr.array;
-      const o = r.start * 3;
-      if (visible) {
-        arr.set(r.orig, o);
-      } else {
-        const x = arr[o], y = arr[o + 1], z = arr[o + 2];
-        for (let k = 0; k < r.count; k++) {
-          arr[o + k * 3] = x; arr[o + k * 3 + 1] = y; arr[o + k * 3 + 2] = z;
-        }
-      }
-      r.attr.addUpdateRange(o, r.count * 3);
-      r.attr.needsUpdate = true;
+  /**
+   * Write one object's vertices into arr at arr.v (and its indices at arr.i when withIndex).
+   * Parts go through models.js writePart when it has one; anything else is copied from a geometry.
+   */
+  writeObject(arr, o, geo, withIndex) {
+    const house = this.data.houses[o.house];
+    const glow = o.glow ? GLOW : 0;
+    if (o.kind === 'part' && !geo && this.A) {
+      const A = this.A;
+      A.v = 0; A.i = 0;
+      const layer = lookLayer(o.look);
+      M.writePart(A, o, partColor(o, house), undefined, layer);
+      this.copy(arr, A.pos, A.nor, A.uv, A.col, A.v, A.idx, A.i, layer + glow, withIndex);
+      return;
     }
+    const g = geo || (o.kind === 'part' ? M.partGeometry(o, partColor(o, house)) : this.propGeometry(o));
+    const a = g.attributes;
+    const layer = o.kind === 'part' ? lookLayer(o.look) + glow : (PROP_LOOK[o.type] ? lookLayer(PROP_LOOK[o.type]) : PLAIN);
+    const idx = g.index ? g.index.array : null;
+    this.copy(arr, a.position.array, a.normal.array, a.uv.array, a.color.array, a.position.count, idx, idx ? idx.length : 0, layer, withIndex);
+    if (!geo) g.dispose();
+  }
+
+  copy(arr, pos, nor, uv, col, nv, idx, ni, layer, withIndex) {
+    const v0 = arr.v;
+    arr.pos.set(pos.length === nv * 3 ? pos : pos.subarray(0, nv * 3), v0 * 3);
+    arr.uv.set(uv.length === nv * 2 ? uv : uv.subarray(0, nv * 2), v0 * 2);
+    const N = arr.nor, C = arr.col, Lr = arr.layer;
+    for (let k = 0; k < nv; k++) {
+      const s = k * 3, d = (v0 + k) * 3;
+      N[d] = nor[s] * 127; N[d + 1] = nor[s + 1] * 127; N[d + 2] = nor[s + 2] * 127;
+      C[d] = Math.min(255, col[s] * 255); C[d + 1] = Math.min(255, col[s + 1] * 255); C[d + 2] = Math.min(255, col[s + 2] * 255);
+      Lr[v0 + k] = layer;
+    }
+    if (withIndex) {
+      const I = arr.idx;
+      if (idx) for (let k = 0; k < ni; k++) I[arr.i + k] = idx[k] + v0;
+      else for (let k = 0; k < nv; k++) I[arr.i + k] = v0 + k;
+      arr.i += idx ? ni : nv;
+    }
+    arr.v += nv;
+  }
+
+  // ------------------------------------------------------------------ signs
+  /**
+   * Shop and place signs (parts with a `sign` text): every text in one canvas atlas and one mesh
+   * of quads on both faces of their panels (one draw call). A destroyed sign loses its text too.
+   */
+  buildSigns(objects) {
+    if (typeof document === 'undefined') return;
+    const list = objects.filter((o) => o.kind === 'part' && typeof o.sign === 'string' && o.sign.trim() && !o.ax);
+    if (!list.length) return;
+    const W = 1024, ROW = 64, FS = 44;
+    // one atlas cell per distinct text and ink (most signs say SHOP): two cells per row
+    const cells = new Map(), cellOf = [];
+    for (const o of list) {
+      const text = o.sign.trim().toUpperCase().slice(0, 24);
+      // dark letters on a light panel, light letters on a dark one
+      _c.setHex(o.tint ?? 0xf4efe2);
+      const dark = 0.2126 * _c.r + 0.7152 * _c.g + 0.0722 * _c.b > 0.35;
+      const key = (dark ? 'd' : 'l') + text;
+      if (!cells.has(key)) cells.set(key, { text, dark, n: cells.size });
+      cellOf.push(cells.get(key));
+    }
+    const rows = Math.ceil(cells.size / 2);
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = Math.min(2048, 1 << Math.ceil(Math.log2(Math.max(64, rows * ROW))));
+    const g = c.getContext('2d');
+    g.textBaseline = 'middle';
+    g.textAlign = 'center';
+    g.lineJoin = 'round';
+    for (const cell of cells.values()) {
+      const u0 = (cell.n & 1) * (W / 2), v0 = (cell.n >> 1) * ROW;
+      if (v0 + ROW > c.height) continue;
+      const fs = Math.min(FS, Math.floor((W / 2 - 16) / Math.max(1, cell.text.length) * 1.7));
+      g.font = `${fs}px "Luckiest Guy", "Russo One", sans-serif`;
+      g.lineWidth = 6;
+      g.strokeStyle = cell.dark ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.85)';
+      g.fillStyle = cell.dark ? '#1d2440' : '#ffe27a';
+      g.strokeText(cell.text, u0 + W / 4, v0 + ROW / 2);
+      g.fillText(cell.text, u0 + W / 4, v0 + ROW / 2);
+    }
+    const pos = [], uv = [], nor = [], idx = [];
+    this.signOf = new Map();
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i], cell = cellOf[i];
+      const u0 = (cell.n & 1) * (W / 2), v0 = (cell.n >> 1) * ROW;
+      if (v0 + ROW > c.height) continue;
+      // a quad on each big face of the panel
+      const thinX = o.hx < o.hz;
+      const along = thinX ? o.hz : o.hx, thin = thinX ? o.hx : o.hz;
+      const hw = along * 0.92, hh = o.hy * 0.85;
+      const start = pos.length / 3;
+      for (const side of [1, -1]) {
+        const nx = thinX ? side : 0, nz = thinX ? 0 : side;
+        const fx = o.x + nx * (thin + 0.012), fz = o.z + nz * (thin + 0.012);
+        // the text's left-to-right direction as seen from this side
+        const tx = thinX ? 0 : side, tz = thinX ? -side : 0;
+        const b = pos.length / 3;
+        for (const [a, h] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+          pos.push(fx + tx * hw * a, o.y + hh * h, fz + tz * hw * a);
+          nor.push(nx, 0, nz);
+          uv.push((u0 + (a + 1) / 2 * (W / 2)) / W, 1 - (v0 + (1 - h) / 2 * ROW) / c.height);
+        }
+        idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+      }
+      this.signOf.set(o.id, start);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    const geo = new THREE.BufferGeometry();
+    const pa = new THREE.Float32BufferAttribute(pos, 3);
+    pa.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('position', pa);
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeBoundingSphere();
+    this.signOrig = new Float32Array(pos);
+    const mat = new THREE.MeshStandardMaterial({ map: tex, alphaTest: 0.45, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.matrixAutoUpdate = false;
+    mesh.name = 'signs';
+    mesh.receiveShadow = true;
+    this.world.root.add(mesh);
+    this.signs = mesh;
+  }
+
+  showSign(id, on) {
+    if (!this.signs || !this.signOf.has(id)) return;
+    const o = this.signOf.get(id) * 3;
+    const arr = this.signs.geometry.attributes.position.array;
+    if (on) arr.set(this.signOrig.subarray(o, o + 24), o);
+    else for (let k = 3; k < 24; k++) arr[o + k] = arr[o + (k % 3)];
+    const a = this.signs.geometry.attributes.position;
+    a.addUpdateRange(o, 24);
+    a.needsUpdate = true;
+  }
+
+  // ------------------------------------------------------------------ HLOD
+  /** One box per building (walls + roof, 10 triangles) for chunks beyond the near distance. */
+  buildHlod() {
+    const d = this.data;
+    const H = d.houses;
+    if (!H.length) return;
+    // per house: bounds, top and average colours from its parts
+    const info = H.map(() => ({ x0: Infinity, z0: Infinity, x1: -Infinity, z1: -Infinity, y0: Infinity, y1: -Infinity, wall: [0, 0, 0, 0], roof: [0, 0, 0, 0], vol: 0 }));
+    const avg = this.layers ? this.layers.looks.avg : null;
+    for (const o of d.objects) {
+      if (o.kind !== 'part' || o.house === undefined || !info[o.house] || o.look === 'glass') continue;
+      const I = info[o.house];
+      const hx = o.hx || 0.5, hy = o.hy || 0.5, hz = o.hz || 0.5;
+      const bb = o.bb;
+      const x0 = bb ? bb[0] : o.x - hx, x1 = bb ? bb[3] : o.x + hx;
+      const z0 = bb ? bb[2] : o.z - hz, z1 = bb ? bb[5] : o.z + hz;
+      const y0 = bb ? bb[1] : o.y - hy, y1 = bb ? bb[4] : o.y + hy;
+      if (o.shape !== 'prism') {
+        if (x0 < I.x0) I.x0 = x0;
+        if (x1 > I.x1) I.x1 = x1;
+        if (z0 < I.z0) I.z0 = z0;
+        if (z1 > I.z1) I.z1 = z1;
+        if (y0 < I.y0) I.y0 = y0;
+      }
+      if (y1 > I.y1) I.y1 = y1;
+      _c.setHex(partColor(o, H[o.house]));
+      const a = avg ? avg[lookLayer(o.look)] : [0.6, 0.6, 0.6];
+      const area = hx * hy + hz * hy + hx * hz;
+      I.vol += 8 * hx * hy * hz;
+      const isRoof = o.look === 'roof' || o.look === 'shingle' || o.look === 'rooftile' || o.shape === 'prism' || !!o.ax;
+      const t = isRoof ? I.roof : I.wall;
+      t[0] += _c.r * a[0] * area; t[1] += _c.g * a[1] * area; t[2] += _c.b * a[2] * area; t[3] += area;
+    }
+    const n = H.length;
+    const pos = new Float32Array(n * 20 * 3), nor = new Int8Array(n * 20 * 3), col = new Uint8Array(n * 20 * 3);
+    const idx = n * 20 > 65535 ? new Uint32Array(n * 30) : new Uint16Array(n * 30);
+    const faces = [ // outward normal, then corners (0 = min, 1 = max on x, y, z)
+      [[0, 0, -1], [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]]],
+      [[0, 0, 1], [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]]],
+      [[-1, 0, 0], [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]]],
+      [[1, 0, 0], [[1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1]]],
+      [[0, 1, 0], [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]]],
+    ];
+    let v = 0, k = 0;
+    this.hlodOf = new Int32Array(n);
+    for (let h = 0; h < n; h++) {
+      const I = info[h];
+      this.hlodOf[h] = v;
+      if (!(I.x1 > I.x0)) { I.x0 = I.x1 = H[h].x; I.z0 = I.z1 = H[h].z; I.y0 = I.y1 = H[h].y || 0; }
+      const w = I.wall[3] ? [I.wall[0] / I.wall[3], I.wall[1] / I.wall[3], I.wall[2] / I.wall[3]] : [0.5, 0.48, 0.45];
+      const r = I.roof[3] ? [I.roof[0] / I.roof[3], I.roof[1] / I.roof[3], I.roof[2] / I.roof[3]] : [w[0] * 0.8, w[1] * 0.8, w[2] * 0.8];
+      // see-through structures (towers, masts, frames) get a thinner box, not a solid block
+      const boxVol = (I.x1 - I.x0) * (I.y1 - I.y0) * (I.z1 - I.z0);
+      const fill = boxVol > 0 ? I.vol / boxVol : 1;
+      const thin = fill < 0.18 ? Math.max(0.3, Math.sqrt(fill / 0.18)) : 1;
+      const mx = (I.x0 + I.x1) / 2, mz = (I.z0 + I.z1) / 2, hw = (I.x1 - I.x0) / 2 * thin, hd = (I.z1 - I.z0) / 2 * thin;
+      const X = [mx - hw, mx + hw], Y = [I.y0, I.y1], Z = [mz - hd, mz + hd];
+      for (let f = 0; f < 5; f++) {
+        const [nn, cs] = faces[f];
+        const cc = f === 4 ? r : w;
+        const base = v;
+        for (const [cx, cy, cz] of cs) {
+          pos[v * 3] = X[cx]; pos[v * 3 + 1] = Y[cy]; pos[v * 3 + 2] = Z[cz];
+          nor[v * 3] = nn[0] * 127; nor[v * 3 + 1] = nn[1] * 127; nor[v * 3 + 2] = nn[2] * 127;
+          col[v * 3] = Math.min(255, cc[0] * 255); col[v * 3 + 1] = Math.min(255, cc[1] * 255); col[v * 3 + 2] = Math.min(255, cc[2] * 255);
+          v++;
+        }
+        idx[k++] = base; idx[k++] = base + 1; idx[k++] = base + 2; idx[k++] = base; idx[k++] = base + 2; idx[k++] = base + 3;
+      }
+    }
+    this.hlodOrig = pos.slice();
+    const geo = new THREE.BufferGeometry();
+    const pa = new THREE.BufferAttribute(pos, 3);
+    pa.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('position', pa);
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3, true));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3, true));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 }));
+    mesh.matrixAutoUpdate = false;
+    mesh.name = 'hlod';
+    mesh.frustumCulled = false;
+    this.world.root.add(mesh);
+    this.hlod = mesh;
+    // every proxy starts hidden (every chunk starts near); update() shows the far ones
+    this.hlodShown = new Uint8Array(n).fill(1);
+    for (let h = 0; h < n; h++) this.showProxy(h, false);
+  }
+
+  showProxy(h, on) {
+    if (!this.hlod || !!this.hlodShown[h] === on) return;
+    this.hlodShown[h] = on ? 1 : 0;
+    const arr = this.hlod.geometry.attributes.position.array;
+    const o = this.hlodOf[h] * 3;
+    if (on) arr.set(this.hlodOrig.subarray(o, o + 60), o);
+    else for (let k = 3; k < 60; k++) arr[o + k] = arr[o + (k % 3)];
+    this.hlodDirty = true;
+  }
+
+  // ------------------------------------------------------------------ per frame
+  /** Near chunks draw in full; far ones only through the HLOD boxes. */
+  update(camera) {
+    const cp = camera.position, R = this.near, HY = 20;
+    const h = this.data.half;
+    const now = performance.now();
+    for (let i = 0; i < this.list.length; i++) {
+      const c = this.list[i];
+      const x0 = -h + c.cx * BATCH_CHUNK, z0 = -h + c.cz * BATCH_CHUNK;
+      const dx = Math.max(x0 - cp.x, 0, cp.x - x0 - BATCH_CHUNK), dz = Math.max(z0 - cp.z, 0, cp.z - z0 - BATCH_CHUNK);
+      const bb = c.meshes[0] ? c.meshes[0].geometry.boundingBox : null;
+      const dy = bb ? Math.max(bb.min.y - cp.y, 0, cp.y - bb.max.y) : 0;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const near = c.near ? d < R + HY : d < R - HY;
+      if (near === c.near) {
+        if (!near && !c.released && now - c.farAt > RELEASE_MS) this.release(c);
+        continue;
+      }
+      c.near = near;
+      if (near) c.released = false;
+      else c.farAt = now;
+      if (c.meshes[0]) c.meshes[0].visible = near;
+      if (c.meshes[1]) c.meshes[1].visible = near;
+      for (const hId of c.houses) this.showProxy(hId, !near);
+    }
+    if (this.hlodDirty && this.hlod) {
+      this.hlodDirty = false;
+      this.hlod.geometry.attributes.position.needsUpdate = true;
+    }
+  }
+
+  /** Free a far chunk's GPU buffers (vertex data stays here; drawing it again uploads it again). */
+  release(c) {
+    c.released = true;
+    for (const m of c.meshes) if (m) m.geometry.dispose();
+  }
+
+  // ------------------------------------------------------------------ destruction
+  setVisible(id, visible) {
+    if (this.signOf && this.signOf.has(id)) this.showSign(id, visible);
+    const r = this.ranges.get(id);
+    if (!r || r.hidden === !visible) return;
+    const mesh = r.c.meshes[r.which];
+    if (!mesh) return;
+    r.hidden = !visible;
+    const attr = mesh.geometry.attributes.position;
+    const arr = attr.array;
+    const o = r.start * 3, count = r.count;
+    if (visible) {
+      // write the object again (only positions ever change)
+      const tmp = { pos: new Float32Array(count * 3), nor: new Int8Array(count * 3), uv: new Float32Array(count * 2), col: new Uint8Array(count * 3), layer: new Uint8Array(count), idx: null, v: 0, i: 0 };
+      this.writeObject(tmp, this.data.objects[id], null, false);
+      arr.set(tmp.pos, o);
+    } else {
+      const x = arr[o], y = arr[o + 1], z = arr[o + 2];
+      for (let k = 1; k < count; k++) { arr[o + k * 3] = x; arr[o + k * 3 + 1] = y; arr[o + k * 3 + 2] = z; }
+    }
+    attr.addUpdateRange(o, count * 3);
+    attr.needsUpdate = true;
+  }
+
+  dispose() {
+    for (const m of this.meshes) { m.geometry.dispose(); this.world.root.remove(m); }
+    if (this.hlod) { this.hlod.geometry.dispose(); this.hlod.material.dispose(); this.world.root.remove(this.hlod); }
+    if (this.signs) { this.signs.geometry.dispose(); this.signs.material.map.dispose(); this.signs.material.dispose(); this.world.root.remove(this.signs); }
+    for (const m of this.materials) m.dispose();
   }
 }

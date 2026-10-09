@@ -1,9 +1,22 @@
 // Projectile ballistics: every bullet is a real projectile with velocity and gravity,
 // integrated in sub-steps and swept against the physics world + player hitboxes.
 import * as THREE from 'three';
-import { RAY_SOLID } from '../physics.js';
+import { RAY_SHOT } from '../physics.js';
 
 /** Ray (normalised dir) vs sphere. Returns distance or -1. */
+/**
+ * An actor's hitbox: {id, head: [x, y, z, r], body: [ax, ay, az, bx, by, bz, r]}. s = the body
+ * scale of the model (the Juggernaut is drawn 15 % bigger: its head is where it is drawn); Big
+ * Head mode makes heads 2.2x bigger and 0.15 m higher.
+ */
+export function actorHitbox(id, p, crouch, bigHead, s = 1) {
+  return {
+    id,
+    head: [p.x, p.y + ((crouch ? 1.27 : 1.7) + (bigHead ? 0.15 : 0)) * s, p.z, 0.22 * (bigHead ? 2.2 : 1) * s],
+    body: [p.x, p.y + 0.35 * s, p.z, p.x, p.y + (crouch ? 0.95 : 1.32) * s, p.z, 0.37 * s],
+  };
+}
+
 export function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
   const lx = ox - cx, ly = oy - cy, lz = oz - cz;
   const b = lx * dx + ly * dy + lz * dz;
@@ -115,7 +128,9 @@ export class Ballistics {
         if (len > 1e-6) {
           const dx = ddx / len, dy = ddy / len, dz = ddz / len;
           let best = null;
-          const wh = this.physics.raycast(b.x, b.y, b.z, dx, dy, dz, len, RAY_SOLID);
+          // streamed physics: make sure the world along this piece of the flight has colliders
+          this.physics.ensureAlong?.(b.x, b.z, nx, nz);
+          const wh = this.physics.raycast(b.x, b.y, b.z, dx, dy, dz, len, RAY_SHOT);
           if (wh) best = { kind: 'world', dist: wh.dist, x: wh.x, y: wh.y, z: wh.z, nx: wh.nx, ny: wh.ny, nz: wh.nz, info: wh.info, collider: wh.collider };
           const targets = this.hooks.targets(b.owner);
           for (const t of targets) {
@@ -178,5 +193,14 @@ export class Ballistics {
   clear() {
     for (const b of this.list) if (b.mesh) this.scene.remove(b.mesh);
     this.list.length = 0;
+  }
+
+  /** The Game is going away: its rocket geometry and material (made per Game) go with it. */
+  dispose() {
+    this.clear();
+    if (this.rocketGeo) this.rocketGeo.dispose();
+    if (this.rocketMat) this.rocketMat.dispose();
+    this.rocketGeo = this.rocketMat = null;
+    this.scene = null;
   }
 }

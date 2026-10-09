@@ -1,12 +1,29 @@
 // Unified input: keyboard + mouse (pointer lock), touch (iPad) and gamepad.
 // Produces one simple per-frame state object the game reads.
+//
+// Touch building ("Build immediately", settings.tapBuild): a tap on Wall / Ramp / Floor / Cone sets
+// s.build and s.buildFire, which places the piece at once; holding the button sets s.buildHold,
+// which turbo-builds (Combatant.act) while you turn (drag on the button) or walk.
+// Edit: s.edit is the EDIT button, G, or holding B on a gamepad (js/world/buildClient.js decides
+// whether there is something to edit; G changes material when there isn't).
 
 const KEYS = {
   forward: ['KeyW', 'ArrowUp'], back: ['KeyS', 'ArrowDown'], left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'],
-  jump: ['Space'], sprint: ['ShiftLeft', 'ShiftRight'], crouch: ['ControlLeft', 'KeyV'],
-  reload: ['KeyR'], interact: ['KeyE'], wall: ['KeyQ'], floor: ['KeyZ'], ramp: ['KeyC'], build: ['KeyB'],
-  mat: ['KeyG'], map: ['KeyM'], pickaxe: ['KeyF', 'Digit0'], menu: ['Escape', 'KeyP'],
+  jump: ['Space'], sprint: ['ShiftLeft', 'ShiftRight'], crouch: ['ControlLeft'], crouchToggle: ['KeyX'],
+  reload: ['KeyR'], interact: ['KeyE'], wall: ['KeyQ'], floor: ['KeyZ'], ramp: ['KeyC'], cone: ['KeyV'], build: ['KeyB'],
+  mat: ['KeyG'], edit: ['KeyG'], map: ['KeyM'], pickaxe: ['KeyF', 'Digit0'], menu: ['Escape', 'KeyP'],
 };
+
+// touch piece buttons -> piece type
+const PIECE_BTNS = [['wall', 'w'], ['ramp', 'r'], ['floor', 'f'], ['cone', 'c']];
+// what the big fire button says for each context (Input.setContext)
+const FIRE_FACE = {
+  gun: '<span class="ico">✛</span>',
+  melee: '<span class="ico">⛏</span><small>HIT</small>',
+  heal: '<span class="ico">✚</span><small>USE</small>',
+  build: '<span class="ico">▣</span><small>PLACE</small>',
+};
+const PAD_EDIT_HOLD = 0.3; // s holding B (gamepad) to edit
 
 function el(tag, cls, html = '', parent = null) {
   const e = document.createElement(tag);
@@ -43,6 +60,13 @@ export class Input {
     this.touchLookY = 0;
     this.tbtn = new Set();
     this.tpressed = new Set();
+    this.ctx = '';
+    this.ctxFlags = '';
+    this.interactKey = '';
+    this.tbScale = -1;
+    this.tbAlpha = -1;
+    this.padBT = 0; // when the gamepad's B button went down (ms), 0 = up
+    this.padBFired = false;
 
     window.addEventListener('keydown', (e) => this.onKey(e, true));
     window.addEventListener('keyup', (e) => this.onKey(e, false));
@@ -84,6 +108,7 @@ export class Input {
       mx: 0, my: 0, lookX: 0, lookY: 0, fire: false, firePressed: false, ads: false, adsPressed: false, jump: false, crouch: false,
       sprint: false, reload: false, interact: false, slot: -1, build: null, buildToggle: false, matCycle: false,
       map: false, menu: false, scroll: 0, interactHeld: false, emote: false,
+      buildFire: false, buildHold: false, edit: false, editPad: false,
     };
   }
 
@@ -184,20 +209,23 @@ export class Input {
     lookZone.addEventListener('pointercancel', lookUp);
     lookZone.addEventListener('lostpointercapture', lookUp);
 
-    // buttons: [name, label, class, alsoLook]
+    // buttons: [name, label, class, alsoLook]. Piece buttons also turn the view, so you can hold
+    // one and drag to turbo-build round a corner. Layout: css/style.css (Touch HUD 2.0).
     const defs = [
-      ['fire', '<span class="ico">✛</span>', 'tb-fire', true],
+      ['fire', FIRE_FACE.gun, 'tb-fire', true],
       ['fire2', '<span class="ico">✛</span>', 'tb-fire2', false],
-      ['jump', '<span class="ico">⤒</span>', 'tb-jump', false],
+      ['jump', '<span class="ico">⤒</span><small class="jl">JUMP</small>', 'tb-jump', false],
       ['crouch', '<span class="ico">⤓</span>', 'tb-crouch', false],
       ['ads', '<span class="ico">◎</span>', 'tb-ads', true],
       ['reload', '<span class="ico">⟳</span>', 'tb-reload', false],
-      ['build', '<span class="ico">⚒</span>', 'tb-build', false],
-      ['wall', '<span class="ico">▮</span><small>Wall</small>', 'tb-wall bonly', false],
-      ['floor', '<span class="ico">▬</span><small>Floor</small>', 'tb-floor bonly', false],
-      ['ramp', '<span class="ico">◢</span><small>Ramp</small>', 'tb-ramp bonly', false],
+      ['build', '<span class="ico">⚒</span><small>Build</small>', 'tb-build', false],
+      ['wall', '<span class="ico">▮</span><small>Wall</small>', 'tb-wall bonly', true],
+      ['ramp', '<span class="ico">◢</span><small>Ramp</small>', 'tb-ramp bonly', true],
+      ['floor', '<span class="ico">▬</span><small>Floor</small>', 'tb-floor bonly', true],
+      ['cone', '<span class="ico">▲</span><small>Cone</small>', 'tb-cone bonly', true],
+      ['edit', '<span class="ico">✎</span><small>Edit</small>', 'tb-edit', false],
       ['mat', '<span class="ico">⛏</span><small>Mat</small>', 'tb-mat bonly', false],
-      ['interact', '<span class="lbl">Pick up</span>', 'tb-interact', false],
+      ['interact', '<span class="lbl">Pick up</span><b class="nm"></b>', 'tb-interact', false],
       ['emote', '<span class="ico">💃</span>', 'tb-emote', false],
     ];
     this.tbEls = {};
@@ -238,21 +266,75 @@ export class Input {
     if (this.tbEls) for (const b of Object.values(this.tbEls)) b.classList.remove('down');
   }
 
+  /** The touch interact button: action ('Pick up', 'Swap', 'Open') or '' to hide. Writes only on change. */
   setInteractLabel(text) {
-    const b = this.tbEls.interact;
-    if (!b) return;
+    const b = this.tbEls && this.tbEls.interact;
+    if (!b || text === this.interactLabel) return;
+    this.interactLabel = text;
     if (text) {
       b.firstChild.textContent = text;
       b.classList.add('show');
     } else b.classList.remove('show');
   }
 
+  /** What the interact button would pick up: its name and rarity (0-4, -1 = none, 5 = chest gold). */
+  setInteractItem(name, r) {
+    const b = this.tbEls && this.tbEls.interact;
+    const key = `${name}|${r}`;
+    if (!b || key === this.interactKey) return;
+    this.interactKey = key;
+    b.lastChild.textContent = name || '';
+    b.classList.toggle('named', !!name);
+    for (let i = -1; i <= 5; i++) b.classList.toggle(`r${i < 0 ? 'n' : i}`, i === r);
+  }
+
+  /**
+   * What the player is doing, for the touch buttons (one body class, written only on change):
+   * ctx 'gun' | 'melee' | 'heal' | 'build' | 'bus' | 'sky' | 'dead' | '' and flags: full (the magazine
+   * is full: reload dims), edit (a piece of yours to edit is under the crosshair), editing (the edit
+   * choices are open).
+   */
+  setContext(ctx, full = false, edit = false, editing = false) {
+    const flags = `${full ? 1 : 0}${edit ? 1 : 0}${editing ? 1 : 0}`;
+    if (ctx === this.ctx && flags === this.ctxFlags) return;
+    const cl = document.body.classList;
+    if (ctx !== this.ctx) {
+      if (this.ctx) cl.remove(`ctx-${this.ctx}`);
+      if (ctx) cl.add(`ctx-${ctx}`);
+      this.ctx = ctx;
+      const face = FIRE_FACE[ctx] || FIRE_FACE.gun;
+      const f = this.tbEls && this.tbEls.fire;
+      if (f && f.innerHTML !== face) f.innerHTML = face;
+    }
+    this.ctxFlags = flags;
+    cl.toggle('ctx-full', full);
+    cl.toggle('ctx-canedit', edit);
+    cl.toggle('ctx-editing', editing);
+  }
+
   setBuildMode(on) { document.body.classList.toggle('building', !!on); }
+
+  /** Button size / opacity settings (tbScale 0.8-1.3, tbAlpha 0.3-1) as CSS variables on #touch. */
+  applyButtonLook() {
+    const st = this.settings;
+    const sc = Math.max(0.8, Math.min(1.3, Number(st.tbScale) || 1));
+    const al = Math.max(0.3, Math.min(1, Number(st.tbAlpha) || 1));
+    if (sc === this.tbScale && al === this.tbAlpha) return;
+    this.tbScale = sc;
+    this.tbAlpha = al;
+    if (this.troot) {
+      this.troot.style.setProperty('--tb-scale', String(sc));
+      this.troot.style.setProperty('--tb-alpha', String(al));
+    }
+    // (the HUD outside the buttons makes room for bigger ones: the elimination banner)
+    if (typeof document !== 'undefined' && document.documentElement) document.documentElement.style.setProperty('--ui-tb-scale', String(sc));
+  }
 
   // ------------------------------------------------------------------ per frame
   update() {
     const s = this.blank();
     const st = this.settings;
+    this.applyButtonLook();
     if (!this.enabled) {
       this.mouseDX = this.mouseDY = 0;
       this.touchLookX = this.touchLookY = 0;
@@ -277,16 +359,18 @@ export class Input {
     s.adsPressed = this.mouseRPressed;
     s.jump = this.any(KEYS.jump, P);
     s.sprint = this.any(KEYS.sprint);
-    if (this.any(['KeyV'], P)) this.crouchToggle = !this.crouchToggle;
-    s.crouch = D.has('ControlLeft') || this.crouchToggle;
+    if (this.any(KEYS.crouchToggle, P)) this.crouchToggle = !this.crouchToggle;
+    s.crouch = this.any(KEYS.crouch) || this.crouchToggle;
     s.reload = this.any(KEYS.reload, P);
     s.interact = this.any(KEYS.interact, P);
     s.interactHeld = this.any(KEYS.interact);
     if (this.any(KEYS.wall, P)) s.build = 'w';
     if (this.any(KEYS.floor, P)) s.build = 'f';
     if (this.any(KEYS.ramp, P)) s.build = 'r';
+    if (this.any(KEYS.cone, P)) s.build = 'c';
     s.buildToggle = this.any(KEYS.build, P);
     s.matCycle = this.any(KEYS.mat, P);
+    s.edit = this.any(KEYS.edit, P);
     s.map = this.any(KEYS.map, P);
     s.menu = this.any(['KeyP'], P);
     s.emote = P.has('KeyT');
@@ -315,9 +399,13 @@ export class Input {
       if (this.touchAds) s.ads = true;
       if (TP.has('reload')) s.reload = true;
       if (TP.has('build')) s.buildToggle = true;
-      if (TP.has('wall')) s.build = 'w';
-      if (TP.has('floor')) s.build = 'f';
-      if (TP.has('ramp')) s.build = 'r';
+      // Build immediately: the tap places the piece, holding keeps placing (turbo build)
+      const tap = st.tapBuild !== false;
+      for (const [btn, t] of PIECE_BTNS) {
+        if (TP.has(btn)) { s.build = t; if (tap) s.buildFire = true; }
+        if (tap && T.has(btn)) s.buildHold = true;
+      }
+      if (TP.has('edit')) s.edit = true;
       if (TP.has('mat')) s.matCycle = true;
       if (TP.has('interact')) s.interact = true;
       if (TP.has('emote')) s.emote = true;
@@ -357,8 +445,17 @@ export class Input {
     if (btn(7)) s.fire = true;
     if (edge(7)) s.firePressed = true;
     if (btn(6)) s.ads = true;
+    if (edge(6)) s.adsPressed = true; // in build mode: next material
     if (edge(0)) s.jump = true;
-    if (edge(1)) this.crouchToggle = !this.crouchToggle;
+    // B: a tap crouches (on release), holding it edits (no crouch flicker while it is held)
+    if (btn(1)) {
+      const now = performance.now();
+      if (!this.padBT) this.padBT = now;
+      if (!this.padBFired && now - this.padBT >= PAD_EDIT_HOLD * 1000) { s.edit = true; s.editPad = true; this.padBFired = true; }
+    } else {
+      if (this.padBT && !this.padBFired) this.crouchToggle = !this.crouchToggle;
+      this.padBT = 0; this.padBFired = false;
+    }
     if (edge(2)) s.reload = true;
     if (edge(3)) s.buildToggle = true;
     if (edge(5)) s.scroll += 1;
@@ -367,7 +464,8 @@ export class Input {
     if (edge(12)) s.build = 'w';
     if (edge(13)) s.build = 'f';
     if (edge(14)) s.build = 'r';
-    if (edge(15)) s.matCycle = true;
+    if (edge(15)) s.build = 'c';
+    if (edge(11)) s.matCycle = true;
     if (edge(2) && btn(2)) s.interact = true;
     if (edge(9)) s.menu = true;
     s.crouch = s.crouch || this.crouchToggle;

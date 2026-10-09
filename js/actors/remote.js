@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { ANIM, FLAG, WEAPONS, HEALS, PLAYER } from '../../shared/constants.js';
 import { Character } from './character.js';
+import { actorHitbox } from '../combat/ballistics.js';
 import { GROUP } from '../physics.js';
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -139,13 +140,8 @@ export class RemotePlayer {
   }
 
   hitbox() {
-    const p = this.pos;
-    const c = this.crouching;
-    return {
-      id: this.id,
-      head: [p.x, p.y + (c ? 1.27 : 1.7), p.z, 0.22],
-      body: [p.x, p.y + 0.35, p.z, p.x, p.y + (c ? 0.95 : 1.32), p.z, 0.37],
-    };
+    // as in Combatant: Big Head mode and the model's body scale (the Juggernaut)
+    return actorHitbox(this.id, this.pos, this.crouching, this.game.rules?.bigHead, (this.char && this.char.bodyScale) || 1);
   }
 
   shoulder(out) {
@@ -168,7 +164,32 @@ export class RemotePlayer {
     this.char.setVisible(true);
   }
 
-  setNameVisible(v) { if (this.char.tag) this.char.tag.visible = v; }
+  setNameVisible(v) { this.nameVisible = v; if (this.char.tag) this.char.tag.visible = v; }
+
+  /** A new skin from the roster (a Locker change in the lobby): rebuild the model in place. */
+  setSkin(skin) {
+    if (skin === this.skin) return;
+    this.skin = skin;
+    const old = this.char;
+    const c = new Character(skin, this.name, { tagColor: this.isBot ? '#ffd27a' : '#ffffff' });
+    c.group.position.copy(old.group.position);
+    c.group.rotation.copy(old.group.rotation);
+    c.setVisible(old.visible);
+    if (c.tag && this.nameVisible !== undefined) c.tag.visible = this.nameVisible;
+    old.dispose();
+    this.game.scene.remove(old.group);
+    this.char = c;
+    this.game.scene.add(c.group);
+  }
+
+  /** A new name from the roster. */
+  setName(name) {
+    if (name === this.name) return;
+    this.name = name;
+    const vis = this.char.tag ? this.char.tag.visible : true;
+    this.char.setName(name, this.isBot ? '#ffd27a' : '#ffffff');
+    this.char.tag.visible = vis;
+  }
 
   dispose() {
     this.game.physics.removeCollider(this.collider);

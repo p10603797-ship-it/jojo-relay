@@ -4,6 +4,19 @@ import * as THREE from 'three';
 import { RAY_SHOT } from '../physics.js';
 
 /** Ray (normalised dir) vs sphere. Returns distance or -1. */
+/**
+ * An actor's hitbox: {id, head: [x, y, z, r], body: [ax, ay, az, bx, by, bz, r]}. s = the body
+ * scale of the model (the Juggernaut is drawn 15 % bigger: its head is where it is drawn); Big
+ * Head mode makes heads 2.2x bigger and 0.15 m higher.
+ */
+export function actorHitbox(id, p, crouch, bigHead, s = 1) {
+  return {
+    id,
+    head: [p.x, p.y + ((crouch ? 1.27 : 1.7) + (bigHead ? 0.15 : 0)) * s, p.z, 0.22 * (bigHead ? 2.2 : 1) * s],
+    body: [p.x, p.y + 0.35 * s, p.z, p.x, p.y + (crouch ? 0.95 : 1.32) * s, p.z, 0.37 * s],
+  };
+}
+
 export function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
   const lx = ox - cx, ly = oy - cy, lz = oz - cz;
   const b = lx * dx + ly * dy + lz * dz;

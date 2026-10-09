@@ -17,6 +17,7 @@ const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const HOST_CODE_KEY = 'phortnite.hostCode';
 export const P2P_MAX_HUMANS = 8; // the host's upload grows with every friend (snapshots to each)
 const STALL_MS = 4000;
+const FLOOD_MAX = 400; // messages per second per friend (server.js has the same guard)
 const SILENT_MS = 45000;
 
 function storedCode() {
@@ -177,6 +178,8 @@ export class P2PHost extends Emitter {
       if (dc) setTimeout(() => { try { dc.close(); } catch (e) { /* closing */ } }, 300);
     };
     this.local = { id: 'host', ip: 'p2p', send: (m) => this.inbox.push(m) };
+    // the party runs on this page: its player can never be kicked (party.js)
+    this.room.hostConn = this.local.id;
     this.room.join(this.local, this.hello);
     this.peer.on('connection', (dc) => this.accept(dc));
     // keep listening for new friends if the introduction service hiccups
@@ -196,7 +199,12 @@ export class P2PHost extends Emitter {
     };
     this.links.add(dc);
     this.dcById.set(conn.id, dc);
+    // the same flood guard as the Node server: at most FLOOD_MAX messages a second per friend
+    const flood = { n: 0, t0: Date.now() };
     dc.on('data', receiver((msg) => {
+      const now = Date.now();
+      if (now - flood.t0 > 1000) { flood.t0 = now; flood.n = 0; }
+      if (++flood.n > FLOOD_MAX) return;
       if (msg.t === 'join') {
         if (!joined) joined = this.room.join(conn, msg.hello && typeof msg.hello === 'object' ? msg.hello : {});
         // turned away (full, different version): let the error message reach them, then hang up
