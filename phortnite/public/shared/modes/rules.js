@@ -105,7 +105,7 @@ function knownGame(games, k) {
  * - opts.games (the keys of GAMES, as an array, a Set or an object): a win that is not one of
  *   them becomes 'last';
  * - consistency: respawn 0 means lives 1; elims / teamelims / koth with target 0 get 15 / 50 / 100;
- *   time with timeLimit 0 gets 300; teams 'humans' needs at least 1 bot.
+ *   time, infection and hideseek with timeLimit 0 get 300; teams 'humans' needs at least 1 bot.
  * @param {any} input
  * @param {{ games?: string[] | Set<string> | object }} [opts]
  */
@@ -120,7 +120,8 @@ export function normalizeRules(input, opts = {}) {
     else if (r.win === 'teamelims') r.target = 50;
     else if (r.win === 'koth') r.target = 100;
   }
-  if (r.win === 'time' && r.timeLimit === 0) r.timeLimit = 300;
+  // these are won by lasting the clock: they always have one
+  if ((r.win === 'time' || r.win === 'infection' || r.win === 'hideseek') && r.timeLimit === 0) r.timeLimit = 300;
   if (r.teams === 'humans' && r.bots < 1) r.bots = 1;
   return r;
 }
