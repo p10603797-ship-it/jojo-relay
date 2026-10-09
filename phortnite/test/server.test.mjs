@@ -188,3 +188,13 @@ test('one socket cannot fill the server with parties: switching parties is never
     proc.kill();
   }
 });
+
+test('a server that cannot listen (an address this machine does not have) says so and exits', async () => {
+  // 203.0.113.1 is TEST-NET-3: never one of this machine's addresses
+  const proc = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: '20999', HOST: '203.0.113.1', NO_QR: '1' }, stdio: 'ignore' });
+  const code = await new Promise((resolve) => {
+    const t = setTimeout(() => { proc.kill(); resolve('still running'); }, 20000);
+    proc.on('exit', (c) => { clearTimeout(t); resolve(c); });
+  });
+  assert.equal(code, 1);
+});

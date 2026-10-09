@@ -145,11 +145,18 @@ function serveFile(req, res, abs) {
 
 const isLoopback = (ip) => ip === '127.0.0.1' || ip === '::1' || ip.startsWith('127.');
 
+let proxyHinted = false;
 function clientIp(req) {
   const raw = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   const fwd = req.headers['x-forwarded-for'];
   const trust = TRUST_PROXY === 'always' || (TRUST_PROXY === 'loopback' && isLoopback(raw));
   if (trust && typeof fwd === 'string' && fwd) return fwd.split(',')[0].trim().slice(0, 64);
+  // a reverse proxy on another machine: every player would share its address (and the per-network
+  // limits): say once how to trust it
+  if (!proxyHinted && TRUST_PROXY === 'loopback' && typeof fwd === 'string' && fwd) {
+    proxyHinted = true;
+    log('proxy', { from: raw, hint: 'requests carry X-Forwarded-For from a proxy that is not on this machine: if it is yours, start with TRUST_PROXY=1 (see README) so each player gets their own per-network limits' });
+  }
   return raw;
 }
 
