@@ -8,8 +8,9 @@ body.ended #touch, body.ended #hotbar, body.endcard #touch, body.endcard #hotbar
 /* build-feel's banners and edit chips never sit on top of an end card (or a dead player's view) */
 body.ended #elimbanner, body.ended #editchips, body.ended #shieldbreak, body.endcard #elimbanner, body.endcard #editchips,
 body.endcard #shieldbreak, body.dead #editchips, body.ended #mats, body.endcard #mats { display: none !important; }
-/* the death / end card has its own title: a mode or round banner must not sit on top of it */
-body.endcard #bigmsg { display: none !important; }
+/* the death / end card has its own title: a mode banner must not sit on top of it. Between the
+   rounds of a best of N the round card is up instead (js/ui/endscreen.js), and round banners show */
+body.endcard:not(.roundcard) #bigmsg { display: none !important; }
 
 #lobby {
   position: fixed; inset: 0; z-index: 20; pointer-events: none; font-family: var(--font-hud); color: #fff;
@@ -288,6 +289,22 @@ body.endcard #bigmsg { display: none !important; }
 #elimscreen .es-btns .btn { min-height: 56px; min-width: 160px; font-size: 21px; }
 #elimscreen.spectating .es-card { position: absolute; bottom: calc(110px + var(--sab)); }
 
+/* best of N: the series score on the round card (and the death card mid-series) */
+#elimscreen .es-series { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 4px; }
+#elimscreen .es-series.hidden, #elimscreen .es-next.hidden { display: none; }
+#elimscreen .es-best { font-size: 13px; letter-spacing: 2px; opacity: 0.75; }
+#elimscreen .es-chips { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; }
+#elimscreen .es-team {
+  display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 16px 0 10px; border-radius: 12px;
+  background: rgba(16, 12, 44, 0.85); box-shadow: inset 0 -4px 0 var(--tc, #fff), 0 8px 22px rgba(0, 0, 0, 0.35);
+}
+#elimscreen .es-team i { width: 18px; height: 18px; border-radius: 50%; background: var(--tc, #fff); flex: none; }
+#elimscreen .es-team em { font-style: normal; font-family: var(--font-title); font-size: 20px; letter-spacing: 1px; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#elimscreen .es-team b { font-family: var(--font-title); font-size: 34px; color: var(--yellow); min-width: 22px; text-align: center; }
+#elimscreen .es-team.mine { outline: 3px solid rgba(255, 255, 255, 0.85); outline-offset: 2px; }
+#elimscreen .es-vs { font-family: var(--font-title); font-size: 30px; opacity: 0.8; }
+#elimscreen .es-next { font-family: var(--font-title); font-size: 26px; letter-spacing: 1px; color: var(--yellow); text-shadow: 0 3px 0 #3a1b8a; }
+
 /* ------------------------------------------------------------------ phones, small and portrait screens */
 @media (max-height: 640px) {
   .lb-top { height: calc(64px + var(--sat)); }
@@ -299,6 +316,10 @@ body.endcard #bigmsg { display: none !important; }
   .lb-v2 { font-size: 40px; }
   .rs-place { font-size: 52px; }
   #elimscreen .es-tiles { display: none; }
+  #elimscreen .es-team { height: 44px; }
+  #elimscreen .es-team em { font-size: 16px; }
+  #elimscreen .es-team b { font-size: 26px; }
+  #elimscreen .es-next { font-size: 20px; }
 }
 @media (max-height: 460px) {
   .lb-tab, .lb-xp, .lb-help { display: none; }
