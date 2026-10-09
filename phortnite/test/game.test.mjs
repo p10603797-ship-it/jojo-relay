@@ -253,7 +253,9 @@ test('siphon: storm and fall deaths give nobody anything', () => {
   for (const p of [a, b, c]) { p.x = 0; p.z = 0; }
   room.message('b', { t: 'fall', d: 500 });
   assert.equal(b.alive, false);
-  c.hp = 1; c.x = 390; // far outside the first storm circle
+  // far outside the first storm circle (its radius scales with the island: 330 m on the 640 m
+  // island, 0.62 x size on the 1.6 km one)
+  c.hp = 1; c.x = room.storm.cx + room.storm.r + 40; c.z = room.storm.cz;
   tick(1000);
   assert.equal(c.alive, false, 'the storm got Cat');
   assert.ok(inbox.a.some((m) => m.t === 'elim' && m.v === c.id && m.c === 'storm' && m.k === 0));

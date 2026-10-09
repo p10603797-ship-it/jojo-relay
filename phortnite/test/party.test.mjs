@@ -287,12 +287,14 @@ test('party: after 60 s away the player is eliminated with "left"; the empty roo
 test('party: the leader drops mid-match: a friend leads and gets the bots; held players leave at the lobby', () => {
   const H = makeRoom();
   const a = H.join('Ann', RES), b = H.join('Ben', RES), c = H.join('Cat', RES);
-  H.send(a, { t: 'start', bots: 4, mats: 0 });
+  // (bot counts snap to the rules' options: 0, 1, 3, 5, …)
+  H.send(a, { t: 'start', bots: 5, mats: 0 });
+  assert.equal(H.bots().length, 5);
   assert.ok(H.bots().every((p) => p.owner === a.pid));
   H.leave(a);
   assert.equal(H.room.leader, b.pid);
   assert.ok(H.bots().every((p) => p.owner === b.pid), 'bots move at once');
-  assert.deepEqual(H.last(b, 'bots').own.length, 4);
+  assert.deepEqual(H.last(b, 'bots').own.length, 5);
   H.leave(c);
   H.send(b, { t: 'end' });
   assert.equal(H.room.phase, 'lobby');

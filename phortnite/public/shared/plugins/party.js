@@ -115,7 +115,12 @@ export function cleanSettings(s) {
   if (s.mode === 'ffa' || s.mode === 'squad') out.mode = s.mode;
   if (typeof s.modeId === 'string' && /^[\w-]{1,48}$/.test(s.modeId)) out.modeId = s.modeId;
   if (typeof s.botSkill === 'string' && /^[a-z]{1,12}$/.test(s.botSkill)) out.botSkill = s.botSkill;
-  if (s.rules && typeof s.rules === 'object' && !Array.isArray(s.rules)) out.rules = normalizeRules(s.rules, { games: Object.keys(GAMES) });
+  if (s.rules && typeof s.rules === 'object' && !Array.isArray(s.rules)) {
+    // the legacy mirror fields (bots, mats, botSkill) count when the rules leave them out
+    const raw = { ...s.rules };
+    for (const k of ['bots', 'mats', 'botSkill']) if (out[k] !== undefined && !Object.prototype.hasOwnProperty.call(s.rules, k)) raw[k] = out[k];
+    out.rules = normalizeRules(raw, { games: Object.keys(GAMES) });
+  }
   // custom: a flag, or the custom rules themselves
   if (s.custom && typeof s.custom === 'object' && !Array.isArray(s.custom)) out.custom = normalizeRules(s.custom, { games: Object.keys(GAMES) });
   else if (s.custom !== undefined) out.custom = !!s.custom;
