@@ -6,6 +6,7 @@
 //   gungame {lv: [id, level, …]}   infection {s, z}   koth {hill: {x, z, r, owner, prog, ct}}
 //   juggernaut {j}   lava {lava}   hideseek {h, s, hs (head start seconds left)}
 import { WEAPONS, clampRarity } from '../../constants.js';
+import { lastTeamStanding } from './core.js';
 
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -27,7 +28,8 @@ function kit(rules, keys) {
     slots.push({ k, r: clampRarity(k, 4), m: w.mag });
     ammo[w.ammo] = 999;
   }
-  return { slots, ammo, mats: matsOf(rules), infAmmo: slots.length > 0 };
+  // kit: the mode handed it out (never dropped on death: a dead Juggernaut leaves no legendary rocket launcher)
+  return { slots, ammo, mats: matsOf(rules), infAmmo: slots.length > 0, kit: true };
 }
 
 /** n distinct players picked at random (ctx.rng). */
@@ -141,6 +143,7 @@ const infection = {
   key: 'infection',
   label: 'Infection',
   teamGame: true,
+  teamNames: { [SURVIVORS]: 'Survivor', [INFECTED]: 'Zombie' }, // 'Zombie Team wins!'
   defaults: { teams: 'two', respawn: 3, lives: 0, storm: 'none', timeLimit: 300, spawn: 'ground', area: 'center' },
 
   setup(ctx) {
@@ -364,8 +367,13 @@ const juggernaut = {
 };
 
 // ------------------------------------------------------------------ Floor is Lava
-/** The 70th percentile of land height inside the area: where the lava ends up. */
-function lavaTop(ctx) {
+/**
+ * Where the lava starts and ends ({lo, top}), from the area's real relief: it starts just under
+ * the lowest land (5th percentile) and rises above most of it, med + 10 at least, up to the 90th
+ * percentile + 3, never more than med + 25. Flat towns (the island's centre plateau) flood by mid
+ * match, leaving the hilltops and what players build; mountains don't need a 50 m climb.
+ */
+export function lavaRange(ctx) {
   const a = ctx.area || { x: 0, z: 0, r: 300 };
   const hs = [];
   const n = 24;
@@ -377,16 +385,21 @@ function lavaTop(ctx) {
       if (h > 0.5) hs.push(h);
     }
   }
-  if (!hs.length) return 8;
+  if (!hs.length) return { lo: LAVA_START, top: 8 };
   hs.sort((p, q) => p - q);
-  return hs[Math.min(hs.length - 1, Math.floor(hs.length * 0.7))];
+  const at = (f) => hs[Math.min(hs.length - 1, Math.floor((hs.length - 1) * f))];
+  const med = at(0.5);
+  const lo = Math.max(LAVA_START, at(0.05) - 1);
+  const top = Math.max(lo + 4, Math.min(med + 25, Math.max(at(0.9) + 3, med + 10)));
+  return { lo: r1(lo), top: r1(top) };
 }
 
-/** The lava height now: from LAVA_START up to the 70th percentile of the land over the time limit. */
+/** The lava height now: from st.lo up to st.top over the time limit (a little quicker at first). */
 export function lavaLevel(ctx) {
   const st = ctx.state;
   const k = Math.max(0, Math.min(1, (ctx.now() - st.t0) / st.dur));
-  return LAVA_START + (st.top - LAVA_START) * k;
+  const lo = Number.isFinite(st.lo) ? st.lo : LAVA_START;
+  return lo + (st.top - lo) * Math.pow(k, 0.85);
 }
 
 const lava = {
@@ -399,8 +412,10 @@ const lava = {
     st.t0 = ctx.now();
     st.dur = (ctx.rules.timeLimit || 300) * 1000;
     st.endAt = st.t0 + st.dur; // (moved to the room's clock by syncClock: the lava rises from the landing)
-    st.top = lavaTop(ctx);
-    st.level = LAVA_START;
+    const { lo, top } = lavaRange(ctx);
+    st.lo = lo;
+    st.top = top;
+    st.level = lo;
     st.nextHurt = st.t0 + 1000;
   },
 
@@ -418,18 +433,23 @@ const lava = {
       }
       for (const p of ctx.players()) if (p.alive) ctx.addScore(p.id, 1);
     }
+    // the clock runs out: everyone still standing survived the lava (one side left: that side wins;
+    // more: a shared win, never the first to have joined on a tied score)
+    if (!st.over && ctx.now() >= st.endAt - 150) {
+      st.over = true;
+      const alive = ctx.alive();
+      const teams = [...new Set(alive.map((p) => p.team))];
+      if (teams.length === 1) ctx.end(alive.length === 1 ? { id: alive[0].id, team: alive[0].team, reason: 'lava' } : { team: teams[0], reason: 'lava' });
+      else ctx.end({ reason: 'survived' });
+    }
   },
 
+  /** The last side with someone alive or waiting to respawn (with respawns on, a death is not the end). */
   checkWin(ctx) {
-    const ps = ctx.players();
-    if (ps.length < 2) return null;
-    const teams = [];
-    let last = null;
-    for (const p of ps) if (p.alive) { last = p; if (!teams.includes(p.team)) teams.push(p.team); }
-    if (teams.length > 1) return null;
-    if (!teams.length) return { reason: 'lava' };
-    const alive = ps.filter((p) => p.alive);
-    return alive.length === 1 ? { id: last.id, team: last.team, reason: 'lava' } : { team: teams[0], reason: 'lava' };
+    const w = lastTeamStanding(ctx, 'lava'); // null while two sides are in, or when only one side ever played
+    if (!w || w.team === undefined) return w;
+    const left = ctx.players().filter((p) => p.team === w.team && (p.alive || p.respawnAt > 0));
+    return left.length === 1 ? { id: left[0].id, team: w.team, reason: 'lava' } : w;
   },
 
   hud(ctx) { return { lava: r1(ctx.state.level) }; },
@@ -456,6 +476,7 @@ const hideseek = {
   key: 'hideseek',
   label: 'Hide & Seek',
   teamGame: true,
+  teamNames: { [HIDERS]: 'Hider', [SEEKERS]: 'Seeker' },
   defaults: {
     teams: 'two', respawn: 3, lives: 0, storm: 'none', timeLimit: 300, spawn: 'ground', area: 'center', loadout: 'pickaxe',
     floorLoot: false, chests: false, build: 'off',

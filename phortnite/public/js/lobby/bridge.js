@@ -25,6 +25,7 @@ function blank(s) {
 }
 
 function meWon(g, m) {
+  if (m && !m.id && m.reason === 'survived') return !!(g.me && g.me.alive); // Floor is Lava: everyone still standing
   return !!m && !!m.id && (m.id === g.myId || (!m.bot && m.team !== undefined && m.team !== 0 && m.team === g.teamOf(g.myId)));
 }
 
@@ -94,7 +95,8 @@ export class PartyBridge {
     const g = this.game, app = this.app;
     if (g.disposed || g.phase !== 'ended') return;
     const ids = [];
-    for (const p of g.roster.values()) if (!p.bot && (p.id === m.id || (m.team !== undefined && p.team === m.team))) ids.push(p.id);
+    const shared = !m.id && m.reason === 'survived';
+    for (const p of g.roster.values()) if (!p.bot && (p.id === m.id || (m.team && p.team === m.team) || (shared && p.alive !== false))) ids.push(p.id);
     if (!ids.includes(g.myId)) ids.push(g.myId);
     app.showStage(true);
     app.stage.celebrate(ids);

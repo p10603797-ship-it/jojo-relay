@@ -20,7 +20,7 @@ import { normalizeRules, rulesFromSettings, LEGACY_MODES } from './modes/rules.j
 import { findMode, modeInfo, modeTags } from './modes/index.js';
 import { GAMES } from './modes/games/index.js';
 import {
-  ModeRuntime, resolveArea, assignTeams, botCountFor, spawnCandidates, pickSpawns, rollBotSkill,
+  ModeRuntime, resolveArea, assignTeams, botCountFor, spawnCandidates, pickSpawns, rollBotSkill, nearLava,
 } from './modes/runtime.js';
 import { rollInitialLoot, rollChest, makeLoadout } from './loot.js';
 import { ROOM_PLUGINS } from './plugins/index.js';
@@ -36,6 +36,7 @@ const MAX_TOTAL = 32;
 const HUMANS_OUT_MS = 20000; // every human is out: bots play on this long (spectating) before the end
 const MYSTERY_EVERY = 60000;
 const ROUND_BREAK = 4000;
+const LAVA_PAD = 15; // m: storm circles keep their centre this far from a lava pool's edge
 // Mystery mode's mutators: [rule, value, banner]
 const MYSTERY = [
   ['gravity', 0.35, 'Moon gravity!'], ['speed', 1.5, 'Super speed!'], ['bigHead', true, 'Big heads!'],
@@ -162,6 +163,7 @@ export class Room {
     this.stormTick = 0;
     this.modeTickT = 0;
     this.starters = 0;
+    this.startTeams = 0;
     this.humansOutAt = 0;
     this.elimDepth = 0;
     this.pendingEnd = null;
@@ -502,6 +504,8 @@ export class Room {
     }
     this.teamList = assignTeams(humans, bots, R);
     const all = [...humans, ...bots];
+    // how many sides started (a series ends early once only one of them is left)
+    this.startTeams = new Set(all.map((p) => p.team)).size;
     for (const p of all) {
       this.resetForMatch(p);
       p.kills = 0;
@@ -671,7 +675,7 @@ export class Room {
     const s = {
       i: 0, cx, cz, r, ncx: cx, ncz: cz, nr: r, state: 'wait', t0: now, tEnd: 0, phases: P.phases, moving: !!P.moving, cut: false,
     };
-    if (!(this.world.heightAt(cx, cz) > 1.5)) {
+    if (!(this.world.heightAt(cx, cz) > 1.5) || nearLava(this.world, cx, cz, LAVA_PAD)) {
       const l = this.landNear(cx, cz, r);
       s.cx = s.ncx = l.x; s.cz = s.ncz = l.z;
     }
@@ -685,7 +689,7 @@ export class Room {
   landNear(x, z) {
     let best = null, bd = Infinity;
     const consider = (px, pz) => {
-      if (!(this.world.heightAt(px, pz) > 1.5)) return;
+      if (!(this.world.heightAt(px, pz) > 1.5) || nearLava(this.world, px, pz, LAVA_PAD)) return;
       const d = (px - x) * (px - x) + (pz - z) * (pz - z);
       if (d < bd) { bd = d; best = { x: px, z: pz }; }
     };
@@ -712,13 +716,15 @@ export class Room {
       const a = Math.random() * Math.PI * 2;
       const d = Math.sqrt(Math.random()) * maxD;
       const x = s.cx + Math.cos(a) * d, z = s.cz + Math.sin(a) * d;
-      if (Math.hypot(x - A.x, z - A.z) + s.nr * 0.35 <= lim && this.world.heightAt(x, z) > 1.5) {
+      // never a circle around the volcano's lava pool (its crater is a pit: lava inside, storm outside)
+      if (Math.hypot(x - A.x, z - A.z) + s.nr * 0.35 <= lim && this.world.heightAt(x, z) > 1.5
+        && !nearLava(this.world, x, z, LAVA_PAD + Math.min(s.nr, 10))) {
         s.ncx = x; s.ncz = z;
         return;
       }
     }
     // nowhere new on land: stay put if that is land, else the nearest land
-    if (this.world.heightAt(s.cx, s.cz) > 1.5) { s.ncx = s.cx; s.ncz = s.cz; return; }
+    if (this.world.heightAt(s.cx, s.cz) > 1.5 && !nearLava(this.world, s.cx, s.cz, LAVA_PAD)) { s.ncx = s.cx; s.ncz = s.cz; return; }
     const l = this.landNear(s.cx, s.cz);
     s.ncx = l.x; s.ncz = l.z;
   }
@@ -905,8 +911,9 @@ export class Room {
     }
     let team = w ? w.team : 0;
     // best of N: a round is over, not the match (until a team has enough round wins); the
-    // series goes to the team with the most round wins
-    if (this.round && !humansOut) {
+    // series goes to the team with the most round wins. A forfeit (the other side left) goes to
+    // the side still here, whatever the round score.
+    if (this.round && !humansOut && !res.forfeit) {
       if (this.roundWon(team, res)) return;
       let best = 0, bw = 0, tie = false;
       for (const [k, n] of Object.entries(this.round.series)) {
@@ -933,7 +940,7 @@ export class Room {
       : [...this.players.values()].filter((p) => p.inMatch && p.kills > 0).sort((a, b) => b.kills - a.kills).slice(0, 8).map((p) => [p.id, p.kills]);
     this.broadcast({
       t: 'win', id: this.winner, team, name, bot: w ? w.bot : false, early: this.teamsInGame() > 1,
-      reason: res.reason || 'last', scores, byTeam, mvp: this.mvp(),
+      reason: res.reason || 'last', scores, byTeam, mvp: this.mvp(), draw: !!res.draw && !w,
       round: this.round ? { n: this.round.n, series: this.round.series } : undefined,
     });
   }
@@ -971,6 +978,14 @@ export class Room {
     const now = this.now();
     const R = this.rules;
     const r = this.round;
+    // a side left during the series (LEAVE PARTY, a rejoin hold that ran out): the side still
+    // here takes it now, instead of playing every remaining round against nobody
+    const here = new Set(this.runtime.list.filter((p) => this.players.has(p.id)).map((p) => p.team));
+    if (here.size < 2 && this.startTeams > 1) {
+      this.phase = 'match';
+      this.endMatch(here.size ? { team: [...here][0], reason: 'left', forfeit: true } : { reason: 'left', forfeit: true });
+      return;
+    }
     r.n++;
     this.resetWorldState();
     const all = this.runtime.list;
@@ -987,7 +1002,7 @@ export class Room {
     this.modeTickT = now;
     this.broadcast({
       t: 'round', n: r.n, series: r.series, start: true, bus: this.bus ? this.busMsg() : null, spawns,
-      lootSeed: this.lootSeed, lootN: this.loot.size, lo: this.startLoadouts(), players: this.roster(), teams: this.teamList,
+      lootSeed: this.lootSeed, lootN: this.loot.size, area: this.area, lo: this.startLoadouts(), players: this.roster(), teams: this.teamList,
     });
     this.sendRoles(all);
   }
@@ -1499,6 +1514,10 @@ const HANDLERS = {
     const base = w.dmg[r];
     const R = w.splash;
     if (this.damageAllowed() && !this.rules.headOnly) {
+      // judge the whole blast first, then apply it: the state when it went off counts for everyone
+      // in it (a gun game promotion, an infection, a Juggernaut handoff by the first victim must
+      // not change what it does to the others)
+      const hits = [];
       for (const p of this.players.values()) {
         if (!p.alive || p.inBus || p === a || this.sameTeam(p, a)) continue;
         const dx = p.x - x, dy = p.y + 0.9 - y, dz = p.z - z;
@@ -1506,8 +1525,9 @@ const HANDLERS = {
         if (d >= R) continue;
         const info = { w: m.w, c: 'boom' };
         const dmg = this.runtime.damageFor(a, p, base * (1 - 0.6 * d / R), info);
-        if (dmg > 0) this.applyDamage(p, dmg, a, info);
+        if (dmg > 0) hits.push([p, dmg, info]);
       }
+      for (const [p, dmg, info] of hits) this.applyDamage(p, dmg, a, info);
     }
     // structures
     const hit = [];

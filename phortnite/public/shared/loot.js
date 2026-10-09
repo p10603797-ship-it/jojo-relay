@@ -208,5 +208,7 @@ export function cleanLoadout(lo) {
     for (const k of MAT_KEYS) out.mats[k] = Math.max(0, Math.min(999, lo.mats[k] | 0));
   }
   if (lo.infAmmo) out.infAmmo = true;
+  // a mode's kit (gun game rung, the Juggernaut's guns, zombie claws): never dropped on death
+  if (lo.kit) out.kit = true;
   return out;
 }

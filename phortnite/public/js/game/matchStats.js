@@ -91,7 +91,10 @@ export class MatchStats {
         this.tEnd = game.time;
         const myTeam = game.teamOf(me);
         this.won = !!(m.id && (m.id === me || (!m.bot && m.team !== undefined && m.team !== 0 && m.team === myTeam)));
+        // Floor is Lava's clock ran out: everyone still standing survived it together
+        if (!m.id && m.reason === 'survived' && game.me && game.me.alive) this.won = true;
         if (this.won) this.place = 1;
+        if (!m.id && m.reason === 'survived') for (const [id, r] of game.roster) if (r.alive !== false) this.person(id, r).place = 1;
         if (m.id) this.person(m.id, game.roster.get(m.id)).place = 1;
         // still standing at the end = the winners' place
         for (const [id, r] of game.roster) {

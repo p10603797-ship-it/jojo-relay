@@ -256,7 +256,7 @@ export class Game {
       this.me.mover.mode = 'dead';
       this.me.char.setVisible(false);
       if (m.bus) this.bus.start(m.bus);
-      this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next round. Spectating…', leave: true });
+      this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next match. Spectating…', leave: true });
     }
     this.hud.show(true);
     this.updateLobby();
@@ -323,6 +323,7 @@ export class Game {
     this.rules = m.rules ? normalizeRules(m.rules) : rulesFromSettings(m.settings);
     this.setTeams(m.teams);
     this.area = m.area && this.rules.area !== 'full' ? m.area : null;
+    this.lootArea = m.area || null; // the area the room rolled the loot in (the next rounds' too)
     this.modeState = {};
     this.roles.clear();
     this.myPlace = 0;
@@ -443,6 +444,8 @@ export class Game {
     const mats = this.rules.mats | 0;
     a.resetInventory(lo || { slots: [], ammo: {}, mats: { wood: mats, stone: mats, metal: mats } });
     a.loadoutInf = !!(lo && lo.infAmmo);
+    // a mode's kit (gun game rung, the Juggernaut's guns, zombie claws) is never dropped on death
+    a.kitLoadout = !!(lo && lo.kit);
     if (!a.isBot) a.unlimitedAmmo = this.rules.ammo === 'infinite' || a.loadoutInf;
     for (let i = 1; i <= 5; i++) {
       const s = a.inv.slots[i];
@@ -652,6 +655,13 @@ export class Game {
     if (!t) return;
     t.hp = m.hp;
     t.sh = m.sh;
+    // my hit, as the room applied it: the number, the hitmarker and its sound
+    if (m.a && m.a === this.myId && m.tg !== this.myId && m.c !== 'storm' && m.c !== 'fall' && m.c !== 'lava' && m.amt > 0) {
+      const p = Number.isFinite(m.x) && Number.isFinite(m.y) && (m.x || m.y || m.z) ? _v3.set(m.x, m.y + 0.3, m.z) : _v3.set(t.pos.x, t.pos.y + 1.6, t.pos.z);
+      this.hud.damageNumber(p, m.amt, m.hs ? 'head' : m.shd ? 'shield' : '');
+      this.hud.hitmarker(!!m.hs, false);
+      this.sfx.hitmarker(!!m.hs, !!m.shd, false);
+    }
     if (this.me && m.tg === this.me.id) {
       this.hurtK = Math.min(1, this.hurtK + (m.c === 'storm' ? 0.25 : 0.45));
       if (m.c !== 'storm' && m.c !== 'fall') {
@@ -822,6 +832,7 @@ export class Game {
   wantsPause() { return !!(this.me && this.me.alive && this.phase !== 'ended'); }
 
   dropAll(actor) {
+    if (actor.kitLoadout) return;
     const items = actor.allItems();
     if (items.length) this.send({ t: 'dropi', id: actor.id, items, x: actor.pos.x, y: actor.pos.y, z: actor.pos.z });
   }
@@ -936,6 +947,10 @@ export class Game {
     // best of N: every end card shows the final series score
     const fin = m.round ? { series: seriesRows(this, m.round), best: this.rules.rounds } : { series: undefined };
     const meWon = !!m.id && (m.id === this.myId || (!!m.team && m.team === myTeam));
+    // Floor is Lava's clock ran out with several still standing: they all won
+    const survived = !m.id && m.reason === 'survived' && !!this.me && this.me.alive;
+    // the clock ran out with the scores level (and nobody was crowned)
+    const draw = !m.id && !m.name && (m.draw || m.reason === 'time');
     this.input.exitLock();
     document.body.classList.remove('dead');
     if (this.me && !this.me.alive) document.body.classList.add('dead');
@@ -952,15 +967,19 @@ export class Game {
       // keep showing how we went out; just add who won
       // (PLAY AGAIN again: a best-of-N series held it back until now)
       this.hud.elim({ ...this.lastElim, ...fin, again: this.solo, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
-    } else if (meWon) {
+    } else if (meWon || survived) {
       this.sfx.ui('victory');
       if (this.me.alive) this.me.dancing = true;
       const team = m.name && m.name !== this.nameOf(this.myId) ? `${m.name} wins! ` : '';
-      this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${team}${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true, ...fin });
+      const why = survived ? 'You survived the lava! Everyone still standing wins. '
+        : m.reason === 'left' ? 'The other team left. ' : team;
+      this.hud.elim({ win: true, place: 1, title: survived ? 'YOU SURVIVED!' : 'PHICTORY ROYALE!', sub: `${why}${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the lobby in a few seconds`, again: this.solo, leave: true, ...fin });
+    } else if (draw) {
+      this.hud.elim({ title: "IT'S A DRAW!", sub: 'Time ran out with the scores level', again: this.solo, leave: true, ...fin });
     } else if (this.me && this.me.alive) {
-      this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : 'Nobody survived', again: this.solo, leave: true, ...fin });
+      this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : m.reason === 'survived' ? 'Time is up!' : 'Nobody survived', again: this.solo, leave: true, ...fin });
     } else {
-      this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: 'Returning to the island…', again: this.solo, leave: true, ...fin });
+      this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: m.reason === 'survived' ? 'The ones still standing won' : 'Back to the lobby in a few seconds…', again: this.solo, leave: true, ...fin });
     }
     this.plug('onPhase', this.phase, m);
   }
@@ -1036,10 +1055,13 @@ export class Game {
     if (!m.start) {
       // the round card replaces whatever card is up (a death card, spectating): the round's
       // result, the series score and the countdown to the next round, for the living and the dead
-      const won = !!m.team && m.team === this.teamOf(this.myId);
+      // (a friend watching a series they joined late sees a neutral result: their team never plays)
+      const row = this.roster.get(this.myId);
+      const watching = !!row && !!row.spec;
+      const won = !watching && !!m.team && m.team === this.teamOf(this.myId);
       const series = { n: m.n, series: m.series || {} };
       this.hud.elim({
-        round: true, win: won, title: won ? `ROUND ${m.n} WON!` : m.team ? `ROUND ${m.n} LOST` : `ROUND ${m.n}: DRAW`,
+        round: true, win: won, title: watching ? `ROUND ${m.n} OVER` : won ? `ROUND ${m.n} WON!` : m.team ? `ROUND ${m.n} LOST` : `ROUND ${m.n}: DRAW`,
         sub: m.name ? `${m.name} wins round ${m.n}!` : `Nobody won round ${m.n}`,
         series: seriesRows(this, series), best: this.rules.rounds, next: Number.isFinite(m.ends) ? m.ends : 4, leave: true,
       });
@@ -1048,25 +1070,42 @@ export class Game {
     }
     this.phase = m.bus ? 'bus' : 'match';
     this.resetWorld();
-    this.startLoot(m);
+    // the play area of the series (an older host leaves it out of the round message: the start's)
+    this.startLoot({ ...m, area: m.area || this.lootArea || null });
     this.setTeams(m.teams);
     for (const p0 of m.players || []) { const p = cleanRow(p0); this.roster.set(p.id, { ...(this.roster.get(p.id) || {}), ...p }); }
     this.roles.clear();
     this.modeState = {};
     this.startSpawns = m.spawns || null;
     this.startLo = this.loadoutTable(m.lo);
-    for (const r of this.remotes.values()) { r.revive(); r.buf.length = 0; r.hasState = false; }
+    // who plays this round: the room's roster rows (a friend who joined mid-series watches until
+    // the next match; the room never spawns them, so neither do we)
+    const inRound = (id) => { const row = this.roster.get(id); return !!row && !row.spec && row.alive !== false; };
+    for (const r of this.remotes.values()) {
+      if (!inRound(r.id)) continue;
+      r.revive(); r.buf.length = 0; r.hasState = false;
+    }
     const me = this.me;
-    me.char.endRagdoll();
-    me.alive = true;
-    me.dancing = false;
-    me.hp = this.rules.hp;
-    me.sh = this.rules.shield;
-    this.lastElim = null;
-    this.spectateId = 0;
-    this.hud.elim(null);
-    document.body.classList.remove('dead');
-    for (const a of [me, ...this.bots.values()]) {
+    const meIn = inRound(this.myId);
+    if (meIn) {
+      me.char.endRagdoll();
+      me.alive = true;
+      me.dancing = false;
+      me.hp = this.rules.hp;
+      me.sh = this.rules.shield;
+      this.lastElim = null;
+      this.spectateId = 0;
+      this.hud.elim(null);
+      document.body.classList.remove('dead');
+    } else {
+      me.alive = false;
+      me.mover.setEnabled(false);
+      me.mover.mode = 'dead';
+      me.char.setVisible(false);
+      document.body.classList.add('dead');
+      this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next match. Spectating…', leave: true });
+    }
+    for (const a of [...(meIn ? [me] : []), ...this.bots.values()]) {
       a.char.endRagdoll();
       a.alive = true;
       a.hp = this.rules.hp;
@@ -1330,12 +1369,14 @@ export class Game {
   sendHits(ps) {
     for (const [tg, e] of ps.hits) {
       this.send({ t: 'hit', id: ps.owner, tg, w: ps.w, r: ps.r, d: Math.round(e.dist), n: e.n, nh: e.nh, x: e.x, y: e.y, z: e.z });
-      if (ps.owner === this.myId) {
+      // in a match the numbers and hitmarkers come from the room's damage echo (on_dmg): what the
+      // mode really did (headshots only, the Juggernaut's armour, gun game rungs, no-damage modes);
+      // in the warm-up (nobody gets hurt) the raw number shows what the gun would do
+      if (ps.owner === this.myId && this.phase === 'lobby') {
         const t = this.actorById(tg);
         const dmg = e.n * weaponDamage(ps.w, ps.r, e.dist, false) + e.nh * weaponDamage(ps.w, ps.r, e.dist, true);
         const shield = t && t.sh > 0;
-        const live = this.phase === 'match' || this.phase === 'bus';
-        this.hud.damageNumber(_v.set(e.x, e.y + 0.3, e.z), live ? dmg : dmg, e.nh ? 'head' : shield ? 'shield' : '');
+        this.hud.damageNumber(_v.set(e.x, e.y + 0.3, e.z), dmg, e.nh ? 'head' : shield ? 'shield' : '');
         this.hud.hitmarker(e.nh > 0, false);
         this.sfx.hitmarker(e.nh > 0, shield, false);
       }
@@ -1401,7 +1442,7 @@ export class Game {
       const t = this.actorById(best.id);
       this.fx.hitPlayer(px, py, pz, t && t.sh > 0, false);
       this.send({ t: 'hit', id: a.id, tg: best.id, w: 'pickaxe', r: 0, d: 1, n: 1, nh: 0, x: px, y: py, z: pz });
-      if (a === this.me) {
+      if (a === this.me && this.phase === 'lobby') { // (in a match: the room's echo, on_dmg)
         this.hud.damageNumber(_v2.set(px, py + 0.3, pz), w.dmg[0], t && t.sh > 0 ? 'shield' : '');
         this.hud.hitmarker(false, false);
         this.sfx.hitmarker(false, false, false);

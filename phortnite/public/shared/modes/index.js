@@ -32,7 +32,7 @@ export const CORE_MODES = [
     desc: 'No storm, no damage: build, explore and try every gun with infinite materials and ammo.', players: '1-16', tags: ['Creative', 'Respawn', 'No Storm'],
     rules: {
       spawn: 'ground', respawn: 3, lives: 0, storm: 'none', build: 'infinite', ammo: 'infinite', pvp: false, bots: 0,
-      loadout: 'pool', rarity: 'legendary',
+      loadout: 'pool', rarity: 'legendary', fallDamage: false,
     },
   },
 ];
@@ -82,6 +82,7 @@ export function modeTags(r) {
   if (r.oneShot) tags.push('One Shot');
   if (r.bigHead) tags.push('Big Heads');
   if (!r.pvp) tags.push('No Damage');
+  else if (r.fallDamage === false) tags.push('No Fall Damage');
   if (r.rounds > 1) tags.push(`Best of ${r.rounds}`);
   return tags.slice(0, 5);
 }

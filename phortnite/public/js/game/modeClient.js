@@ -76,8 +76,12 @@ export function seriesRows(game, series) {
   return rows;
 }
 
-function isTeamGame(win) {
-  if (own(GAMES, win) && GAMES[win].teamGame !== undefined) return !!GAMES[win].teamGame;
+/** Are scores kept per team? The same check as the room's (runtime.teamScores): teamGame may be a function of the rules. */
+function isTeamGame(win, rules) {
+  if (own(GAMES, win) && GAMES[win].teamGame !== undefined) {
+    const tg = GAMES[win].teamGame;
+    return typeof tg === 'function' ? !!tg(rules || {}) : !!tg;
+  }
   return win === 'teamelims' || win === 'koth';
 }
 
@@ -364,6 +368,16 @@ export class ModeClient {
   // ------------------------------------------------------------------ teams
   teamLook(id) { return teamLookOf(this.game, id); }
 
+  /** A team's name; free for all (1000 + player id, not listed): the player's name, or 'You'. */
+  teamName(id) {
+    const g = this.game;
+    if (id >= 1000 && !(g.teams && g.teams.has && g.teams.has(id))) {
+      const mine = g.teamOf ? g.teamOf(g.myId) : g.myId;
+      return id === mine ? 'You' : g.nameOf ? g.nameOf(id - 1000) : String(id - 1000);
+    }
+    return this.teamLook(id).name;
+  }
+
   teamColor(id) { return this.teamLook(id).color; }
 
   hillColor(h) {
@@ -444,17 +458,19 @@ export class ModeClient {
 
     // scores: two teams as a bar, otherwise the top 3 (teams or players) with your place
     let bar = null, rows = null, meText = '';
-    const teamGame = isTeamGame(win);
-    if (win !== 'last' && win !== 'infection' && win !== 'lava') {
+    const teamGame = isTeamGame(win, r);
+    // (infection and hide & seek show their own SURVIVORS / HIDING line; their scores are seconds)
+    if (win !== 'last' && win !== 'infection' && win !== 'lava' && win !== 'hideseek') {
       if (teamGame) {
         const ids = this.teamIds(sc);
         const myTeam = g.teamOf ? g.teamOf(myId) : myId;
         const scoreOf = (id) => { const e = sc.find((x) => x[0] === id); return e ? e[1] : 0; };
-        if (ids.length === 2) {
-          bar = ids.map((id) => ({ ...this.teamLook(id), score: scoreOf(id), mine: id === myTeam }));
+        // the 'vs' bar only for real teams (free for all keys scores by 1000 + player id)
+        if (ids.length === 2 && r.teams !== 1) {
+          bar = ids.map((id) => ({ ...this.teamLook(id), name: this.teamName(id), score: scoreOf(id), mine: id === myTeam }));
         } else {
           const ranked = ids.map((id) => [id, scoreOf(id)]).sort((p, q) => q[1] - p[1]);
-          rows = ranked.slice(0, 3).map(([id, n]) => ({ name: this.teamLook(id).name, score: n, color: this.teamColor(id), me: id === myTeam }));
+          rows = ranked.slice(0, 3).map(([id, n]) => ({ name: this.teamName(id), score: n, color: this.teamColor(id), me: id === myTeam }));
           const i = ranked.findIndex((e) => e[0] === myTeam);
           if (i >= 3) meText = `YOUR TEAM <b>#${i + 1}</b> · ${ranked[i][1]}`;
         }
@@ -482,7 +498,8 @@ export class ModeClient {
       cls = zombie ? 'zombie' : '';
     } else if (win === 'koth' && gh.hill) {
       const h = gh.hill;
-      const who = h.ct ? 'CONTESTED!' : h.owner ? `${esc(this.teamLook(h.owner).name.toUpperCase())} holds it` : 'Nobody there';
+      const owner = h.owner ? this.teamName(h.owner) : '';
+      const who = h.ct ? 'CONTESTED!' : owner === 'You' ? '<b>YOU</b> hold it' : owner ? `${esc(owner.toUpperCase())} holds it` : 'Nobody there';
       const moves = clock((h.prog || 0) * (HILL_MOVE_MS / 1000) - (performance.now() - this.msAt) / 1000);
       let dist = '';
       if (me && me.alive && me.pos) {

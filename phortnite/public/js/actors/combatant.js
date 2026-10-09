@@ -5,6 +5,7 @@ import {
   PLAYER, WEAPONS, AMMO, HEALS, MAT_KEYS, MAX_MATS, MAX_AMMO, BUILD, ANIM, FLAG, weaponDamage, itemKind, ENV,
 } from '../../shared/constants.js';
 import { Mover } from './mover.js';
+import { actorHitbox } from '../combat/ballistics.js';
 import { Character } from './character.js';
 import { GROUP } from '../physics.js';
 
@@ -214,14 +215,8 @@ export class Combatant {
   }
 
   hitbox() {
-    const p = this.pos;
-    const c = this.mover.crouch;
-    const big = this.game.rules?.bigHead; // Big Head mode: heads 2.2x bigger and 0.15 m higher
-    return {
-      id: this.id,
-      head: [p.x, p.y + (c ? 1.27 : 1.7) + (big ? 0.15 : 0), p.z, big ? 0.22 * 2.2 : 0.22],
-      body: [p.x, p.y + 0.35, p.z, p.x, p.y + (c ? 0.95 : 1.32), p.z, 0.37],
-    };
+    // Big Head mode: heads 2.2x bigger and 0.15 m higher; a bigger model (the Juggernaut) a bigger hitbox
+    return actorHitbox(this.id, this.pos, this.mover.crouch, this.game.rules?.bigHead, (this.char && this.char.bodyScale) || 1);
   }
 
   // ------------------------------------------------------------------ movement
@@ -237,8 +232,10 @@ export class Combatant {
     const ev = m.step(dt, {
       wx, wz, sprint: ctl.sprint && ctl.my > 0.3 && !this.ads && !busy && this.reloadT < 0, crouch: ctl.crouch, jump: ctl.jump, ads: this.ads || busy, pitch: this.pitch,
     });
-    if (ev.landed > PLAYER.fallSafe && this.mode === 'ground' && this.game.rules?.fallDamage !== false) {
-      const dmg = (ev.landed - PLAYER.fallSafe) * PLAYER.fallDmgPerMs;
+    // the safe drop stays ~7.5 m in heavy gravity (and a plain jump never hurts, super jump included)
+    const safe = PLAYER.fallSafe * Math.sqrt(Math.max(1, m.mods.gravity || 1));
+    if (ev.landed > safe && this.mode === 'ground' && this.game.rules?.fallDamage !== false) {
+      const dmg = (ev.landed - safe) * PLAYER.fallDmgPerMs;
       this.game.reportFall(this, dmg);
     }
     if (ev.landed && this.game.onLanded) this.game.onLanded(this, ev.landed);

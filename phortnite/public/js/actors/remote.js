@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { ANIM, FLAG, WEAPONS, HEALS, PLAYER } from '../../shared/constants.js';
 import { Character } from './character.js';
+import { actorHitbox } from '../combat/ballistics.js';
 import { GROUP } from '../physics.js';
 
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -139,14 +140,8 @@ export class RemotePlayer {
   }
 
   hitbox() {
-    const p = this.pos;
-    const c = this.crouching;
-    const big = this.game.rules?.bigHead; // Big Head mode: heads 2.2x bigger and 0.15 m higher (as in Combatant)
-    return {
-      id: this.id,
-      head: [p.x, p.y + (c ? 1.27 : 1.7) + (big ? 0.15 : 0), p.z, big ? 0.22 * 2.2 : 0.22],
-      body: [p.x, p.y + 0.35, p.z, p.x, p.y + (c ? 0.95 : 1.32), p.z, 0.37],
-    };
+    // as in Combatant: Big Head mode and the model's body scale (the Juggernaut)
+    return actorHitbox(this.id, this.pos, this.crouching, this.game.rules?.bigHead, (this.char && this.char.bodyScale) || 1);
   }
 
   shoulder(out) {
