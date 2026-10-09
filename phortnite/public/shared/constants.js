@@ -2,8 +2,8 @@
 // so this file must stay free of DOM / Node specific APIs.
 import { MAP, BUS, DROP } from './world/scale.js';
 
-export const VERSION = '1.1.0';
-export const PROTOCOL = 2; // bump whenever old and new builds can't share a party
+export const VERSION = '2.0.0';
+export const PROTOCOL = 3; // bump whenever old and new builds can't share a party
 
 export const TICK_HZ = 20;            // server snapshot rate
 export const SEND_HZ = 20;            // client state upload rate

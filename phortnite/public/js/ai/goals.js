@@ -36,8 +36,8 @@ export function isHunter(bot) {
   const g = bot.game;
   const r = g.roleOf ? g.roleOf(bot.id) : null;
   if (r) return r === 'zombie' || r === 'seeker';
-  // no role (yet): Infection and Hide & Seek put the hunters on team 2 (the very first ones'
-  // role message can reach this device before the match start that clears the roles)
+  // no role (yet): Infection and Hide & Seek put the hunters on team 2. The room now sends the
+  // first roles right after 'start'; this covers the moment in between (and old rooms).
   const k = modeKey(g);
   return (k === 'infection' || k === 'hideseek') && typeof g.teamOf === 'function' && g.teamOf(bot.id) === 2;
 }

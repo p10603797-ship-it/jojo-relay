@@ -165,6 +165,7 @@ export class Room {
     this.humansOutAt = 0;
     this.elimDepth = 0;
     this.pendingEnd = null;
+    this.rolesHeld = false;   // the mode's set-up is running: roles go out after the start message
     this.rosterDirty = false;
     this.teamsDirty = false;
     this.round = null;        // best-of-N series: {n, series: {team: wins}, need}
@@ -497,8 +498,9 @@ export class Room {
     this.runtime.begin(R, this.area, this.lootSeed, all, this.teamList);
     const { spawns, busTime } = this.placeEveryone(all, now);
     this.spawnInitialLoot();
-    // the mode's set-up, then everyone's loadout
-    this.runtime.setup(() => makeLoadout(R, Math.random));
+    // the mode's set-up, then everyone's loadout (its roles go out after the start: sendRoles)
+    this.rolesHeld = true;
+    try { this.runtime.setup(() => makeLoadout(R, Math.random)); } finally { this.rolesHeld = false; }
     if (R.timeLimit > 0) this.runtime.endsAt = now + (busTime + R.timeLimit) * 1000;
     this.stormTick = now;
     this.modeTickT = now;
@@ -508,6 +510,7 @@ export class Room {
       lootSeed: this.lootSeed, lootN: this.loot.size, lo: this.startLoadouts(), chestsOff: R.chests === false, area: this.area,
       round: this.round ? { n: 1, series: {} } : null,
     });
+    this.sendRoles(all);
     this.reassignBots();
     this.plug('onStart', this);
     this.log('match start', { room: this.code, players: this.players.size, mode: this.settings.modeId });
@@ -961,7 +964,8 @@ export class Room {
     this.pendingEnd = null;
     const { spawns, busTime } = this.placeEveryone(all, now);
     this.spawnInitialLoot();
-    this.runtime.setup(() => makeLoadout(R, Math.random));
+    this.rolesHeld = true;
+    try { this.runtime.setup(() => makeLoadout(R, Math.random)); } finally { this.rolesHeld = false; }
     if (R.timeLimit > 0) this.runtime.endsAt = now + (busTime + R.timeLimit) * 1000;
     this.stormTick = now;
     this.modeTickT = now;
@@ -969,6 +973,12 @@ export class Room {
       t: 'round', n: r.n, series: r.series, start: true, bus: this.bus ? this.busMsg() : null, spawns,
       lootSeed: this.lootSeed, lootN: this.loot.size, lo: this.startLoadouts(), players: this.roster(), teams: this.teamList,
     });
+    this.sendRoles(all);
+  }
+
+  /** The roles a game's set-up gave out, sent after the start (clients clear roles on start). */
+  sendRoles(list) {
+    for (const p of list) if (p.role) this.broadcast({ t: 'role', id: p.id, role: p.role });
   }
 
   sameTeam(a, b) { return a !== b && a.team === b.team; }

@@ -25,7 +25,7 @@ export const RULE_FIELDS = Object.freeze([
   field('respawn', [0, 3, 5, 8, 12]), // seconds; 0 = no respawn
   field('lives', [1, 2, 3, 5, 0]), // 0 = unlimited
   field('respawnKeep', [false, true]), // keep your loot when you respawn
-  field('win', ['last', 'elims', 'teamelims', 'time', 'gungame', 'infection', 'koth', 'juggernaut', 'lava']), // a key of GAMES
+  field('win', ['last', 'elims', 'teamelims', 'time', 'gungame', 'infection', 'koth', 'juggernaut', 'lava', 'hideseek']), // a key of GAMES
   field('target', [0, 5, 10, 15, 20, 30, 50, 100]), // score to win (0 = none)
   field('timeLimit', [0, 180, 300, 420, 600, 900]), // seconds (0 = none)
   field('rounds', [1, 3, 5]),

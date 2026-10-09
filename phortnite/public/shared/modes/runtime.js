@@ -346,7 +346,9 @@ export class ModeRuntime {
 
   setRole(p, role) {
     p.role = role ?? null;
-    this.room.broadcast({ t: 'role', id: p.id, role: p.role });
+    // during set-up (before 'start' / a round's start went out) the room sends the roles after
+    // the start: clients clear their roles on start, so roles sent before it would be lost
+    if (!this.room.rolesHeld) this.room.broadcast({ t: 'role', id: p.id, role: p.role });
   }
 
   roleOf(p) { return p.role ?? null; }
