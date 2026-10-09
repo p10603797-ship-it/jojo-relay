@@ -80,7 +80,8 @@ export class World {
       const t0 = performance.now();
       const done = this._mapJob.step(40);
       this._mapMs += performance.now() - t0;
-      if (done) { this._mapCanvas = this._mapJob.canvas; this.timings.map = +this._mapMs.toFixed(1); } else this._mapTimer = setTimeout(slice, 30);
+      // (the finished job is dropped: it holds the picture's 4 MB of pixel data)
+      if (done) { this._mapCanvas = this._mapJob.canvas; this._mapJob = null; this.timings.map = +this._mapMs.toFixed(1); } else this._mapTimer = setTimeout(slice, 30);
     };
     this._mapTimer = setTimeout(slice, 800);
   }
@@ -91,6 +92,7 @@ export class World {
       const t0 = performance.now();
       if (!this._mapJob) this._mapJob = mapArtJob(this);
       this._mapCanvas = this._mapJob.finish();
+      this._mapJob = null;
       this.timings.map = +(this._mapMs + performance.now() - t0).toFixed(1);
       if (this._mapTimer) { clearTimeout(this._mapTimer); this._mapTimer = 0; }
     }

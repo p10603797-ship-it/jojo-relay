@@ -2000,9 +2000,12 @@ export class Game {
     this.bots.clear();
     this.remotes.clear();
     this.loot.clear();
-    this.scene.remove(this.storm.mesh);
-    this.scene.remove(this.bus.mesh);
     this.resetWorld();
+    // GPU buffers and shaders this Game made for itself (a party switch makes a new Game; the
+    // shared floor-loot meshes stay for the next one)
+    this.storm.dispose();
+    this.bus.dispose();
+    this.ballistics.dispose();
     this.builds.showGhost(null);
     this.hud.elim(null);
     this.hud.lobby(null);
