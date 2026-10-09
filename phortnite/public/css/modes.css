@@ -17,7 +17,7 @@
 }
 .dv-title { font-family: var(--font-title); font-size: 34px; letter-spacing: 1px; text-shadow: 0 3px 0 #3a1b8a; transform: skew(-6deg); }
 .dv-search {
-  flex: 1; max-width: 520px; display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 16px;
+  flex: 1 1 auto; min-width: 0; max-width: 520px; display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 16px;
   border-radius: 28px; background: rgba(255, 255, 255, 0.12); border: 2px solid rgba(255, 255, 255, 0.18);
 }
 .dv-search:focus-within { border-color: var(--yellow); }
@@ -176,18 +176,21 @@
 .mc-where { display: flex; flex-direction: column; }
 .mc-mapwrap { position: relative; width: min(380px, 100%, 52vh); aspect-ratio: 1; margin: 0 0 12px; border-radius: 12px; overflow: hidden; border: 3px solid rgba(255, 255, 255, 0.8); }
 .mc-map { display: block; width: 100%; height: 100%; }
-.mc-dots { position: absolute; inset: 0; }
+/* taps on the map pick the nearest place (creator.js pickOnMap): 26 places are closer than a
+   finger, so the 48 px dot buttons don't take pointer input themselves (keyboard / gamepad still do) */
+.mc-dots { position: absolute; inset: 0; cursor: pointer; touch-action: manipulation; }
 .mc-dot {
   position: absolute; width: 48px; height: 48px; margin: -24px 0 0 -24px; padding: 0; border: 0; background: none; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
 }
+.mc-dot.nolabel span { display: none; }
 .mc-dot i { width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 3px solid #1a0f3d; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5); }
 .mc-dot.sel i { width: 22px; height: 22px; background: var(--yellow); }
 .mc-dot span {
-  position: absolute; top: 34px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 11px; color: #fff;
+  position: absolute; top: 34px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 12px; color: #fff;
   text-shadow: 0 1px 2px #000, 0 0 3px #000; pointer-events: none;
 }
-.mc-areanote { font-family: system-ui, sans-serif; font-size: 14px; opacity: 0.8; margin-top: 8px; min-height: 18px; }
+.mc-areanote { font-family: system-ui, sans-serif; font-size: 15px; opacity: 0.9; margin-top: 8px; min-height: 18px; }
 .mc-foot {
   display: flex; gap: 10px; justify-content: flex-end; flex: none; flex-wrap: wrap;
   padding: 10px calc(16px + var(--sar)) calc(12px + var(--sab)) calc(16px + var(--sal)); background: rgba(0, 0, 0, 0.25);
@@ -230,6 +233,11 @@
 }
 @media (max-width: 600px) {
   .dv-title { display: none; }
+  /* portrait phones: the hero fits (its title and text no longer run off the side) */
+  .dv-hero { height: auto; min-height: 132px; padding: 12px 16px; gap: 12px; }
+  .dv-hero-emoji { font-size: 64px; }
+  .dv-hero-text > b { font-size: 28px; }
+  .dv-hero-desc { font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 }
 
 /* ================================================================== In-match mode HUD (js/game/modeViews.js) */
@@ -323,7 +331,6 @@ body.respawning #elimscreen { display: none; }
   .mh-ladder span { min-width: 18px; height: 18px; font-size: 8px; }
   .mh-mates { top: calc(58px + var(--sat)); width: 150px; }
   .mh-mate { height: 24px; font-size: 11px; }
-  .mh-mate:nth-child(n + 4) { display: none; }
   .mh-rring { width: 86px; height: 86px; }
   .mh-rring b { font-size: 40px; }
   .mh-rtext { font-size: 22px; }
@@ -364,4 +371,9 @@ body.touch #modehud > .mh-line.on { display: block; width: auto; max-width: 100%
   body.touch.mode-score #notice { top: calc(76px + var(--sat)); }
   body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed { top: calc(144px + var(--sat)); }
   body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed .kf:nth-last-child(n+3) { display: none; }
+  /* 667 x 375 (iPhone SE / 8): the strip clears the minimap and the emote button on both sides
+     (344 = 2 x (10 + minimap + 10 + emote 52)), the clock and bar stay on one row */
+  body.touch #modehud { width: min(460px, 52vw, calc(100vw - 344px - 2 * var(--sar))); }
+  body.touch .mh-bar { width: min(320px, calc(100% - 64px)); }
+  body.touch #hud:has(.mh-mates:not(.hidden) .mh-more) #killfeed { top: calc(160px + var(--sat)); }
 }

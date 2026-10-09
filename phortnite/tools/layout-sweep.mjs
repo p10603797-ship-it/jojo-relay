@@ -19,7 +19,7 @@ const PW = process.env.PLAYWRIGHT || '/opt/node22/lib/node_modules/playwright/in
 const { chromium } = await import(PW);
 
 const ONLY = opt('--only'); // e.g. --only 1180x820,844x390
-const VPS = [[1024, 768], [1080, 810], [1133, 744], [1180, 820], [1194, 834], [1366, 1024], [844, 390], [932, 430]]
+const VPS = [[1024, 768], [1080, 810], [1133, 744], [1180, 820], [1194, 834], [1366, 1024], [844, 390], [932, 430], [667, 375]]
   .filter(([w, h]) => !ONLY || ONLY.split(',').includes(`${w}x${h}`));
 const HUD = ['#bars', '#hotbar', '#ammo', '#mats', '#minimap', '#stats', '#poi', '#killfeed', '#menubtn', '#buildbar', '#lobbypanel', '#busprompt', '#editchips', '#prompt', '#modehud', '.mh-mates', '#notice'];
 const t00 = Date.now();

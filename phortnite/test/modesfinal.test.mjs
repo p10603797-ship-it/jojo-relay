@@ -234,3 +234,30 @@ test('modes: the runtime\'s respawnLoadout is never null', () => {
   const lo = rt.respawnLoadout({ id: 1 }, () => null);
   assert.deepEqual(lo, { slots: [], ammo: {}, mats: { wood: 0, stone: 0, metal: 0 } });
 });
+
+import { goalPreset, goalChange } from '../public/js/ui/creator.js';
+import { RULE_FIELDS } from '../public/shared/modes/rules.js';
+
+test('creator: goal presets never pile up (every goal -> goal change = that goal picked fresh)', () => {
+  const wins = RULE_FIELDS.find((f) => f.key === 'win').options;
+  let bad = 0;
+  for (const a of wins) {
+    for (const b of wins) {
+      const afterA = normalizeRules({ ...normalizeRules({}), ...goalPreset(a) });
+      const afterB = normalizeRules({ ...afterA, ...goalChange(afterA, b) });
+      const fresh = normalizeRules({ ...normalizeRules({}), ...goalPreset(b) });
+      if (JSON.stringify(afterB) !== JSON.stringify(fresh)) { bad++; if (bad < 4) console.log(a, '->', b, afterB, fresh); }
+    }
+  }
+  assert.equal(bad, 0);
+  // the player's own edits stay
+  const lavaEdit = normalizeRules({ ...normalizeRules({}), ...goalPreset('hideseek'), gravity: 0.35 });
+  const toLava = normalizeRules({ ...lavaEdit, ...goalChange(lavaEdit, 'lava') });
+  assert.equal(toLava.build, 'on', 'Floor is Lava builds');
+  assert.equal(toLava.loadout, 'none');
+  assert.equal(toLava.gravity, 0.35);
+  // a respawn fight on the big island starts in the middle, on a clock
+  const elims = normalizeRules(goalPreset('elims'));
+  assert.equal(elims.area, 'center');
+  assert.ok(elims.timeLimit > 0);
+});

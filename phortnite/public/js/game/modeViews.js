@@ -139,7 +139,9 @@ export class ModeHud {
     const on = !!(rows && rows.length);
     this.set('mates', on, (v) => this.mates.classList.toggle('hidden', !v));
     if (!on) return;
-    const shown = rows.slice(0, 4);
+    // phones show three rows: the '+N more' line counts the rest
+    const phone = typeof matchMedia === 'function' && matchMedia('(max-height: 460px)').matches;
+    const shown = rows.slice(0, phone ? 3 : 4);
     const key = shown.map((r) => `${r.name}|${Math.ceil(r.hp)}|${Math.ceil(r.sh)}|${r.alive ? 1 : 0}|${r.color}|${r.note || ''}`).join(';') + `|${rows.length}`;
     this.set('matesHtml', key, () => {
       this.mates.innerHTML = shown.map((r) => `<div class="mh-mate${r.alive ? '' : ' dead'}" style="--tc:${r.color}"><span>${esc(r.name)}${r.note ? ` <small>${esc(r.note)}</small>` : ''}</span>`
