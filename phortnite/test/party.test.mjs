@@ -359,6 +359,8 @@ test('party: the leader picks modes in the lobby (the Room\'s own mode handler)'
 // WebRTC does not work in this sandbox, so the P2P host / client logic runs over an in-memory
 // stand-in for PeerJS: peers by id, data channels that deliver strings asynchronously.
 import { P2PHost, P2PClient, usePeer, P2P_MAX_HUMANS } from '../public/js/net/p2p.js';
+import { useBrokers } from '../public/js/net/relay.js';
+useBrokers([]); // these tests are about the direct links (relay.test.mjs covers the relay)
 import { PROTOCOL } from '../public/shared/constants.js';
 
 const PEERS = new Map();

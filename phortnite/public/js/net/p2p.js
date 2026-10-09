@@ -1,6 +1,9 @@
 // Peer-to-peer parties (no server of our own): one browser hosts the authoritative Room,
-// friends connect to it directly over WebRTC data channels. PeerJS's free public service is
-// only used to introduce the devices to each other (and as a relay when a direct link fails).
+// friends connect to it directly over WebRTC data channels. PeerJS's free public service only
+// introduces the devices to each other. When a direct link can't be made (Wi-Fi that keeps
+// devices apart, routers without hairpin NAT), the link goes through a public relay instead
+// (relay.js): a friend tries the direct way first and the relay a few seconds later, and
+// whichever opens first carries the party.
 //
 // The host keeps its party code (localStorage), so friends' REJOIN still works after a reload. Its
 // room clock pauses while the host's page is hidden during a match (an iPad app switch) instead of
@@ -10,6 +13,7 @@ import { Room } from '../../shared/room.js';
 import { TICK_HZ } from '../../shared/constants.js';
 import { cleanSettings } from '../../shared/plugins/party.js';
 import { PausableClock, RETRY_MS, REJOIN_WINDOW } from './net.js';
+import { RelayHost, relayDial, brokers } from './relay.js';
 
 const PEERJS_URL = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/+esm';
 const PREFIX = 'phortnite-v1-';
@@ -19,6 +23,11 @@ export const P2P_MAX_HUMANS = 8; // the host's upload grows with every friend (s
 const STALL_MS = 4000;
 const FLOOD_MAX = 400; // messages per second per friend (server.js has the same guard)
 const SILENT_MS = 45000;
+const DIRECT_MS = 15000; // a direct link that has not opened by now never will
+const RELAY_AFTER_MS = 4000; // on the same Wi-Fi a direct link opens in 1-2 s
+const RELAY_MS = 10000;
+// introduction-service errors that mean it is out of reach (not that the party is missing)
+const OFFLINE_TYPES = new Set(['load', 'network', 'server-error', 'socket-error', 'socket-closed', 'timeout', 'browser-incompatible']);
 
 function storedCode() {
   try {
@@ -32,6 +41,15 @@ let PeerCtor = null;
 /** Tests: use this Peer class instead of PeerJS from the CDN. */
 export function usePeer(ctor) { PeerCtor = ctor; }
 const pageHidden = () => typeof document !== 'undefined' && document.hidden;
+const cancelled = () => Object.assign(new Error('Cancelled'), { type: 'cancelled' });
+
+/** Testing on real devices: ?p2p=relay (relay links only) or ?p2p=direct (no relay). */
+function p2pMode() {
+  try {
+    const m = new URLSearchParams(location.search).get('p2p');
+    return m === 'relay' || m === 'direct' ? m : 'auto';
+  } catch (e) { return 'auto'; }
+}
 
 async function loadPeer() {
   if (PeerCtor) return PeerCtor;
@@ -39,7 +57,7 @@ async function loadPeer() {
   try {
     m = await import(PEERJS_URL);
   } catch (e) {
-    throw new Error('Could not load the online party service. Check that this device is connected to the internet.');
+    throw Object.assign(new Error('Could not load the online party service. Check that this device is connected to the internet.'), { type: 'load' });
   }
   PeerCtor = m.Peer || (m.default && (m.default.Peer || m.default));
   return PeerCtor;
@@ -51,9 +69,21 @@ function randomCode() {
   return c;
 }
 
-/** Optional self-hosted signalling server for testing: ?peerserver=host:port/path */
+/**
+ * PeerJS options. STUN servers let devices find their way to each other through their routers.
+ * (PeerJS's built-in TURN relays no longer exist; relay.js does that job.) Optional self-hosted
+ * signalling server for testing: ?peerserver=host:port/path
+ */
 function peerOptions() {
-  const opts = { debug: 0 };
+  const opts = {
+    debug: 0,
+    config: {
+      iceServers: [
+        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+      ],
+    },
+  };
   try {
     const s = new URLSearchParams(location.search).get('peerserver');
     const m = s && /^([\w.-]+):(\d+)(\/.*)?$/.exec(s);
@@ -71,7 +101,14 @@ function openPeer(Peer, id) {
       reject(Object.assign(new Error('The online party service did not answer. Try again in a moment.'), { type: 'timeout' }));
     }, 12000);
     peer.once('open', () => { clearTimeout(timer); resolve(peer); });
-    peer.once('error', (e) => { clearTimeout(timer); peer.destroy(); reject(e); });
+    peer.once('error', (e) => {
+      clearTimeout(timer);
+      peer.destroy();
+      const type = (e && e.type) || 'network';
+      reject(OFFLINE_TYPES.has(type)
+        ? Object.assign(new Error('Could not reach the online party service. Check that this device is connected to the internet, then try again.'), { type })
+        : e);
+    });
   });
 }
 
@@ -151,22 +188,33 @@ export class P2PHost extends Emitter {
   }
 
   async connect() {
-    const Peer = await loadPeer();
-    let lastErr = null;
+    let Peer = null, lastErr = null, peer = null;
+    try { Peer = await loadPeer(); } catch (e) { lastErr = e; }
     // the same code as last time first, so friends' links and REJOIN keep working
     const first = storedCode();
-    for (let tries = 0; tries < 6 && !this.peer && !this.closed; tries++) {
+    for (let tries = 0; Peer && tries < 6 && !peer && !this.closed; tries++) {
       const code = tries === 0 && first ? first : randomCode();
       try {
-        this.peer = await openPeer(Peer, PREFIX + code);
+        peer = await openPeer(Peer, PREFIX + code);
         this.code = code;
       } catch (e) {
         lastErr = e;
         if (e.type !== 'unavailable-id') break;
       }
     }
-    if (this.closed) { this.close(); throw new Error('Cancelled'); }
-    if (!this.peer) throw new Error(lastErr && lastErr.message ? lastErr.message : 'Could not create a party.');
+    if (this.closed) { try { peer && peer.destroy(); } catch (e) { /* */ } throw cancelled(); }
+    // friends whose Wi-Fi won't let them link up directly come in through a relay. With the
+    // introduction service out of reach, the party runs on the relay alone.
+    if (!peer) this.code = first || randomCode();
+    this.relay = new RelayHost(this.code, (link) => { if (this.room) this.accept(link); else link.close(); });
+    this.relay.start();
+    if (!peer && !(await this.relay.whenReady(8000))) {
+      this.relay.stop();
+      this.relay = null;
+      throw new Error(lastErr && lastErr.message ? lastErr.message : 'Could not create a party.');
+    }
+    if (this.closed) { try { peer && peer.destroy(); } catch (e) { /* */ } throw cancelled(); }
+    if (peer) this.usePeer(peer);
     storeCode(this.code);
     this.room = new Room({
       code: this.code, name: `${this.hello.name || 'Player'}'s party`, now: () => this.clock.now(),
@@ -181,13 +229,40 @@ export class P2PHost extends Emitter {
     // the party runs on this page: its player can never be kicked (party.js)
     this.room.hostConn = this.local.id;
     this.room.join(this.local, this.hello);
-    this.peer.on('connection', (dc) => this.accept(dc));
-    // keep listening for new friends if the introduction service hiccups
-    this.peer.on('disconnected', () => { if (this.open) setTimeout(() => { try { this.peer.reconnect(); } catch (e) { /* ignore */ } }, 1000); });
-    this.peer.on('error', () => { /* individual link errors are handled per connection */ });
     this.tickTimer = setInterval(() => { if (!this.clock.paused) this.room.tick(); }, 1000 / TICK_HZ);
     this.pumpTimer = setInterval(() => this.flush(), 4);
     this.open = true;
+    // stay introducible: the service drops us when the iPad sleeps or the Wi-Fi blips
+    this.peerTimer = setInterval(() => this.keepPeer(Peer), 5000);
+    this.onVisible = () => { if (!pageHidden()) this.keepPeer(Peer); };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisible);
+  }
+
+  usePeer(peer) {
+    this.peer = peer;
+    peer.on('connection', (dc) => this.accept(dc));
+    // keep listening for new friends if the introduction service hiccups
+    peer.on('disconnected', () => {
+      if (this.open && this.peer === peer) setTimeout(() => { try { if (peer.disconnected && !peer.destroyed) peer.reconnect(); } catch (e) { /* ignore */ } }, 1000);
+    });
+    peer.on('error', () => { /* individual link errors are handled per connection */ });
+  }
+
+  /** Every 5 s (and when the page shows again): get back on the introduction service if we fell off. */
+  async keepPeer(Peer) {
+    if (!this.open || this.peerBusy) return;
+    const p = this.peer;
+    if (p && !p.destroyed) {
+      if (p.disconnected) { try { p.reconnect(); } catch (e) { /* already on its way */ } }
+      return;
+    }
+    if (!Peer) return;
+    this.peerBusy = true;
+    try {
+      const np = await openPeer(Peer, PREFIX + this.code);
+      if (this.open) this.usePeer(np); else np.destroy();
+    } catch (e) { /* the code is still held for us, or offline: next time */ }
+    this.peerBusy = false;
   }
 
   accept(dc) {
@@ -254,6 +329,8 @@ export class P2PHost extends Emitter {
     this.open = false;
     clearInterval(this.tickTimer);
     clearInterval(this.pumpTimer);
+    clearInterval(this.peerTimer);
+    if (this.onVisible && typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisible);
     const links = [...this.links];
     this.links.clear();
     this.dcById.clear();
@@ -261,6 +338,7 @@ export class P2PHost extends Emitter {
     setTimeout(() => {
       for (const dc of links) { try { dc.close(); } catch (e) { /* ignore */ } }
       try { this.peer && this.peer.destroy(); } catch (e) { /* ignore */ }
+      if (this.relay) this.relay.stop();
     }, links.length ? 250 : 0);
   }
 }
@@ -283,6 +361,10 @@ export class P2PClient extends Emitter {
     this.stalled = false;
     this.stallMs = STALL_MS;
     this.silentMs = SILENT_MS;
+    this.relayMs = RELAY_MS;
+    this.via = ''; // 'direct' | 'relay': how the link to the host goes
+    this.hangup = null;
+    this.onStatus = null; // (text) while joining: what is happening
   }
 
   async connect() {
@@ -294,31 +376,14 @@ export class P2PClient extends Emitter {
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onVisible);
   }
 
-  /** Open a peer and a data channel to the host. */
+  /** Open a link to the host: a direct WebRTC data channel when the Wi-Fi allows it, else a relay. */
   async link() {
-    const Peer = await loadPeer();
-    if (this.closed) throw new Error('Cancelled');
-    const peer = await openPeer(Peer, null);
-    if (this.closed) { try { peer.destroy(); } catch (e) { /* */ } throw new Error('Cancelled'); }
-    const dc = peer.connect(PREFIX + this.code, { reliable: true, serialization: 'raw' });
-    try {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Could not connect to that party. Make sure the host still has the game open and try again.')), 15000);
-        dc.on('open', () => { clearTimeout(timer); resolve(); });
-        peer.on('error', (e) => {
-          clearTimeout(timer);
-          reject(e && e.type === 'peer-unavailable'
-            ? Object.assign(new Error(`No party with code ${this.code}. Check the code, and make sure the host still has the game open.`), { type: 'peer-unavailable' })
-            : new Error((e && e.message) || 'Connection failed'));
-        });
-        dc.on('error', (e) => { clearTimeout(timer); reject(new Error((e && e.message) || 'Connection failed')); });
-      });
-    } catch (e) {
-      try { peer.destroy(); } catch (e2) { /* */ }
-      throw e;
-    }
-    if (this.closed) { try { peer.destroy(); } catch (e) { /* */ } throw new Error('Cancelled'); }
-    this.peer = peer;
+    if (this.closed) throw cancelled();
+    const res = await this.race();
+    if (this.closed) { res.close(); throw cancelled(); }
+    const dc = res.dc;
+    this.via = res.via;
+    this.hangup = res.close;
     this.dc = dc;
     this.out = sender(dc);
     this.open = true;
@@ -342,6 +407,94 @@ export class P2PClient extends Emitter {
     dc.on('close', () => { if (this.dc === dc) this.lost(); });
   }
 
+  say(text) { if (this.onStatus) this.onStatus(text); }
+
+  /**
+   * The direct way first; the relay after RELAY_AFTER_MS (at once when the direct way fails, or
+   * when the last link needed the relay). Resolves with { via, dc, close } of the first to open.
+   */
+  race() {
+    const mode = p2pMode();
+    const useDirect = mode !== 'relay';
+    const useRelay = mode !== 'direct' && brokers().length > 0;
+    return new Promise((resolve, reject) => {
+      const errs = {};
+      const pending = new Set();
+      let won = false, relayStarted = false, grace = 0;
+      const win = (r) => {
+        if (won || this.closed) { r.close(); return; }
+        won = true;
+        clearTimeout(grace);
+        resolve(r);
+      };
+      const lose = (which, e) => {
+        errs[which] = e;
+        pending.delete(which);
+        if (won) return;
+        // no such party on the introduction service: the relay only has a moment to find one
+        if (which === 'direct' && useRelay && !relayStarted && !this.closed) { startRelay(e && e.type === 'peer-unavailable' ? Math.min(5000, this.relayMs) : this.relayMs); return; }
+        if (!pending.size) reject(this.explain(errs));
+      };
+      const startRelay = (ms = this.relayMs) => {
+        if (relayStarted || won || this.closed) return;
+        relayStarted = true;
+        pending.add('relay');
+        this.say('Trying another way to reach your friend…');
+        relayDial(this.code, ms).then((link) => win({ via: 'relay', dc: link, close: () => link.close() }), (e) => lose('relay', e));
+      };
+      if (useDirect) {
+        pending.add('direct');
+        this.direct().then(win, (e) => lose('direct', e));
+      }
+      if (useRelay) grace = setTimeout(() => startRelay(), !useDirect || this.via === 'relay' ? 0 : RELAY_AFTER_MS);
+      if (!useDirect && !useRelay) reject(this.explain(errs));
+    });
+  }
+
+  /** A WebRTC data channel straight to the host's device. */
+  async direct() {
+    const Peer = await loadPeer();
+    if (this.closed) throw cancelled();
+    const peer = await openPeer(Peer, null);
+    if (this.closed) { try { peer.destroy(); } catch (e) { /* */ } throw cancelled(); }
+    const dc = peer.connect(PREFIX + this.code, { reliable: true, serialization: 'raw' });
+    try {
+      await new Promise((resolve, reject) => {
+        const fail = (type, msg) => { clearTimeout(timer); reject(Object.assign(new Error(msg || 'Connection failed'), { type })); };
+        const timer = setTimeout(() => fail('direct-timeout', 'The direct link did not open'), DIRECT_MS);
+        dc.on('open', () => { clearTimeout(timer); resolve(); });
+        peer.on('error', (e) => fail(e && e.type === 'peer-unavailable' ? 'peer-unavailable' : (e && e.type) || 'direct-failed', e && e.message));
+        dc.on('error', (e) => fail('direct-failed', e && e.message));
+        // PeerJS hangs up a link whose connection checks failed
+        dc.on('close', () => fail('direct-failed', 'The direct link closed'));
+      });
+    } catch (e) {
+      try { peer.destroy(); } catch (e2) { /* */ }
+      throw e;
+    }
+    return {
+      via: 'direct',
+      dc,
+      close: () => {
+        try { dc.close(); } catch (e) { /* closing */ }
+        try { peer.destroy(); } catch (e) { /* closing */ }
+      },
+    };
+  }
+
+  /** One message for why neither way worked. */
+  explain(errs) {
+    const d = errs.direct, r = errs.relay;
+    const missing = d ? d.type === 'peer-unavailable' : !!(r && r.type === 'relay-nohost');
+    const relayDown = !r || r.type === 'relay-offline';
+    const offline = (!d || OFFLINE_TYPES.has(d.type)) && relayDown;
+    if (offline) return Object.assign(new Error('Could not reach the online party service. Check that this device is connected to the internet, then try again.'), { type: 'offline' });
+    if (missing || (d && OFFLINE_TYPES.has(d.type))) {
+      return Object.assign(new Error(`No party with code ${this.code} right now. Check the code, and make sure your friend's game is open on their screen (not in the background).`), { type: 'peer-unavailable' });
+    }
+    return Object.assign(new Error(`Found party ${this.code}, but could not connect to it. Make sure you both have the newest version (reload the page) and keep the game open on screen, then try again.`), { type: 'unreachable' });
+  }
+
   /** Once a second: ping, notice a silent host. */
   watch() {
     if (!this.open || this.retrying) return;
@@ -358,10 +511,10 @@ export class P2PClient extends Emitter {
     if (!this.open || this.closed) return;
     this.open = false;
     this.stalled = false;
-    try { this.dc && this.dc.close(); } catch (e) { /* */ }
-    try { this.peer && this.peer.destroy(); } catch (e) { /* */ }
+    const hangup = this.hangup;
     this.dc = null;
-    this.peer = null;
+    this.hangup = null;
+    if (hangup) hangup();
     if (this.rejoin) this.reconnect();
     else this.giveUp(null);
   }
@@ -408,12 +561,10 @@ export class P2PClient extends Emitter {
     this.open = false;
     clearInterval(this.pingTimer);
     if (this.onVisible && typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisible);
-    const dc = this.dc, peer = this.peer;
+    const hangup = this.hangup;
+    this.hangup = null;
     // a moment for the bye to leave
-    setTimeout(() => {
-      try { dc && dc.close(); } catch (e) { /* ignore */ }
-      try { peer && peer.destroy(); } catch (e) { /* ignore */ }
-    }, bye ? 150 : 0);
+    if (hangup) setTimeout(hangup, bye ? 150 : 0);
   }
 }
 

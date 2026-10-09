@@ -105,7 +105,7 @@ export class Invite {
         res = await awaitWelcome(net, async () => { await net.connect(); net.send({ t: 'create', hello: app.hello(), settings }); });
       } else {
         net = new P2PHost(app.hello(), { settings });
-        res = await awaitWelcome(net, () => net.connect(), 20000);
+        res = await awaitWelcome(net, () => net.connect(), 25000);
       }
     } catch (e) {
       try { net && net.close(false); } catch (e2) { /* */ }
@@ -126,7 +126,7 @@ export class Invite {
         <div class="inv-left">
           <div class="inv-label">PARTY CODE <small>(tap to copy)</small></div>
           <button class="inv-code" aria-label="Copy the party code">${esc(code)}</button>
-          <div class="inv-hint">Friends tap <b>JOIN A FRIEND</b> and type the code, or scan the QR code with the iPad camera. Works with friends anywhere${this.isServer() ? ' that can reach this server' : ''}.</div>
+          <div class="inv-hint">Friends tap <b>JOIN A FRIEND</b> and type the code, or scan the QR code with the iPad camera. Works with friends anywhere${this.isServer() ? ' that can reach this server' : ''}. Keep the game open on screen while they join.</div>
           <div class="inv-btns">
             ${canShare ? '<button class="btn yellow big inv-share">📤 SHARE</button>' : ''}
             <button class="btn ${canShare ? '' : 'yellow '}big inv-copy">🔗 COPY LINK</button>
@@ -274,7 +274,10 @@ export class Invite {
       }
       if (!res) {
         net = new P2PClient(code, hello);
+        // e.g. 'Trying another way to reach your friend…' when the Wi-Fi won't link the iPads directly
+        net.onStatus = (text) => app.lobby.netStatus(text);
         res = await awaitWelcome(net, () => net.connect(), 25000);
+        net.onStatus = null;
       }
       const w = res.buf.find((m) => m.t === 'welcome' || m.t === 'resumed');
       app.enterParty(net, { replay: res.buf, off: res.off });
@@ -283,7 +286,7 @@ export class Invite {
     } catch (e) {
       try { net && net.close(false); } catch (e2) { /* */ }
       if (e && e.ver) app.ui.alert(e.message);
-      else app.lobby.toast(esc((e && e.message) || 'Could not join that party.'), { kind: 'bad', ms: 6000 });
+      else app.lobby.toast(esc((e && e.message) || 'Could not join that party.'), { kind: 'bad', ms: 9000 });
       return false;
     } finally {
       this.busy = false;
