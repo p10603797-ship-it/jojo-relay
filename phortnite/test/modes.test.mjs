@@ -124,7 +124,9 @@ test('teams: party sizes 1-5 x teams 1/2/3/4/two/humans keep the party together 
         const ps = [...H.room.players.values()];
         const hs = ps.filter((p) => !p.bot);
         const tag = `teams ${teams}, max ${maxPlayers}, ${humans} humans`;
-        assert.ok(ps.length <= Math.max(maxPlayers, humans), `${tag}: ${ps.length} players`);
+        // (friends vs bots always has at least one bot to play against, whatever maxPlayers says)
+        const extra = teams === 'humans' && humans >= maxPlayers ? 1 : 0;
+        assert.ok(ps.length <= Math.max(maxPlayers, humans) + extra, `${tag}: ${ps.length} players`);
         assert.equal(hs.length, humans);
         assert.deepEqual(st.players.map((p) => p.team), [...H.room.players.values()].map((p) => p.team));
         if (typeof teams === 'number' && teams > 1) {
@@ -139,14 +141,17 @@ test('teams: party sizes 1-5 x teams 1/2/3/4/two/humans keep the party together 
         } else if (teams === 'humans') {
           assert.ok(hs.every((p) => p.team === 1));
           assert.ok(ps.filter((p) => p.bot).every((p) => p.team !== 1 && p.team === 1000 + p.id));
-          if (humans < maxPlayers) assert.ok(ps.some((p) => p.bot));
+          assert.ok(ps.some((p) => p.bot), `${tag}: someone to play against`);
           assert.deepEqual(st.teams.map((t) => t.name), ['Your squad']);
         } else if (teams === 'two') {
           const n1 = ps.filter((p) => p.team === 1).length, n2 = ps.filter((p) => p.team === 2).length;
           assert.equal(n1 + n2, ps.length);
           assert.ok(Math.abs(n1 - n2) <= 1, `${tag}: ${n1} vs ${n2}`);
+          // the party plays together on team 1, up to half of everyone (only extra humans play on team 2)
           const h1 = hs.filter((p) => p.team === 1).length;
-          assert.ok(Math.abs(h1 - (humans - h1)) <= 1, 'humans split evenly');
+          assert.equal(h1, Math.min(humans, Math.ceil(ps.length / 2)), `${tag}: ${h1} humans on team 1`);
+          hs.forEach((p, i) => assert.equal(p.team, i < h1 ? 1 : 2, 'join order'));
+          assert.ok(n2 > 0, 'team 2 is never empty');
         } else {
           assert.ok(ps.every((p) => p.team === 1000 + p.id), 'free for all');
           assert.equal(st.teams.length, 0);

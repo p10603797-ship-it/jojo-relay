@@ -182,7 +182,9 @@ test('codes: a world\'s own extra places get numbers after PLACE_NAMES', () => {
 // ------------------------------------------------------------------ names
 test('names: auto names and tags', () => {
   assert.equal(describeRules({ teams: 2, loot: 'snipers', gravity: 0.35, respawn: 5 }).name, 'Low-Gravity Sniper Duos with Respawn');
-  assert.equal(describeRules({ teams: 2, loot: 'snipers', gravity: 0.35, respawn: 5, lives: 0 }).name, 'Low-Gravity Sniper Duos with Respawn');
+  // last standing with respawn can't have unlimited lives (it could never end): 3
+  assert.equal(describeRules({ teams: 2, loot: 'snipers', gravity: 0.35, respawn: 5, lives: 0 }).name, 'Low-Gravity Sniper Duos with 3 Lives');
+  assert.equal(describeRules({ teams: 2, loot: 'snipers', gravity: 0.35, respawn: 5, lives: 0, win: 'elims' }).name.includes('3 Lives'), false);
   assert.deepEqual(describeRules({ teams: 2, loot: 'snipers', gravity: 0.35, respawn: 5 }).tags, ['Duos', 'Snipers only', 'Low Gravity', 'Respawn']);
   assert.equal(describeRules({}).name, 'Solo');
   assert.equal(describeRules(modeRules('team-rumble')).name, 'Team Rumble');

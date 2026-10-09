@@ -13,7 +13,7 @@ const WIN = ruleField('win').options;
 const slotKeys = (lo) => lo.slots.map((s) => s.k);
 
 test('party games: every game has its key, a label and only API hooks', () => {
-  const HOOKS = ['key', 'label', 'teamGame', 'defaults', 'setup', 'tick', 'onKill', 'allowDamage', 'scaleDamage', 'onRespawn', 'loadout', 'checkWin', 'hud'];
+  const HOOKS = ['key', 'label', 'teamGame', 'teamNames', 'defaults', 'setup', 'tick', 'onKill', 'allowDamage', 'scaleDamage', 'onRespawn', 'loadout', 'checkWin', 'hud'];
   for (const [k, g] of Object.entries(PARTY_GAMES)) {
     assert.equal(g.key, k);
     assert.ok(typeof g.label === 'string' && g.label);
@@ -263,32 +263,60 @@ test('juggernaut: 100 points wins', () => {
 });
 
 // ------------------------------------------------------------------ Floor is Lava
-test('lava: rises from -2 m to the 70th percentile of the land, 10 dps (no shields) only below the level', () => {
+test('lava: rises from just under the lowest land to well above most of it, 10 dps (no shields) only below the level', () => {
   const ctx = new FakeCtx({ game: lava, rules: modeRules('floor-is-lava'), players: 4 });
   ctx.start();
-  assert.equal(ctx.state.top, 5, 'flat test island at 5 m');
-  assert.deepEqual(ctx.hud(), { lava: LAVA_START });
-  const [low, high, mid, safe] = ctx.players();
-  low.y = 3; high.y = 9; mid.y = 4.4; safe.y = 30;
-  ctx.advance(150000); // half way: -2 + 7 / 2
-  assert.equal(ctx.hud().lava, 1.5);
-  assert.equal(ctx.damages.length, 0, 'nobody below 1.7 m');
-  // the level passes 2.8 m (+0.2 = the 3 m feet of 'low') at 205.7 s: hits at 206 .. 210 s
-  ctx.advance(60000);
+  // the flat test island at 5 m: from 4 m (5th percentile - 1) to 15 m (median + 10)
+  assert.deepEqual([ctx.state.lo, ctx.state.top], [4, 15]);
+  assert.deepEqual(ctx.hud(), { lava: 4 });
+  const level = (t) => 4 + 11 * Math.pow(t / 300, 0.85);
+  const [low, mid, high, safe] = ctx.players();
+  low.y = 5; mid.y = 9; high.y = 14; safe.y = 30;
+  ctx.advance(150000);
+  assert.ok(Math.abs(ctx.hud().lava - Math.round(level(150) * 10) / 10) < 0.11, 'half way');
+  assert.equal(low.alive, false, 'the ground floods early');
+  assert.ok(mid.alive || ctx.damages.some((d) => d.id === mid.id));
   const lowHits = ctx.damages.filter((d) => d.id === low.id);
-  assert.equal(lowHits.length, 5);
-  assert.ok(lowHits.every((d) => d.amount === 10 && d.by === 0 && d.t >= 206000));
-  assert.deepEqual([low.hp, low.sh], [50, 100], 'shields do not help');
-  assert.equal(ctx.damages.filter((d) => d.id !== low.id).length, 0, 'only the player below the lava');
-  ctx.advance(6000);
-  assert.equal(low.alive, false, '10 hits');
-  // 'mid' (4.4 m) goes under at 265.7 s; the two on high ground stay dry
-  ctx.advance(64000); // 280 s
+  assert.ok(lowHits.every((d) => d.amount === 10 && d.by === 0));
+  assert.equal(ctx.damages.filter((d) => d.id === high.id || d.id === safe.id).length, 0, 'only players below the lava');
+  ctx.advance(110000); // 260 s
   assert.equal(mid.alive, false);
   assert.ok(high.alive && safe.alive && high.hp === 100);
   assert.equal(ctx.result, null, 'two left');
   ctx.eliminate(high, null, { c: 'lava' });
   assert.deepEqual(ctx.result, { id: safe.id, team: safe.team, reason: 'lava' });
+});
+
+test('lava: everyone still standing when the clock runs out wins together (never the first to join)', () => {
+  const ctx = new FakeCtx({ game: lava, rules: modeRules('floor-is-lava'), players: 3 });
+  ctx.start();
+  const [a, b, c] = ctx.players();
+  a.y = 40; b.y = 40; c.y = 40;
+  ctx.advance(301000);
+  assert.deepEqual(ctx.result, { reason: 'survived' });
+});
+
+test('lava: the clock runs out while everyone waits to respawn: nobody survived (not a shared win)', () => {
+  const ctx = new FakeCtx({ game: lava, rules: normalizeRules({ ...lava.defaults, win: 'lava', respawn: 30, lives: 0 }), players: 3 });
+  ctx.start();
+  for (const p of ctx.players()) p.y = 40;
+  ctx.advance(295000);
+  for (const p of ctx.players()) { p.alive = false; p.respawnAt = 1e12; }
+  ctx.advance(6000);
+  assert.deepEqual(ctx.result, { reason: 'lava' });
+});
+
+test('lava with respawns: a death is not the end while the others wait to respawn', () => {
+  const ctx = new FakeCtx({ game: lava, rules: normalizeRules({ ...lava.defaults, win: 'lava', respawn: 3, lives: 0 }), players: 4 });
+  ctx.start();
+  for (const p of ctx.players()) p.y = 40;
+  const [a, ...rest] = ctx.players();
+  for (const p of rest) ctx.eliminate(p, a, { w: 'ar' });
+  assert.ok(rest.every((p) => p.respawnAt > 0));
+  assert.equal(ctx.result, null, 'they are coming back');
+  for (const p of rest) p.respawnAt = 0; // out of lives
+  ctx.checkWin();
+  assert.deepEqual(ctx.result, { id: a.id, team: a.team, reason: 'lava' });
 });
 
 test('lava: the top comes from the real island inside the area', () => {
@@ -403,7 +431,7 @@ test('mode HUD: every game\'s hud() drives ModeClient (score bar, top 3, ladder,
   r = run('juggernaut', modeRules('juggernaut'));
   assert.match(r.calls.line[0], /Juggernaut/);
   r = run('lava', modeRules('floor-is-lava'));
-  assert.match(r.calls.line[0], /LAVA <b>-2\.0 m<\/b>/);
+  assert.match(r.calls.line[0], /LAVA <b>4\.0 m<\/b>/);
   r = run('hideseek', { ...PARTY_GAMES.hideseek.defaults, win: 'hideseek' });
   assert.match(r.calls.line[0], /HIDING/);
   // a respawn countdown from ms.rs while I'm down
@@ -429,4 +457,39 @@ test('mode HUD: every game\'s hud() drives ModeClient (score bar, top 3, ladder,
   hs.mc.filterInput(s2);
   assert.deepEqual(s2, { mx: 1, fire: true });
   for (const k of Object.keys(PARTY_GAMES)) assert.ok(objective({ win: k, teams: 1, target: 0, timeLimit: 300 }).length > 10, k);
+});
+
+// ------------------------------------------------------------------ a modified P2P host
+test('mode HUD: a P2P host\'s mode state and team list never reach the HUD as markup', async () => {
+  const { ModeClient } = await import('../public/js/game/modeClient.js');
+  const { cleanTeam } = await import('../public/js/game/roster.js');
+  const bad = '<img src=x onerror=alert(1)>';
+  const view = () => {
+    const v = { calls: {} };
+    for (const k of ['show', 'clockText', 'bar', 'top', 'ladder', 'line', 'teammates', 'respawn', 'blindfold', 'pointTo']) v[k] = (...a) => { v.calls[k] = a; };
+    return v;
+  };
+  const html = [];
+  for (const win of ['infection', 'hideseek', 'juggernaut', 'elims', 'teamelims']) {
+    const roster = new Map([1, 2, 3, 4, 5].map((id) => [id, { id, name: `P${id}`, team: win === 'teamelims' ? 1 + (id % 3) : 1000 + id, alive: true }]));
+    const teams = new Map([1, 2, 3].map((id) => [id, cleanTeam({ id, name: bad, color: `red;" onclick="alert(1)` })]));
+    const game = {
+      rules: { ...modeRules('infection'), win, teams: win === 'teamelims' ? 3 : 1, target: 10 }, myId: 5, phase: 'match', roster, teams,
+      me: { alive: true, pos: { x: 0, y: 0, z: 0 } }, roleOf: () => null, teamOf: (id) => roster.get(id)?.team ?? id,
+      nameOf: (id) => roster.get(id)?.name ?? '?', actorById: () => null, actors: () => [], mapExtras: {},
+    };
+    const mc = new ModeClient(game);
+    mc.active = true;
+    mc.view = view();
+    mc.setMs({ t: 'ms', sc: [[1, bad], [2, bad], [3, bad], [1001, bad], [1002, bad], [1003, bad], [1004, bad]], goal: bad, g: { s: bad, z: bad, h: bad, hs: bad, j: 2 } });
+    mc.renderHud();
+    html.push(String(mc.view.calls.line?.[0] ?? ''), String(mc.view.calls.top?.[1] ?? ''));
+    for (const row of mc.view.calls.top?.[0] || []) assert.equal(typeof row.score, 'number');
+  }
+  for (const h of html) assert.ok(!/<img|onerror|onclick/.test(h), h);
+  // the team list: a colour is a colour, a name is plain text
+  const t = cleanTeam({ id: 2, name: bad, color: 'red;background:url(x)' });
+  assert.equal(t.color, '#ffffff');
+  assert.ok(!/[<>"'&]/.test(t.name) && t.name.length <= 24, t.name);
+  assert.equal(cleanTeam({ id: 1, name: 'Blue', color: '#3ea4ff' }).color, '#3ea4ff');
 });

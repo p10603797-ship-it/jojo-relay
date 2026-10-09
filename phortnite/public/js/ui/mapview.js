@@ -368,7 +368,12 @@ export class MapView {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
-    for (const r of regs) {
+    // names that would run into a name already drawn are left out (hot places first, landmarks
+    // last); zooming in makes room for more
+    const RANK = { hot: 0, normal: 1, quiet: 2 };
+    const order = regs.slice().sort((a, b) => (a.named === false) - (b.named === false) || (RANK[a.tier] ?? 1) - (RANK[b.tier] ?? 1));
+    const drawn = [];
+    for (const r of order) {
       const named = r.named !== false;
       if (!named && span > d.size * 0.45) continue;
       const x = toX(r.x), y = toY(r.z);
@@ -376,10 +381,14 @@ export class MapView {
       const st = TIER_STYLE[r.tier] || TIER_STYLE.normal;
       const fs = Math.round(base * (named ? st.size : 0.72));
       ctx.font = `${fs}px "Luckiest Guy", "Russo One", sans-serif`;
+      const text = named ? r.name.toUpperCase() : r.name;
+      const w = ctx.measureText(text).width;
+      const box = [x - w / 2 - 3, y - fs * 0.6, x + w / 2 + 3, y + fs * 0.6];
+      if (drawn.some((b) => b[0] < box[2] && box[0] < b[2] && b[1] < box[3] && box[1] < b[3])) continue;
+      drawn.push(box);
       ctx.lineWidth = Math.max(3, fs * 0.22);
       ctx.strokeStyle = 'rgba(0,0,0,0.75)';
       ctx.fillStyle = named ? st.fill : '#d8e6f0';
-      const text = named ? r.name.toUpperCase() : r.name;
       ctx.strokeText(text, x, y);
       ctx.fillText(text, x, y);
     }
@@ -446,7 +455,7 @@ export class MapView {
             ctx.stroke();
           }
           if (p.label) {
-            ctx.font = `${p.big ? 12 : 11}px system-ui, sans-serif`;
+            ctx.font = p.big ? `${Math.round(15 * big)}px "Luckiest Guy", "Russo One", sans-serif` : '12px system-ui, sans-serif';
             ctx.lineWidth = 3;
             ctx.strokeText(p.label, x, y - (p.big ? 24 * big : 12));
             ctx.fillText(p.label, x, y - (p.big ? 24 * big : 12));

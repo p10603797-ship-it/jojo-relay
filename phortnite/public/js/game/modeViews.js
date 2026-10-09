@@ -109,7 +109,7 @@ export class ModeHud {
     if (rows && rows.length) {
       const key = rows.map((r) => `${r.name}|${r.score}|${r.color}|${r.me ? 1 : 0}`).join(';');
       this.set('top', key, () => {
-        this.el.top.innerHTML = rows.map((r, i) => `<li class="${r.me ? 'me' : ''}"><em>${i + 1}</em><i style="background:${r.color}"></i><span>${esc(r.name)}</span><b>${r.score}</b></li>`).join('');
+        this.el.top.innerHTML = rows.map((r, i) => `<li class="${r.me ? 'me' : ''}"><em>${i + 1}</em><i style="background:${esc(r.color)}"></i><span>${esc(r.name)}</span><b>${Math.round(+r.score || 0)}</b></li>`).join('');
       });
     }
     this.part('me', !!meText);
@@ -121,7 +121,7 @@ export class ModeHud {
     this.part('ladder', lv >= 0);
     if (lv < 0) return;
     this.set('ladder', lv, () => {
-      this.el.ladder.innerHTML = rungs.map((k, i) => `<span class="${i < lv ? 'done' : i === lv ? 'cur' : ''}">${LADDER_ICON[k] || k}</span>`).join('')
+      this.el.ladder.innerHTML = rungs.map((k, i) => `<span class="${i < lv ? 'done' : i === lv ? 'cur' : ''}">${LADDER_ICON[k] || esc(k)}</span>`).join('')
         + `<em>${lv + 1}/${rungs.length} · ${esc(rungs[lv] === 'pickaxe' ? 'PICKAXE: WIN IT!' : (WEAPONS[rungs[lv]] || {}).name || rungs[lv])}</em>`;
     });
   }
@@ -139,7 +139,9 @@ export class ModeHud {
     const on = !!(rows && rows.length);
     this.set('mates', on, (v) => this.mates.classList.toggle('hidden', !v));
     if (!on) return;
-    const shown = rows.slice(0, 4);
+    // phones show three rows: the '+N more' line counts the rest
+    const phone = typeof matchMedia === 'function' && matchMedia('(max-height: 460px)').matches;
+    const shown = rows.slice(0, phone ? 3 : 4);
     const key = shown.map((r) => `${r.name}|${Math.ceil(r.hp)}|${Math.ceil(r.sh)}|${r.alive ? 1 : 0}|${r.color}|${r.note || ''}`).join(';') + `|${rows.length}`;
     this.set('matesHtml', key, () => {
       this.mates.innerHTML = shown.map((r) => `<div class="mh-mate${r.alive ? '' : ' dead'}" style="--tc:${r.color}"><span>${esc(r.name)}${r.note ? ` <small>${esc(r.note)}</small>` : ''}</span>`

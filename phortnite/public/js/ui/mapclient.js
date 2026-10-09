@@ -20,6 +20,7 @@ const LABEL_MIN_HEIGHT = 60;   // metres above the ground before the place names
 
 const _m = new THREE.Matrix4();
 const _v = new THREE.Vector3();
+const _lp = new THREE.Vector3();
 const _c = new THREE.Color();
 
 export class MapClient {
@@ -154,10 +155,13 @@ export class MapClient {
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     const n = items.length;
     const pos = new Float32Array(n * 12), corner = new Float32Array(n * 8), uv = new Float32Array(n * 8), idx = [];
+    const vis = new Float32Array(n * 4).fill(1);
+    this.labelItems = [];
     items.forEach((it, i) => {
       const y = Math.max(it.r.y ?? d.heightAt(it.r.x, it.r.z), 0) + 45;
       const k = it.hot ? 0.62 : 0.46;  // label height on screen = ROW * k px
       const hw = it.w * k / 2, hh = it.h * k / 2;
+      this.labelItems.push({ x: it.r.x, y, z: it.r.z, hw, hh, hot: it.hot });
       const cs = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
       const us = [[it.u0, it.v1], [it.u1, it.v1], [it.u1, it.v0], [it.u0, it.v0]];
       for (let j = 0; j < 4; j++) {
@@ -171,6 +175,7 @@ export class MapClient {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setAttribute('aVis', new THREE.BufferAttribute(vis, 1)); // 0: hidden (it would run into another name)
     geo.setIndex(idx);
     const uniforms = { tMap: { value: tex }, uPx: { value: new THREE.Vector2(1 / 512, 1 / 512) }, uOpacity: { value: 0 }, uFar: { value: 1000 } };
     const mat = new THREE.ShaderMaterial({
@@ -180,13 +185,14 @@ export class MapClient {
       depthWrite: false,
       vertexShader: /* glsl */`
         attribute vec2 aCorner;
+        attribute float aVis;
         uniform vec2 uPx;
         uniform float uFar;
         varying vec2 vUv;
         varying float vFade;
         void main() {
           vec4 clip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          if (clip.w <= 0.1) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vFade = 0.0; return; }
+          if (clip.w <= 0.1 || aVis < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vFade = 0.0; return; }
           // nearer places read bigger; the ones lost in the haze fade away (no pile-up on the horizon)
           float d = clip.w;
           float size = mix(1.25, 0.7, smoothstep(120.0, uFar * 0.8, d));
@@ -236,6 +242,47 @@ export class MapClient {
       const pr = r.getPixelRatio();
       this.labelU.uPx.value.set((2 * pr) / Math.max(1, _v.x), (2 * pr) / Math.max(1, _v.y));
     }
+    if ((this.declutterT = (this.declutterT || 0) - dt) <= 0) { this.declutterT = 0.1; this.declutter(); }
+  }
+
+  /**
+   * Names that would run into each other (or into the 'jump' hint) are left out, a few times a
+   * second: the hot places first, then the nearest. (Same sizes as the label shader.)
+   */
+  declutter() {
+    const g = this.game, cam = g.camera, items = this.labelItems;
+    if (!items || !cam || !this.labels) return;
+    const W = typeof innerWidth === 'number' ? innerWidth : 1024, H = typeof innerHeight === 'number' ? innerHeight : 768;
+    const far = g.world.fogFar || 1000;
+    const kept = [];
+    const hint = g.hud && g.hud.el && g.hud.el.bus;
+    if (hint && hint.classList && hint.classList.contains('show') && hint.getBoundingClientRect) {
+      const b = hint.getBoundingClientRect();
+      if (b.width) kept.push([b.left - 6, b.top - 6, b.right + 6, b.bottom + 6]);
+    }
+    const order = items.map((it, i) => {
+      _lp.set(it.x, it.y, it.z);
+      const d = _lp.distanceTo(cam.position);
+      return [i, d];
+    }).sort((a, b) => (items[b[0]].hot - items[a[0]].hot) || a[1] - b[1]);
+    const attr = this.labels.geometry.getAttribute('aVis');
+    let changed = false;
+    for (const [i, d] of order) {
+      const it = items[i];
+      _lp.set(it.x, it.y, it.z).project(cam);
+      let show = _lp.z < 1 && Math.abs(_lp.x) < 1.2 && Math.abs(_lp.y) < 1.2;
+      if (show) {
+        const t = Math.max(0, Math.min(1, (d - 120) / (far * 0.8 - 120)));
+        const size = 1.25 + (0.7 - 1.25) * t * t * (3 - 2 * t);
+        const sx = (_lp.x * 0.5 + 0.5) * W, sy = (-_lp.y * 0.5 + 0.5) * H;
+        const box = [sx - it.hw * size - 4, sy - it.hh * size - 2, sx + it.hw * size + 4, sy + it.hh * size + 2];
+        if (kept.some((k) => k[0] < box[2] && box[0] < k[2] && k[1] < box[3] && box[1] < k[3])) show = false;
+        else kept.push(box);
+      }
+      const v = show ? 1 : 0;
+      if (attr.array[i * 4] !== v) { attr.array.fill(v, i * 4, i * 4 + 4); changed = true; }
+    }
+    if (changed) attr.needsUpdate = true;
   }
 
   // ------------------------------------------------------------------ launch pads
@@ -253,8 +300,9 @@ export class MapClient {
     const mv = a.mover;
     const mode = mv.mode;
     if (mode === 'bus' || mode === 'dead') return;
-    // after a launch: open the glider once well clear of the ground (soft landing, no fall damage)
-    if (mv.launched && mode === 'air' && mv.vel.y < -1) {
+    // after a launch: open the glider once well clear of the ground (soft landing, no fall damage);
+    // a bounce mushroom never opens it (PAD_KICK.mushroom.glide)
+    if (mv.launched && mv.launchGlide !== false && mode === 'air' && mv.vel.y < -1) {
       const h = this.game.physics.raycast(a.pos.x, a.pos.y + 0.2, a.pos.z, 0, -1, 0, 60, RAY_STATIC);
       if (!h || h.dist > 5) mv.mode = 'glide';
     }
@@ -272,8 +320,8 @@ export class MapClient {
       const sp = Math.hypot(mv.vel.x, mv.vel.z);
       if (sp > 0.5) { fx = mv.vel.x / sp; fz = mv.vel.z / sp; }
     }
-    if (mv.launch) mv.launch(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power);
-    else { mv.vel.set(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power); mv.mode = 'air'; mv.launched = true; }
+    if (mv.launch) mv.launch(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power, kick.glide !== false);
+    else { mv.vel.set(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power); mv.mode = 'air'; mv.launched = true; mv.launchGlide = kick.glide !== false; }
     const g = this.game;
     if (g.fx && g.fx.dust) g.fx.dust(p.x, p.y + 0.3, p.z, 1.6, p.kind === 'geyser' ? [0.92, 0.96, 1] : [0.8, 0.85, 1]);
     if (g.sfx && g.sfx.whoosh) g.sfx.whoosh(a === g.me);

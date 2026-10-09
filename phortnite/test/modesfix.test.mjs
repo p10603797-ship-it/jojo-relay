@@ -202,7 +202,7 @@ function keptGame(myId, inbox) {
   // what the page had seen before the drop
   for (const m of inbox) if (m.t === 'role') g.onMessage(m);
   g.got.length = 0;
-  g.app = { lobby: { render() {}, toast() {} }, stage: {}, onWelcome() {} };
+  g.app = { lobby: { render() {}, toast() {}, countdown() {} }, stage: {}, onWelcome() {} };
   return g;
 }
 
@@ -266,16 +266,19 @@ test("'resumed' uses the match's rules over the lobby settings (Mystery Mutators
 
 // ------------------------------------------------------------------ 5, 6. edits
 import { BuildClient } from '../public/js/world/buildClient.js';
-import { EDIT_PRESETS, EDIT_FULL } from '../public/shared/buildgrid.js';
+import { EDIT_PRESETS, EDIT_FULL, pieceKey } from '../public/shared/buildgrid.js';
+
+// a real piece key (the edit reach is measured to the piece's centre): a wall just in front
+const K1 = pieceKey('w', 0, 0, 0, 'x');
 
 function editGame() {
-  const pieces = new Map([['k1', { k: 'k1', t: 'w', by: 1, pos: new THREE.Vector3(0, 1, -2) }]]);
+  const pieces = new Map([[K1, { k: K1, t: 'w', by: 1, pos: new THREE.Vector3(0, 1, -2) }]]);
   const sent = [];
   const g = {
     hud: {}, phase: 'lobby', rules: normalizeRules({ build: 'off' }), myId: 1, sent, sfx: {}, input: { touchMode: true },
     me: { id: 1, alive: true, inBus: false, pos: new THREE.Vector3(0, 0, 0), canAct: () => true },
     camera: { quaternion: new THREE.Quaternion(), position: new THREE.Vector3(0, 1, 0) },
-    physics: { raycast: () => ({ x: 0, y: 1, z: -2, info: { kind: 'build', key: 'k1' } }) },
+    physics: { raycast: () => ({ x: 0, y: 1, z: -2, info: { kind: 'build', key: K1 } }) },
     builds: { pieces, setEdit: (k, e) => { pieces.get(k).e = e; return true; } },
     send: (m) => sent.push(m), friendly: () => true,
   };
@@ -299,16 +302,16 @@ test('edit throttle is per actor: a bot editing does not swallow your edit tap',
   const bc = new BuildClient(g);
   bc.time = 10;
   const bot = { id: 7 };
-  assert.equal(bc.editPiece(bot, 'k1', EDIT_PRESETS.w.door), true, 'a bot edits');
+  assert.equal(bc.editPiece(bot, K1, EDIT_PRESETS.w.door), true, 'a bot edits');
   // you tap DOOR on the same piece 0 s later: before, the shared throttle ignored it
-  bc.editing = { k: 'k1', t: 'w', x: 0, z: -2 };
+  bc.editing = { k: K1, t: 'w', x: 0, z: -2 };
   bc.pick(0);
   assert.deepEqual(g.sent.map((m) => m.id), [7, 1], 'both edits went out');
   assert.equal(g.sent[1].e, EDIT_FULL.w, 'DOOR on a door shuts it');
   // one actor still waits between its own edits (the room takes one per 0.15 s)
-  assert.equal(bc.editPiece(bot, 'k1', EDIT_PRESETS.w.window), false);
+  assert.equal(bc.editPiece(bot, K1, EDIT_PRESETS.w.window), false);
   bc.time += 0.2;
-  assert.equal(bc.editPiece(bot, 'k1', EDIT_PRESETS.w.window), true);
+  assert.equal(bc.editPiece(bot, K1, EDIT_PRESETS.w.window), true);
 });
 
 // ------------------------------------------------------------------ 7. party game clocks

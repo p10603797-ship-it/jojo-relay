@@ -72,6 +72,13 @@ otherwise the iPads can't reach the server.
 
 `PORT=3000 npm start` changes the port. `npm test` runs the game-logic tests.
 
+Each network (IP address) can have at most 8 parties open, create 10 parties a minute and hold
+64 connections (`MAX_ROOMS_PER_IP`, `MAX_CREATES_PER_MIN`, `MAX_CONNS_PER_IP` change these). On a
+plain Wi-Fi every iPad has its own address, so these never get in the way. Behind a reverse proxy
+on another machine (or a hosting service), every player seems to come from the proxy's address:
+set `TRUST_PROXY=1` there so the server uses the `X-Forwarded-For` address instead (by default it
+only trusts a proxy on the same machine; `TRUST_PROXY=0` never trusts it).
+
 ## What's in it
 
 * **Real 3D world** — a 1.6 km procedurally generated island (always the same island, like the

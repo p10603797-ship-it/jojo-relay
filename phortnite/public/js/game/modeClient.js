@@ -19,6 +19,9 @@ const BIG_HEAD = 2.2; // matches the Big Head hitbox (combatant.js / remote.js)
 /** Games that dress players up, and the looks they use. */
 const ROLE_GAMES = { infection: ['zombie'], juggernaut: ['jugg'], hideseek: ['seeker'] };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// the mode state comes from the room, which a P2P host runs on their own page: numbers stay numbers
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number.isFinite(+v) && v !== null && typeof v !== 'object' ? +v : 0);
+const count = (v) => (v === undefined || v === null ? '–' : Math.max(0, num(v) | 0));
 const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
 const _p = new THREE.Vector3();
 
@@ -76,8 +79,12 @@ export function seriesRows(game, series) {
   return rows;
 }
 
-function isTeamGame(win) {
-  if (own(GAMES, win) && GAMES[win].teamGame !== undefined) return !!GAMES[win].teamGame;
+/** Are scores kept per team? The same check as the room's (runtime.teamScores): teamGame may be a function of the rules. */
+function isTeamGame(win, rules) {
+  if (own(GAMES, win) && GAMES[win].teamGame !== undefined) {
+    const tg = GAMES[win].teamGame;
+    return typeof tg === 'function' ? !!tg(rules || {}) : !!tg;
+  }
   return win === 'teamelims' || win === 'koth';
 }
 
@@ -364,6 +371,16 @@ export class ModeClient {
   // ------------------------------------------------------------------ teams
   teamLook(id) { return teamLookOf(this.game, id); }
 
+  /** A team's name; free for all (1000 + player id, not listed): the player's name, or 'You'. */
+  teamName(id) {
+    const g = this.game;
+    if (id >= 1000 && !(g.teams && g.teams.has && g.teams.has(id))) {
+      const mine = g.teamOf ? g.teamOf(g.myId) : g.myId;
+      return id === mine ? 'You' : g.nameOf ? g.nameOf(id - 1000) : String(id - 1000);
+    }
+    return this.teamLook(id).name;
+  }
+
   teamColor(id) { return this.teamLook(id).color; }
 
   hillColor(h) {
@@ -389,7 +406,7 @@ export class ModeClient {
       this.koth = null;
       return;
     }
-    if (!this.koth) this.koth = { rings: [{ x: 0, z: 0, r: 9, c: '#fff' }], pins: [{ x: 0, z: 0, c: '#fff', label: 'HILL' }] };
+    if (!this.koth) this.koth = { rings: [{ x: 0, z: 0, r: 9, c: '#fff' }], pins: [{ x: 0, z: 0, c: '#fff', label: '👑 HILL', big: true }] };
     const ring = this.koth.rings[0], pin = this.koth.pins[0];
     ring.x = pin.x = h.x;
     ring.z = pin.z = h.z;
@@ -430,9 +447,9 @@ export class ModeClient {
 
   renderHud() {
     const g = this.game, r = this.rules, v = this.view, ms = this.ms;
-    const gh = (ms && ms.g) || {};
-    const sc = ms && Array.isArray(ms.sc) ? ms.sc : [];
-    const goal = (ms && ms.goal) || r.target || 0;
+    const gh = ms && ms.g && typeof ms.g === 'object' ? ms.g : {};
+    const sc = ms && Array.isArray(ms.sc) ? ms.sc.filter(Array.isArray).map((e) => [num(e[0]), num(e[1])]) : [];
+    const goal = num((ms && ms.goal) || r.target || 0);
     const me = g.me;
     const myId = g.myId;
     const win = r.win;
@@ -444,17 +461,19 @@ export class ModeClient {
 
     // scores: two teams as a bar, otherwise the top 3 (teams or players) with your place
     let bar = null, rows = null, meText = '';
-    const teamGame = isTeamGame(win);
-    if (win !== 'last' && win !== 'infection' && win !== 'lava') {
+    const teamGame = isTeamGame(win, r);
+    // (infection and hide & seek show their own SURVIVORS / HIDING line; their scores are seconds)
+    if (win !== 'last' && win !== 'infection' && win !== 'lava' && win !== 'hideseek') {
       if (teamGame) {
         const ids = this.teamIds(sc);
         const myTeam = g.teamOf ? g.teamOf(myId) : myId;
         const scoreOf = (id) => { const e = sc.find((x) => x[0] === id); return e ? e[1] : 0; };
-        if (ids.length === 2) {
-          bar = ids.map((id) => ({ ...this.teamLook(id), score: scoreOf(id), mine: id === myTeam }));
+        // the 'vs' bar only for real teams (free for all keys scores by 1000 + player id)
+        if (ids.length === 2 && r.teams !== 1) {
+          bar = ids.map((id) => ({ ...this.teamLook(id), name: this.teamName(id), score: scoreOf(id), mine: id === myTeam }));
         } else {
           const ranked = ids.map((id) => [id, scoreOf(id)]).sort((p, q) => q[1] - p[1]);
-          rows = ranked.slice(0, 3).map(([id, n]) => ({ name: this.teamLook(id).name, score: n, color: this.teamColor(id), me: id === myTeam }));
+          rows = ranked.slice(0, 3).map(([id, n]) => ({ name: this.teamName(id), score: n, color: this.teamColor(id), me: id === myTeam }));
           const i = ranked.findIndex((e) => e[0] === myTeam);
           if (i >= 3) meText = `YOUR TEAM <b>#${i + 1}</b> · ${ranked[i][1]}`;
         }
@@ -478,11 +497,12 @@ export class ModeClient {
       lv = Math.max(0, Math.min(GUN_LADDER.length - 1, lv | 0));
     } else if (win === 'infection') {
       const zombie = g.roleOf && g.roleOf(myId) === 'zombie';
-      line = `🧑 <b>${gh.s ?? '–'}</b> SURVIVORS · 🧟 <b>${gh.z ?? '–'}</b> ZOMBIES<br><small>${zombie ? 'You are a ZOMBIE: get them!' : 'Stay alive!'}</small>`;
+      line = `🧑 <b>${count(gh.s)}</b> SURVIVORS · 🧟 <b>${count(gh.z)}</b> ZOMBIES<br><small>${zombie ? 'You are a ZOMBIE: get them!' : 'Stay alive!'}</small>`;
       cls = zombie ? 'zombie' : '';
     } else if (win === 'koth' && gh.hill) {
       const h = gh.hill;
-      const who = h.ct ? 'CONTESTED!' : h.owner ? `${esc(this.teamLook(h.owner).name.toUpperCase())} holds it` : 'Nobody there';
+      const owner = h.owner ? this.teamName(h.owner) : '';
+      const who = h.ct ? 'CONTESTED!' : owner === 'You' ? '<b>YOU</b> hold it' : owner ? `${esc(owner.toUpperCase())} holds it` : 'Nobody there';
       const moves = clock((h.prog || 0) * (HILL_MOVE_MS / 1000) - (performance.now() - this.msAt) / 1000);
       let dist = '';
       if (me && me.alive && me.pos) {
@@ -499,8 +519,8 @@ export class ModeClient {
       cls = j === myId ? 'jugg' : '';
     } else if (win === 'hideseek') {
       const seeker = g.roleOf && g.roleOf(myId) === 'seeker';
-      const hs = (gh.hs | 0) > 0 ? Math.max(0, Math.ceil(gh.hs - (performance.now() - this.msAt) / 1000)) : 0;
-      line = `🙈 <b>${gh.h ?? '–'}</b> HIDING · 👀 <b>${gh.s ?? '–'}</b> SEEKING<br><small>${hs > 0 ? `Seekers come out in ${hs}…` : seeker ? 'Find them! One tap is enough.' : 'Stay hidden!'}</small>`;
+      const hs = (gh.hs | 0) > 0 ? Math.max(0, Math.ceil(num(gh.hs) - (performance.now() - this.msAt) / 1000)) : 0;
+      line = `🙈 <b>${count(gh.h)}</b> HIDING · 👀 <b>${count(gh.s)}</b> SEEKING<br><small>${hs > 0 ? `Seekers come out in ${hs}…` : seeker ? 'Find them! One tap is enough.' : 'Stay hidden!'}</small>`;
       cls = seeker ? 'seeker' : '';
       this.blind = seeker && hs > 0 && !!(me && me.alive);
       if (this.view) this.view.blindfold(this.blind ? hs : -1);

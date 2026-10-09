@@ -305,7 +305,7 @@ export const CATALOG = [
   {
     id: 'build-practice', name: 'Build Practice', emoji: '🧰', color: '#42a5f5', cat: 'practice', players: '1-16', tags: ['No Damage', 'Infinite Build'],
     desc: 'No storm, no damage and infinite materials: practise ramps, walls and boxes with friends.',
-    rules: { pvp: false, bots: 0, ...ARENA, storm: 'none', build: 'infinite', loadout: 'buildfight' },
+    rules: { pvp: false, bots: 0, ...ARENA, storm: 'none', build: 'infinite', loadout: 'buildfight', fallDamage: false },
   },
   {
     id: 'aim-trainer', name: 'Aim Trainer', emoji: '🏹', color: '#9ccc65', cat: 'practice', players: '1-16', tags: ['Easy Bots', 'Big Heads'],

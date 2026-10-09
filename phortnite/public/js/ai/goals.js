@@ -47,6 +47,21 @@ export function isHunter(bot) {
 }
 
 /**
+ * A bot whose weapon is the pickaxe and who should go and use it: the hunters, the last rung of
+ * Gun Game (and its kit-less moments), and Pickaxe Party (the loot pool has no guns). Without this
+ * such bots wander off to 'find a gun' that does not exist and never fight.
+ */
+export function meleeOnly(bot) {
+  if (isHunter(bot)) return true;
+  const g = bot.game, r = g && g.rules;
+  if (!r || passive(g) || g.phase === 'lobby') return false;
+  const k = modeKey(g);
+  if (k === 'hideseek') return false; // hiders hide
+  if (k !== 'gungame' && r.loot !== 'pickaxe') return false;
+  return typeof bot.hasGun === 'function' && !bot.hasGun();
+}
+
+/**
  * Hide & Seek: seconds left of the hiders' head start (ms.g.hs), 0 once the seekers are out (or in
  * any other mode). Before the room's first mode state arrives it counts as on.
  */
@@ -107,13 +122,14 @@ export function targetBonus(bot, a) {
   switch (modeKey(g)) {
     case 'juggernaut': return a.id === juggId(g) ? 45 : 0;
     case 'infection': case 'hideseek': return isHunter(bot) ? 25 : 0;
+    case 'gungame': return meleeOnly(bot) ? 25 : 0;
     case 'koth': {
       const h = hillOf(g);
       if (!h) return 0;
       const dx = a.pos.x - h.x, dz = a.pos.z - h.z;
       return dx * dx + dz * dz < (h.r + 4) * (h.r + 4) ? 25 : 0;
     }
-    default: return 0;
+    default: return meleeOnly(bot) ? 25 : 0; // (Pickaxe Party: commit to a target)
   }
 }
 
@@ -145,6 +161,14 @@ function nearest(bot, list) {
  */
 export function modeGoal(bot, out) {
   const g = bot.game, p = bot.pos;
+  // a pickaxe-only bot (Pickaxe Party, gun game's last rung) runs down the nearest enemy
+  if (!isHunter(bot) && meleeOnly(bot)) {
+    const t = nearest(bot, enemies(bot));
+    if (t && (t.pos.x - p.x) ** 2 + (t.pos.z - p.z) ** 2 < 150 * 150) {
+      out.x = t.pos.x; out.y = t.pos.y; out.z = t.pos.z;
+      return 'hunt';
+    }
+  }
   switch (modeKey(g)) {
     case 'koth': {
       const h = hillOf(g);
@@ -461,7 +485,7 @@ function pickSearch(bot) {
 /** A respawn mode won by eliminations (or the most of them when time runs out). */
 export function deathmatch(game) {
   const r = game.rules;
-  return !!r && r.respawn > 0 && r.pvp !== false && (r.win === 'elims' || r.win === 'teamelims' || r.win === 'time');
+  return !!r && r.respawn > 0 && r.pvp !== false && (r.win === 'elims' || r.win === 'teamelims' || r.win === 'time' || r.win === 'gungame');
 }
 
 /** The nearest human teammate within 25 m (60 m to catch up with), or null. */
@@ -482,6 +506,40 @@ export function humanMate(bot) {
 export function lavaClose(bot) {
   const lava = lavaLevel(bot.game);
   return lava !== null && bot.pos.y - lava < 2.5;
+}
+
+const _esc = { x: 0, y: 0, z: 0, pad: false };
+
+/**
+ * Standing in a lava pool (data.lava: the volcano's crater, which the nav graph leaves out, and
+ * where Room.inLava burns 10 a second): the way out, the pool's nearest geyser (it throws you out
+ * of the crater), else straight out past its edge. {x, y, z, pad} (shared object), or null.
+ */
+export function lavaEscape(bot, out = _esc) {
+  const g = bot.game, d = g && g.world && g.world.data;
+  const pools = d && d.lava;
+  if (!pools || !pools.length) return null;
+  const p = bot.pos;
+  for (const L of pools) {
+    if (!L || !(L.r > 0)) continue;
+    const dx = p.x - L.x, dz = p.z - L.z, r2 = dx * dx + dz * dz, R = L.r + 1;
+    if (r2 > R * R) continue;
+    if (p.y > (Number.isFinite(L.y) ? L.y : d.heightAt(p.x, p.z)) + 1.5) continue;
+    let best = null, bd = Infinity;
+    for (const q of d.pads || []) {
+      if (!q || q.kind === 'mushroom' || q.roof || (q.x - L.x) ** 2 + (q.z - L.z) ** 2 > R * R) continue;
+      const dd = (q.x - p.x) ** 2 + (q.z - p.z) ** 2;
+      if (dd < bd) { bd = dd; best = q; }
+    }
+    if (best) {
+      out.x = best.x; out.z = best.z; out.y = best.y ?? d.heightAt(best.x, best.z); out.pad = true;
+    } else {
+      const l = Math.sqrt(r2) || 1;
+      out.x = L.x + (dx / l) * (L.r + 4); out.z = L.z + (dz / l) * (L.r + 4); out.y = d.heightAt(out.x, out.z); out.pad = false;
+    }
+    return out;
+  }
+  return null;
 }
 
 /** A random open point inside the area (or the storm's next circle, or around us). out {x, y, z}. */

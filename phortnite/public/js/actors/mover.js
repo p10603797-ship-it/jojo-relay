@@ -56,14 +56,19 @@ export class Mover {
     this.physics.world.removeCharacterController(this.cc);
   }
 
-  /** Throw the character (launch pads, geysers): this velocity, in the air. */
-  launch(vx, vy, vz) {
+  /**
+   * Throw the character (launch pads, geysers, bounce mushrooms): this velocity, in the air.
+   * glide: the glider may open on the way down (pads and geysers); a mushroom bounce lands on
+   * foot, without fall damage (ev.padLand).
+   */
+  launch(vx, vy, vz, glide = true) {
     if (this.mode === 'bus' || this.mode === 'dead') return;
     this.vel.set(vx, vy, vz);
     this.mode = 'air';
     this.grounded = false;
     this.airTime = 0;
     this.launched = true;
+    this.launchGlide = glide;
   }
 
   /**
@@ -71,14 +76,14 @@ export class Mover {
    * Returns events { landed: impactSpeed|0, jumped, splash }.
    */
   step(dt, ctl) {
-    const ev = { landed: 0, jumped: false, splash: false };
+    const ev = { landed: 0, jumped: false, splash: false, padLand: false };
     const v = this.vel;
     const mode = this.mode;
     if (mode === 'bus' || mode === 'dead') return ev;
 
     // glider redeploy: falling from high up after a launch (pads) or in sky-spawn modes opens the
     // glider again (checked a few times a second while falling)
-    if (mode === 'air' && (this.launched || this.glideAny) && v.y < -2) {
+    if (mode === 'air' && ((this.launched && this.launchGlide !== false) || this.glideAny) && v.y < -2) {
       this.redeployT -= dt;
       if (this.redeployT <= 0) {
         this.redeployT = 0.15;
@@ -168,10 +173,12 @@ export class Mover {
       if (this.mode === 'air' || this.mode === 'skydive' || this.mode === 'glide' || this.mode === 'swim') {
         if (this.mode !== 'swim' || this.pos.y > WATER_FEET + 0.25) {
           ev.landed = this.mode === 'air' ? Math.max(0.01, fallSpeed) : 0.01;
+          // the end of a bounce (no glider on the way down): a soft landing
+          if (this.launched && this.launchGlide === false) ev.padLand = true;
           this.mode = 'ground';
         }
       }
-      if (this.mode === 'ground') { v.y = -2; this.launched = false; }
+      if (this.mode === 'ground') { v.y = -2; this.launched = false; this.launchGlide = true; }
       this.airTime = 0;
       this.lastGroundY = this.pos.y;
     } else if (this.mode === 'ground') {

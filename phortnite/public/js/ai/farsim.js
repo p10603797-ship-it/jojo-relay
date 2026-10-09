@@ -1,6 +1,6 @@
 // Cheap simulation for bots nobody can see: more than FAR_OUT metres from every human (and from
-// the camera, so a spectator never watches one) a bot switches to 'far' mode until a human comes
-// within FAR_IN:
+// the camera, and from every bot a friend spectates on their own device ({t:'watch'}), so a
+// spectator never watches one) a bot switches to 'far' mode until a human comes within FAR_IN:
 //  - no physics: the capsule is switched off and the bot slides along its nav route at running
 //    speed with y on the walking surface (Nav.groundY); it still sends its state like any bot
 //  - it thinks once a second: storm, loot and chests it walks past, healing, where to go next
@@ -9,7 +9,7 @@
 //    storm, siphon and modes see nothing different
 // Waking up snaps the capsule to open ground (never inside a wall or a building).
 import { WEAPONS, HEALS, ANIM, PLAYER, ENV } from '../../shared/constants.js';
-import { passive, buildRule, isHunter, modeKey, seekerWaits } from './goals.js';
+import { passive, buildRule, isHunter, modeKey, seekerWaits, meleeOnly, lavaEscape } from './goals.js';
 import { hasCone } from './buildfight.js';
 
 export const FAR_OUT = 180, FAR_IN = 160;
@@ -31,7 +31,23 @@ function humans(g) {
   if (g.me && g.me.alive && !g.me.inBus) addHuman(g.me.pos.x, g.me.pos.z);
   for (const r of g.remotes.values()) if (!r.isBot && r.alive !== false && r.hasState !== false) addHuman(r.pos.x, r.pos.z);
   if (g.camera) addHuman(g.camera.position.x, g.camera.position.z);
+  // friends spectating one of my bots on their own devices ({t:'watch'}): its fight stays real
+  if (g.watchers) for (const id of g.watchers.values()) { const b = g.bots.get(id); if (b && b.alive) addHuman(b.pos.x, b.pos.z); }
   return _hum;
+}
+
+/** Is someone (here or on another device) spectating this bot? */
+function watched(g, bot) {
+  if (g.spectateId === bot.id) return true;
+  if (g.watchers) for (const id of g.watchers.values()) if (id === bot.id) return true;
+  return false;
+}
+
+/** A finished Game: drop this module's references to it (and its bots). */
+export function forgetFar(g) {
+  if (_hum.g === g) { _hum.g = null; _hum.t = -1; _hum.n = 0; }
+  if (_fs.g === g) { _fs.g = null; _fs.t = -99; }
+  _far.length = 0;
 }
 
 /** Squared distance from (x, z) to the nearest human (or the camera). */
@@ -55,8 +71,10 @@ export function wantFar(bot, dt) {
   b.farChkT = CHECK_S * (0.8 + Math.random() * 0.4);
   let want = false;
   // (floor is lava: standing on what you build is the game, so always the real thing)
-  if (g.phase === 'match' && bot.alive && !bot.inBus && g.spectateId !== bot.id && bot.nav && bot.nav.ready
-    && bot.time - b.hurtNearT > 4 && !bot.build.busy && modeKey(g) !== 'lava') {
+  if (g.phase === 'match' && bot.alive && !bot.inBus && !watched(g, bot) && bot.nav && bot.nav.ready
+    && bot.time - b.hurtNearT > 4 && !bot.build.busy && modeKey(g) !== 'lava'
+    // (in the crater's lava the way out is a geyser's throw: the real physics)
+    && !lavaEscape(bot)) {
     const m = bot.mode;
     const r = bot.far ? FAR_IN : FAR_OUT;
     if ((bot.far || m === 'ground' || m === 'swim') && humanDist2(g, bot.pos.x, bot.pos.z) > r * r) want = true;
@@ -80,6 +98,48 @@ export function enterFar(bot) {
   bot.build.clear();
   bot.mover.vel.set(0, 0, 0);
   bot.mover.groundInfo = null;
+  watchReset(bot);
+}
+
+// ------------------------------------------------------------------ the far watchdog
+const WD_S = 8; // thinks (s) per watch window
+/** A new watch window from where the bot is now. */
+function watchReset(bot) {
+  const b = bot.brain;
+  b.wdT = 0; b.wdMove = 0; b.wdX = bot.pos.x; b.wdZ = bot.pos.z; b.wdMaxR = 0; b.wdFlips = 0; b.wdLast = b.destKind || '';
+  if (!b.wdLoot) { b.wdLoot = new Set(); b.wdChest = new Set(); }
+  b.wdLoot.clear(); b.wdChest.clear();
+}
+
+/**
+ * Once a second (farThink): a far bot that 'moves' for most of WD_S seconds but stays put, or
+ * zig-zags within a few metres while its destination keeps flipping (storm <-> loot, loot <->
+ * chest), gives up on everything it was after in that window and plans afresh. The full brain has
+ * checkStuck; without this a far bot could stand still for minutes.
+ */
+function farWatch(bot) {
+  const b = bot.brain;
+  if (b.wdT === undefined) watchReset(bot);
+  b.wdT++;
+  if (b.moving) b.wdMove++;
+  const r = Math.hypot(bot.pos.x - b.wdX, bot.pos.z - b.wdZ);
+  if (r > b.wdMaxR) b.wdMaxR = r;
+  const kind = b.destKind || '';
+  if (kind !== b.wdLast) { b.wdFlips++; b.wdLast = kind; }
+  if (b.lootRef) b.wdLoot.add(b.lootRef.id);
+  if (kind === 'chest') b.wdChest.add(b.chestI);
+  if (b.wdT < WD_S) return false;
+  // (moving all along but going nowhere: still, or pacing back and forth between plans)
+  const stuck = b.wdMove >= WD_S - 1 && (r < 2 || (b.wdMaxR < 6 && b.wdFlips >= 3) || (b.wdMaxR < 12 && r < 4 && b.wdFlips >= 4));
+  if (stuck) {
+    for (const id of b.wdLoot) b.badLoot.add(id);
+    for (const c of b.wdChest) b.badChest.add(c);
+    if (b.badLoot.size > 24) b.badLoot.clear();
+    b.destKind = ''; b.lootRef = null; b.planT = 0; b.goalT = 0; b.safeKey = 0;
+    bot.follow.reset();
+  }
+  watchReset(bot);
+  return stuck;
 }
 
 /** Back to the full simulation: the capsule on open ground under us. */
@@ -170,7 +230,9 @@ export function farUpdate(bot, dt) {
     b.badLoot.add(b.lootRef.id); if (b.badLoot.size > 24) b.badLoot.clear();
     b.destKind = ''; b.lootRef = null; b.planT = 0;
   }
-  if ((!b.farTarget || isHunter(bot)) && b.farHealT < 0 && b.farHarv < 0 && b.destKind) {
+  // (a hunter follows its route to the hunt, unless the chase above already moved it this frame:
+  // one step a frame, never both)
+  if (!moving && (!b.farTarget || isHunter(bot)) && b.farHealT < 0 && b.farHarv < 0 && b.destKind) {
     bot.navGoal(b.dest);
     // (sliding along the ground, a spot upstairs counts as reached when we're under it)
     const under = Math.hypot(b.dest.x - bot.pos.x, b.dest.z - bot.pos.z) < 2;
@@ -219,6 +281,7 @@ function wantsMats(bot) {
 
 function farThink(bot) {
   const b = bot.brain, g = bot.game;
+  farWatch(bot);
   b.urgent = bot.stormUrgency();
   // pick things up we're standing next to, open chests we're passing
   if (b.farHealT < 0) {
@@ -291,7 +354,7 @@ function farBox(a) {
 function wantsFight(a, o, d, now) {
   const b = a.brain, P = b.persona;
   // the infected run them down; a Hide & Seek seeker sees nobody through the head start
-  if (isHunter(a)) return d < 30 && !seekerWaits(a);
+  if (isHunter(a) || meleeOnly(a)) return d < 30 && !seekerWaits(a);
   if (!a.hasGun()) return false;
   const threat = now - b.hurtT < 4;
   if (b.urgent === 2 && d > 25 && !threat) return false;
@@ -352,8 +415,9 @@ export function farFights(g) {
       }
     }
     if (ab.farHealT >= 0) continue;
-    if (isHunter(a)) {
-      // claws: a swing now and then once they've caught up
+    if (isHunter(a) || meleeOnly(a)) {
+      // claws (or a pickaxe-only fight): close in, then a swing now and then once caught up
+      ab.farChase = d > 2.5;
       if (d < 3.5 && Math.random() < WEAPONS.pickaxe.rate * dt * (0.4 + 0.3 * ab.skill)) {
         if (a.inv.sel !== 0) a.select(0);
         g.send({ t: 'hit', id: a.id, tg: t.id, w: 'pickaxe', r: 0, d: 1, n: 1, nh: 0 });
@@ -382,8 +446,10 @@ export function farFights(g) {
     if (d < rg[0] || d > rg[2]) p *= 0.4;
     else p *= 1 - 0.5 * Math.abs(d - rg[1]) / Math.max(10, rg[2]);
     if (ab.easy) p *= 0.55;
-    // the target behind a wall it just put up takes nothing
-    const covered = now < t.brain.farCoverT;
+    // the target behind a wall it just put up takes nothing (its cover time is on its own clock:
+    // bots' clocks differ by the bus drop spread)
+    const covered = t.time < t.brain.farCoverT;
+    const ho = !!(g.rules && g.rules.headOnly); // headshots only: only head hits count
     // shots this tick: the gun's rate over the time spent shooting (a bolt-action sniper gets one
     // now and then, an SMG a handful)
     const shots = Math.floor(w.rate * dt * DUTY * (w.burst || 1) * (0.7 + Math.random() * 0.6) + Math.random());
@@ -392,9 +458,15 @@ export function farFights(g) {
     let hit = false;
     for (let k = 0; k < shots && t.alive && !covered; k++) {
       if (pellets > 1) {
-        let n = 0;
-        for (let j = 0; j < pellets; j++) if (Math.random() < p * 0.9) n++;
-        if (n) { g.send({ t: 'hit', id: a.id, tg: t.id, w: cur.k, r: cur.r | 0, d: Math.round(d * 10) / 10, n, nh: 0 }); hit = true; }
+        let n = 0, nh = 0;
+        for (let j = 0; j < pellets; j++) if (Math.random() < p * 0.9) { if (!ho) n++; else if (Math.random() < 0.35) nh++; }
+        if (n || nh) { g.send({ t: 'hit', id: a.id, tg: t.id, w: cur.k, r: cur.r | 0, d: Math.round(d * 10) / 10, n, nh }); hit = true; }
+      } else if (ho) {
+        // aimed at the head: about as often as a near bot lands one
+        if (Math.random() < p * (0.35 + 0.3 * ab.skill)) {
+          g.send({ t: 'hit', id: a.id, tg: t.id, w: cur.k, r: cur.r | 0, d: Math.round(d * 10) / 10, n: 0, nh: 1 });
+          hit = true;
+        }
       } else if (Math.random() < p) {
         const head = Math.random() < 0.08 + 0.15 * ab.skill;
         g.send({ t: 'hit', id: a.id, tg: t.id, w: cur.k, r: cur.r | 0, d: Math.round(d * 10) / 10, n: head ? 0 : 1, nh: head ? 1 : 0 });
@@ -406,13 +478,15 @@ export function farFights(g) {
     const tb = t.brain;
     if (!tb.farTarget) tb.farTarget = a;
     if (hit) {
-      tb.hurtT = now;
-      if (now > tb.farCoverT + 1 && Math.random() < (0.3 + 0.6 * tb.persona.build * (0.5 + 0.5 * tb.skill)) * tb.buildK
+      const tn = t.time; // (the target's own clock)
+      tb.hurtT = tn;
+      if (tn > tb.farCoverT + 1 && Math.random() < (0.3 + 0.6 * tb.persona.build * (0.5 + 0.5 * tb.skill)) * tb.buildK
         && farPiece(t, 'w', Math.atan2(t.pos.x - a.pos.x, t.pos.z - a.pos.z), 0)) {
-        tb.farCoverT = now + 0.8 + Math.random();
+        tb.farCoverT = tn + 0.8 + Math.random();
         // builders take the height too: a ramp behind the wall
         if (Math.random() < 0.6 * tb.persona.build * tb.buildK && farPiece(t, 'r', Math.atan2(t.pos.x - a.pos.x, t.pos.z - a.pos.z), 0)) tb.farCoverT += 0.6;
       }
     }
   }
+  _far.length = 0; // (a scratch list: never keeps bots between calls)
 }

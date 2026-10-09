@@ -216,16 +216,16 @@ test("'be': another team is refused, a teammate is allowed, range and the cooldo
   pb.team = pa.team; // teammates
   H.send(b, { t: 'be', k: K.wall, e: EDIT_PRESETS.w.window });
   assert.equal(H.last(a, 'be').e, EDIT_PRESETS.w.window, 'a teammate can');
-  // cooldown: one edit per actor per 0.15 s
+  // cooldown: one edit per actor per 0.1 s (the client waits 0.16 s: room for network jitter)
   H.clear(a);
   H.advance(160);
   H.send(a, { t: 'be', k: K.wall, e: EDIT_PRESETS.w.arch });
-  H.advance(100);
+  H.advance(50);
   H.send(a, { t: 'be', k: K.wall, e: EDIT_PRESETS.w.half });
-  assert.deepEqual(H.msgs(a, 'be').map((m) => m.e), [EDIT_PRESETS.w.arch, EDIT_PRESETS.w.arch], 'the second edit in 100 ms is refused');
+  assert.deepEqual(H.msgs(a, 'be').map((m) => m.e), [EDIT_PRESETS.w.arch, EDIT_PRESETS.w.arch], 'the second edit in 50 ms is refused');
   H.advance(60);
   H.send(a, { t: 'be', k: K.wall, e: EDIT_PRESETS.w.half });
-  assert.equal(H.last(a, 'be').e, EDIT_PRESETS.w.half, 'after 0.15 s it works again');
+  assert.equal(H.last(a, 'be').e, EDIT_PRESETS.w.half, 'after 0.1 s it works again');
   // range: 6 m from the piece's centre
   H.advance(200);
   at(a, S.x, S.z + 30);
@@ -280,5 +280,33 @@ test('the room harness speaks the current protocol', () => {
   assert.equal(ok.ok, true);
   H.send(ok, { t: 'be', k: K.wall, e: EDIT_PRESETS.w.door });
   assert.equal(H.msgs(ok, 'be').length, 0, 'editing nothing is a no-op');
+  assert.equal(H.errors.length, 0);
+});
+
+import { editInReach } from '../public/shared/buildgrid.js';
+
+test('edit reach: the client offers EDIT only where the room takes the edit (same rule, with slack)', () => {
+  const { H, a, at } = party();
+  H.send(a, { t: 'b', k: K.wall, m: 'wood' });
+  const pc = parseKey(K.wall);
+  let offeredButRefused = 0, tried = 0;
+  for (let dx = -9; dx <= 9; dx += 0.5) {
+    for (let dz = -9; dz <= 9; dz += 0.5) {
+      const x = S.x + dx, z = S.z + dz;
+      at(a, x, z);
+      const p = H.player(a.pid);
+      const offered = editInReach(pc, p.x, p.y, p.z, 0.5); // what buildClient checks
+      if (!offered) continue;
+      tried++;
+      H.advance(120);
+      H.clear(a);
+      const e = H.room.grid.get(K.wall).e === EDIT_PRESETS.w.door ? EDIT_PRESETS.w.reset : EDIT_PRESETS.w.door;
+      H.send(a, { t: 'be', k: K.wall, e });
+      const got = H.last(a, 'be');
+      if (!got || got.e !== e) offeredButRefused++;
+    }
+  }
+  assert.ok(tried > 50);
+  assert.equal(offeredButRefused, 0);
   assert.equal(H.errors.length, 0);
 });

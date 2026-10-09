@@ -226,12 +226,14 @@ export function openDiscover(app, opts = {}) {
 
   function openCreatorFrom(initial, name) {
     const leader = isLeader && !!opts.onPick;
-    return createCreator(app, {
+    if (child && child.close) child.close();
+    child = createCreator(app, {
       initial, name, parent: root,
       onPlay: leader ? (p) => { opts.onPick(p); close(); } : null,
       onSave: () => refreshMine(),
       onClose: () => { if (!closed) refreshMine(); },
     });
+    return child;
   }
 
   // ------------------------------------------------------------------ code sheet
@@ -324,6 +326,7 @@ export function openDiscover(app, opts = {}) {
   root.addEventListener('pointerdown', (e) => e.stopPropagation());
 
   let closed = false;
+  let child = null; // the creator opened from here (closed with this sheet)
   function onKey(e) {
     if (e.key !== 'Escape' || root.querySelector('#creator')) return;
     e.stopPropagation();
@@ -331,15 +334,19 @@ export function openDiscover(app, opts = {}) {
     else if (shown) hideDetail();
     else close();
   }
-  function close() {
-    if (closed) return;
+  /** auto = true: closed for the player (a match is starting); true when a creator saved their edits. */
+  function close(auto = false) {
+    if (closed) return false;
     closed = true;
+    let kept = false;
+    if (child) { try { kept = !!child.close(auto === true); } catch (e) { /* already gone */ } child = null; }
     window.removeEventListener('keydown', onKey, true);
     if (searchRaf) cancelAnimationFrame(searchRaf);
     root.classList.add('closing');
     setTimeout(() => root.remove(), 180);
     if (disabledInput && app.input && !app.input.enabled && app.game && app.game.me) app.input.enabled = true;
     if (opts.onClose) opts.onClose();
+    return kept;
   }
   window.addEventListener('keydown', onKey, true);
   if (app && app.input && app.input.enabled) { app.input.enabled = false; disabledInput = true; }

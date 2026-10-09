@@ -106,7 +106,9 @@ test('mode rules: snapping, fallbacks, area and consistency', () => {
   assert.equal(n({ win: 'time' }).timeLimit, 300);
   assert.equal(n({ teams: 'humans', bots: 0 }).bots, 1);
   assert.equal(n({ respawn: 0, lives: 3 }).lives, 1);
-  assert.equal(n({ respawn: 5, lives: 0 }).lives, 0);
+  assert.equal(n({ respawn: 5, lives: 0, win: 'elims' }).lives, 0);
+  assert.equal(n({ respawn: 5, lives: 0 }).lives, 3, 'last standing with endless lives could never end');
+  assert.equal(n({ respawn: 3, lives: 0, pvp: false }).lives, 0, 'no-damage sandboxes stay endless');
   // games: a win type without a game falls back to 'last'
   assert.equal(n({ win: 'koth' }).win, 'koth');
   assert.equal(n({ win: 'koth' }, { games: [] }).win, 'last');

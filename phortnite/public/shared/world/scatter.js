@@ -111,7 +111,7 @@ function floraCell(C, gx, gz, S) {
       if (biome[i] === BI.beach && h > 6) species = 'oak';
       const sc = SCALE[species];
       const s = sc[0] + r[4] * sc[1];
-      W.add({ kind: 'tree', type: SPECIES_TYPE[species], species, mat: 'wood', hp: Math.round(ENV.treeHp * s * (HP[species] || 1)), x, y: h, z, s, yaw: r[5] * 6.283185307179586 });
+      W.add({ kind: 'tree', type: SPECIES_TYPE[species], species, mat: 'wood', hp: Math.round(ENV.treeHp * s * (HP[species] || 1)), x, y: footY(C.G, x, z, 0.5), z, s, yaw: r[5] * 6.283185307179586 });
       C.trees++;
       return;
     }
@@ -119,7 +119,7 @@ function floraCell(C, gx, gz, S) {
   if (r[2] > 0.985 - F.bush * pf * (0.5 + forest) && sl < 6 && C.trees < 8900 && pf > 0.2) {
     if (!C.houses.hits(x - 0.6, z - 0.6, x + 0.6, z + 0.6, 1.5) && !C.props.hits(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 0.8)) {
       const s = 0.55 + r[4] * 0.6;
-      W.add({ kind: 'tree', type: SPECIES_TYPE.bush, species: 'bush', mat: 'wood', hp: Math.round(ENV.treeHp * s * HP.bush), x, y: h, z, s, yaw: r[5] * 6.283185307179586 });
+      W.add({ kind: 'tree', type: SPECIES_TYPE.bush, species: 'bush', mat: 'wood', hp: Math.round(ENV.treeHp * s * HP.bush), x, y: footY(C.G, x, z, 0.5), z, s, yaw: r[5] * 6.283185307179586 });
       C.trees++;
       return;
     }
@@ -128,10 +128,19 @@ function floraCell(C, gx, gz, S) {
   const decor = F.decor;
   for (let d = 0; d < decor.length; d++) {
     if (r[3] < decor[d][1] * (0.4 + pf)) {
-      if (!C.houses.hits(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 0.8)) W.add({ kind: 'decor', type: decor[d][0], x, y: h, z, s: 0.7 + r[4] * 0.6, yaw: r[5] * 6.283185307179586 });
+      // (not on steep ground: a log or a tuft on a cliff floats at one end)
+      if (sl < 5 && !C.houses.hits(x - 0.5, z - 0.5, x + 0.5, z + 0.5, 0.8)) W.add({ kind: 'decor', type: decor[d][0], x, y: footY(C.G, x, z, 0.5), z, s: 0.7 + r[4] * 0.6, yaw: r[5] * 6.283185307179586 });
       return;
     }
   }
+}
+
+/**
+ * The ground under a footprint: the lowest real height at the centre and r m around it (the grid
+ * point's height floats things on a slope: trees up to 4 m, decor up to 10 m up a cliff).
+ */
+function footY(G, x, z, r) {
+  return Math.min(G.heightAt(x, z), G.heightAt(x + r, z), G.heightAt(x - r, z), G.heightAt(x, z + r), G.heightAt(x, z - r));
 }
 
 /** One 17 m rock cell. Always draws 6 random numbers. */
@@ -149,7 +158,7 @@ function rockCell(C, gx, gz, RS) {
   if (r[2] > rocky) return;
   if (C.houses.hits(x - 2, z - 2, x + 2, z + 2, 3) || C.props.hits(x - 2, z - 2, x + 2, z + 2, 1)) return;
   const s = 0.9 + r[3] * r[3] * 2.8;
-  C.W.add({ kind: 'rock', type: Math.floor(r[4] * 3), mat: 'stone', hp: Math.round(ENV.rockHp * (0.6 + s * 0.25)), x, y: h - 0.25 * s, z, s, yaw: r[5] * 6.283185307179586 });
+  C.W.add({ kind: 'rock', type: Math.floor(r[4] * 3), mat: 'stone', hp: Math.round(ENV.rockHp * (0.6 + s * 0.25)), x, y: footY(G, x, z, 0.5) - 0.25 * s, z, s, yaw: r[5] * 6.283185307179586 });
   C.rocks++;
 }
 
@@ -218,9 +227,17 @@ export function padsAndLava(G, L, W, regions, pads, lava, rng) {
     if (b !== BI.jungle && b !== BI.swamp) continue;
     if (openAt(x, z)) { add('mushroom', x, G.heightAt(x, z), z, -1, 0.8); mush++; }
   }
-  // lava: the crater pool, plus two small pools on the flanks
+  // lava: the crater pool, plus two small pools on the flanks. The pool fills the bowl out to where
+  // its walls rise above the lava (~0.74 x the crater radius): the painted lava and the lava that
+  // hurts are the same (biomes.js paints only below its top), so there is no lava-looking ring
+  // that doesn't hurt. Four geysers on the bowl's low ring (where anyone who falls in ends up; the
+  // mound in the middle is too steep to climb) throw you out of the pit.
   const floorY = G.heightAt(v.x, v.z);
-  lava.push({ x: v.x, z: v.z, r: v.crater * 0.62, y: floorY + 0.25 });
+  lava.push({ x: v.x, z: v.z, r: v.crater * 0.74, y: floorY + 0.25 });
+  for (const [dx, dz] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+    const x = v.x + dx * v.crater * 0.45, z = v.z + dz * v.crater * 0.45;
+    pads.push({ id: pads.length, kind: 'geyser', x, y: G.heightAt(x, z), z, region: -1, power: 1.4 });
+  }
   for (const [dx, dz] of [[0.70711, 0.70711], [-0.92388, -0.38268]]) {
     const x = v.x + dx * v.r * 0.55, z = v.z + dz * v.r * 0.55;
     if (Math.sqrt(x * x + z * z) > G.R * 0.9 || G.occ[G.at(x, z)] !== OCC.FREE) continue;

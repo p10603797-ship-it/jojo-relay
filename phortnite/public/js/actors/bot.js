@@ -26,15 +26,15 @@
 import * as THREE from 'three';
 import { WEAPONS, HEALS, FLAG, MAT_KEYS, PLAYER, BUS, DROP } from '../../shared/constants.js';
 import { Combatant, forwardFromAngles } from './combatant.js';
-import { RAY_STATIC, RAY_SOLID } from '../physics.js';
+import { RAY_STATIC, RAY_SOLID, RAY_SHOT } from '../physics.js';
 import { navFor, PathFollower } from '../ai/nav.js';
 import { BuildFight } from '../ai/buildfight.js';
 import { EDIT_PRESETS, EDIT_FULL } from '../../shared/buildgrid.js';
 import {
-  modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, hillOf, inArea,
-  seekerWaits, hider, hideFound, forgetActors,
+  modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, lavaEscape, hillOf, inArea,
+  seekerWaits, hider, hideFound, forgetActors, meleeOnly,
 } from '../ai/goals.js';
-import { wantFar, enterFar, exitFar, farUpdate } from '../ai/farsim.js';
+import { wantFar, enterFar, exitFar, farUpdate, forgetFar } from '../ai/farsim.js';
 
 const _v = new THREE.Vector3(), _d = new THREE.Vector3(), _e = new THREE.Vector3(), _s = new THREE.Vector3();
 const _g = { x: 0, y: 0, z: 0 };
@@ -186,6 +186,7 @@ export function forgetGame(g) {
   if (_listG === g) { _listG = null; _listT = -1; _list.length = 0; }
   if (_navGame === g) _navGame = null;
   forgetActors();
+  forgetFar(g);
 }
 
 /** How far (m, sideways) a bot can get from the bus: skydive (no diving) then glide, with slack. */
@@ -240,6 +241,7 @@ export class Bot extends Combatant {
       progT: 0, progD: 0, progX: 0, progZ: 0, noProg: 0, detourT: 0, detourX: 0, detourZ: 0,
       glance: 0, glanceT: 1,
       goal: null, goalT: 0, goalKind: '', dest: new THREE.Vector3(), destKind: '', lootRef: null, lootT: 0, badLoot: new Set(), badChest: new Set(),
+      swappedOut: new Map(), // 'k:r' -> when we swapped that item out for another (not worth going back for)
       badTree: new Set(), harvestT: -1, harvestM: 0, wdT: 0, wdX: 0, wdZ: 0, wdMove: 0,
       chestI: -1, harvest: null, treeT: 0,
       urgent: 0, safeKey: 0, safeX: 0, safeZ: 0,
@@ -314,10 +316,13 @@ export class Bot extends Combatant {
 
   bestWeaponFor(dist) {
     const b = this.brain;
+    // headshots only: a blast does nothing to players
+    const ho = !!(this.game.rules && this.game.rules.headOnly) && this.game.phase !== 'lobby';
     let best = -1, bestScore = -1e9;
     for (let i = 1; i <= 5; i++) {
       const s = this.inv.slots[i];
       if (!s || !has(WEAPONS, s.k) || WEAPONS[s.k].melee) continue;
+      if (ho && WEAPONS[s.k].splash) continue;
       const r = weaponRange(s.k);
       let score = (s.r | 0) * 0.3;
       if (dist >= r[0] && dist <= r[2]) score += 3 - Math.abs(dist - r[1]) / Math.max(8, r[2]);
@@ -401,6 +406,10 @@ export class Bot extends Combatant {
       const w = WEAPONS[k];
       if (w.melee) return 0;
       const r = item.r | 0;
+      // what we just gave up for something better (an AR for our first shotgun) is not worth going
+      // back for: swapping it back drops the shotgun, which is then worth going back for, and so on
+      const out = this.brain.swappedOut.get(`${k}:${r}`);
+      if (out !== undefined && this.time - out < 45) return 0;
       let guns = 0;
       for (let i = 1; i <= 5; i++) {
         const s = this.inv.slots[i];
@@ -483,6 +492,16 @@ export class Bot extends Combatant {
     if (slot > 0) { this.select(slot); g.pick(this, it, true); }
   }
 
+  /** Items a pickup swapped out of our hands (Game.on_got): not worth going back for a while. */
+  swappedOutOf(drops) {
+    const so = this.brain.swappedOut;
+    for (const d of drops) {
+      if (!d || !has(WEAPONS, d.k)) continue;
+      so.set(`${d.k}:${d.r | 0}`, this.time);
+      if (so.size > 8) so.delete(so.keys().next().value);
+    }
+  }
+
   // ------------------------------------------------------------------ perception
   isEnemy(a) {
     if (a === this || !a.alive || a.inBus || a.hasState === false) return false;
@@ -544,7 +563,9 @@ export class Bot extends Combatant {
     const dx = tx - ox, dy = ty - oy, dz = tz - oz;
     const len = Math.hypot(dx, dy, dz);
     if (len < 0.3) return true;
-    return !this.game.physics.raycast(ox, oy, oz, dx / len, dy / len, dz / len, len - 0.25, RAY_SOLID);
+    // leaves hide you (a hider in a bush), except right up close (~3 m), where you can make
+    // someone out through a bush
+    return !this.game.physics.raycast(ox, oy, oz, dx / len, dy / len, dz / len, len - 0.25, len < 3 ? RAY_SOLID : RAY_SHOT);
   }
 
   /**
@@ -756,11 +777,17 @@ export class Bot extends Combatant {
     const p = this.pos;
     if (Math.hypot(p.x - st.cx, p.z - st.cz) > st.r - 3) return 2; // in the storm already
     const over = Math.hypot(p.x - st.ncx, p.z - st.ncz) - st.nr * 0.85;
-    if (over <= 0) return 0;
+    // once on the way in, keep going until a margin past the line (no zig-zag across it between a
+    // chest outside and the storm every second or two)
+    if (over <= 0) return this.brain.urgent >= 1 && over > -Math.min(10, st.nr * 0.1) ? 1 : 0;
     const need = over / 6.5 + 4; // s of running to get in, with some slack
     if (st.shrinking) return need > st.secs * 0.7 ? 2 : 1;
     // early rotators leave as soon as the circle shows, late ones wait for the last moment
-    return st.secs < need + 5 + 70 * this.brain.persona.rotate * this.brain.rotK ? 1 : 0;
+    const u = st.secs < need + 5 + 70 * this.brain.persona.rotate * this.brain.rotK ? 1 : 0;
+    // once on the way, keep going until well inside (no flip-flopping between the storm and loot
+    // every second right at the threshold)
+    if (u === 0 && this.brain.urgent >= 1) return 1;
+    return u;
   }
 
   decide() {
@@ -788,7 +815,9 @@ export class Bot extends Combatant {
     const t = b.target, r = b.trec;
     const gun = this.hasGun();
     const healS = this.healSlot();
-    const hunter = isHunter(this);
+    // the infected, seekers and anyone whose only weapon is the pickaxe (Pickaxe Party, Gun Game's
+    // last rung): run them down
+    const hunter = isHunter(this) || meleeOnly(this);
     let mode = 'travel';
     if (b.mode === 'box' && (this.build.busy || now - b.modeT < 0.5)) mode = 'box';
     else if (t && (r.vis || now - r.seenT < 0.5)) {
@@ -912,7 +941,7 @@ export class Bot extends Combatant {
     const gun = this.hasGun();
     const loot = wantsLoot(this);
     // the infected run down survivors before anything else
-    if (isHunter(this) && modeGoal(this, _g) === 'hunt') {
+    if ((isHunter(this) || meleeOnly(this)) && modeGoal(this, _g) === 'hunt') {
       b.destKind = 'goal'; b.goalKind = 'hunt'; b.dest.set(_g.x, _g.y, _g.z); b.planT = 0.5;
       return;
     }
@@ -937,14 +966,20 @@ export class Bot extends Combatant {
       const radius = urg === 2 ? 5 : urg ? 12 : !gun ? 50 : 15 + 25 * P.loot;
       const it = this.bestLoot(radius, now - b.killT < 25);
       if (it) {
-        if (b.lootRef !== it) b.lootT = now;
+        // (the give-up timer restarts for a different item only, not when lootRef was cleared for a think)
+        if (b.lootId !== it.id) { b.lootT = now; b.lootId = it.id; }
         b.destKind = 'loot'; b.lootRef = it; b.dest.set(it.x, it.y, it.z);
         return;
       }
     }
     b.lootRef = null;
     if (loot && urg < 2) {
-      const c = g.nearestChest(this.pos, urg ? 10 : !gun ? 40 : 10 + 25 * P.loot);
+      const rad = urg ? 10 : !gun ? 40 : 10 + 25 * P.loot;
+      // the chest we're on our way to stays the plan a little farther out: the way in may lead
+      // away from it first (round to a door), and dropping it there walks us back and forth
+      if (b.destKind === 'chest' && b.chestI >= 0 && !g.world.chestOpen.has(b.chestI) && !b.badChest.has(b.chestI)
+        && Math.hypot(b.dest.x - this.pos.x, b.dest.z - this.pos.z) < rad * 1.5 + 4) return;
+      const c = g.nearestChest(this.pos, rad);
       if (c && !b.badChest.has(c.i)) { b.destKind = 'chest'; b.chestI = c.i; b.dest.set(c.x, c.y, c.z); return; }
     }
     // mats: builders keep a big stack, everyone else enough for a few fights
@@ -1008,8 +1043,10 @@ export class Bot extends Combatant {
         if (!kill || (it.x - b.killX) ** 2 + (it.z - b.killZ) ** 2 > 36) continue;
         if (in2 !== Infinity && (it.x - st.cx) ** 2 + (it.z - st.cz) ** 2 > in2) continue;
       }
-      // upstairs / downstairs is fine when we can route there (through the door, up the stairs)
-      if ((dy > 1.8 || dy < -1.8) && !(this.nav.ready && this.nav.roomAt(it.x, it.z))) continue;
+      // upstairs / downstairs is fine when we can route there (through the door, up the stairs);
+      // a far bot slides along the ground and only picks up what is within 6 m of its height
+      // (farsim's pickup reach)
+      if (this.far ? dy > 6 || dy < -6 : (dy > 1.8 || dy < -1.8) && !(this.nav.ready && this.nav.roomAt(it.x, it.z))) continue;
       if (this.pendingPick.has(it.id) || b.badLoot.has(it.id)) continue;
       if (lim2 !== Infinity && (it.x - sx) ** 2 + (it.z - sz) ** 2 > lim2) continue;
       if (!inArea(this.game, it.x, it.z)) continue;
@@ -1252,6 +1289,18 @@ export class Bot extends Combatant {
       return;
     }
 
+    // in the crater's lava (no route out, and it burns): straight to its nearest geyser, hopping
+    // up the slope, until it throws us out (then the glider and a landing outside, see skydive)
+    const esc = (m === 'ground' || m === 'air') && !this.mover.launched ? lavaEscape(this) : null;
+    if (esc) {
+      b.jumpT -= dt;
+      this.goTo(esc.x, esc.z, dt, true);
+      this.turnHuman(Math.atan2(-(esc.x - this.pos.x), -(esc.z - this.pos.z)), -0.05, dt, b.turnSpeed, b.turnK);
+      const sp = Math.hypot(this.mover.vel.x, this.mover.vel.z);
+      if (this.mover.grounded && sp < 2 && b.jumpT <= 0) { ctl.jump = true; b.jumpT = 0.6; }
+      return;
+    }
+
     b.thinkAcc += dt;
     b.thinkT -= dt; b.planT -= dt; b.goalT -= dt; b.buildT -= dt; b.jumpT -= dt; b.rampT -= dt; b.ninetyT -= dt;
     if (b.thinkT <= 0) {
@@ -1438,6 +1487,8 @@ export class Bot extends Combatant {
     b.precise = false;
     // stairs and steps: hop when the next point is a little above us and we're slowing down
     if (f.ty - p.y > 0.6 && f.ty - p.y < 2.2 && this.speed < 2 && b.jumpT <= 0 && this.mover.grounded) { this.ctl.jump = true; b.jumpT = 0.8; }
+    // walking up onto a pad on a steep flank (the volcano's geysers): hop when the slope holds us
+    else if (f.pad && f.ty - p.y > 0.3 && this.speed < 2 && b.jumpT <= 0 && this.mover.grounded) { this.ctl.jump = true; b.jumpT = 0.6; }
     return 1;
   }
 
@@ -1617,16 +1668,23 @@ export class Bot extends Combatant {
       vx = v.x; vy = v.y; vz = v.z;
     } else { px = r.x; py = r.y; pz = r.z; }
     const crouch = !!t.crouching;
+    const R = this.game.rules || {};
+    // headshots only: every weapon at the head's centre (a shotgun spread aimed there still lands
+    // pellets on it; body hits and blasts do nothing); the target's model scale (the Juggernaut)
+    const ho = !!R.headOnly && this.game.phase !== 'lobby';
+    const ts = (t.char && t.char.bodyScale) || 1;
     let hy = crouch ? 0.8 : 1.1;
-    if (w.splash) hy = 0.25; // rockets at the feet
-    else if (b.headAim && (w.pellets || 1) === 1) hy = crouch ? 1.2 : 1.6;
+    if (ho) hy = ((crouch ? 1.27 : 1.7) + (R.bigHead ? 0.15 : 0)) * ts;
+    else if (w.splash) hy = 0.25; // rockets at the feet
+    else if (b.headAim && (w.pellets || 1) === 1) hy = (crouch ? 1.2 : 1.6) * ts;
     let dx = px - s.x, dy = py + hy - s.y, dz = pz - s.z;
     const d = Math.hypot(dx, dy, dz);
     // lead and drop, both imperfect
     if (w.speed) {
       const tt = d / w.speed;
       dx += vx * tt * b.leadK; dz += vz * tt * b.leadK; dy += vy * tt * b.leadK * 0.3;
-      if (w.grav) dy += 0.5 * 9.81 * w.grav * tt * tt * b.dropK;
+      // (the bullet falls with the mode's gravity: Moon, One Shot, Heavy)
+      if (w.grav) dy += 0.5 * 9.81 * w.grav * this.game.gravK() * tt * tt * b.dropK;
     }
     const hd = Math.hypot(dx, dz);
     const yawD = Math.atan2(-dx, -dz);

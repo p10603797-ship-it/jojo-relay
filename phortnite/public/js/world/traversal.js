@@ -63,6 +63,7 @@ export class Traversal {
       // a mushroom throws you when you walk onto its cap (about 1.3 m up)
       top: p.kind === 'mushroom' ? 1.3 : 0.3,
     }));
+    this.heightAt = typeof d.heightAt === 'function' ? d.heightAt : null;
     this.meshes = [];
     this.time = 0;
     this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.1, emissive: 0x1a2a40, emissiveIntensity: 1 });
@@ -93,14 +94,27 @@ export class Traversal {
     }
   }
 
-  /** The pad under a point (feet position), or null. */
+  /**
+   * The pad under a point (feet position), or null. Pads have no collider: a mushroom fires for feet
+   * anywhere from the ground under its cap (walking in) up to just above the cap (jumping on).
+   */
   padAt(x, y, z, r = 1.6) {
     for (const p of this.pads) {
       const dx = p.x - x, dz = p.z - z;
-      const R = p.kind === 'mushroom' ? 1.9 : r;
+      const mush = p.kind === 'mushroom';
+      // (a geyser's stone rim reaches 1.8 m out: touching it, capsule and all, is stepping on)
+      const R = mush ? 1.6 : p.kind === 'geyser' ? Math.max(r, 2.2) : r;
       if (dx * dx + dz * dz > R * R) continue;
-      const dy = y - (p.y + p.top);
-      if (dy > -0.9 && dy < 1.6) return p;
+      // a pad on a slope (the volcano's geysers): someone walking up to it from below stands lower
+      // than its centre, so the window starts from the ground under their feet (when that ground
+      // is the pad's own: never for a pad up on a roof)
+      let base = p.y;
+      if (!mush) {
+        const g = this.heightAt ? this.heightAt(x, z) : NaN;
+        if (g < base && base - g < 2) base = g;
+      }
+      const dy = y - (base + p.top);
+      if (dy > (mush ? -(p.top + 0.5) : -0.9) && dy < 1.6) return p;
     }
     return null;
   }

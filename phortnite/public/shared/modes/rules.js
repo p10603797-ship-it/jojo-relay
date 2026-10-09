@@ -104,7 +104,9 @@ function knownGame(games, k) {
  * - area must match AREA_RE;
  * - opts.games (the keys of GAMES, as an array, a Set or an object): a win that is not one of
  *   them becomes 'last';
- * - consistency: respawn 0 means lives 1; elims / teamelims / koth with target 0 get 15 / 50 / 100;
+ * - consistency: respawn 0 means lives 1; last standing with respawn, unlimited lives and damage on
+ *   gets 3 lives (it could never end: respawning players are always still in the game; no-damage
+ *   sandboxes stay endless on purpose); elims / teamelims / koth with target 0 get 15 / 50 / 100;
  *   time, infection and hideseek with timeLimit 0 get 300; teams 'humans' needs at least 1 bot.
  * @param {any} input
  * @param {{ games?: string[] | Set<string> | object }} [opts]
@@ -115,6 +117,7 @@ export function normalizeRules(input, opts = {}) {
   for (const f of RULE_FIELDS) r[f.key] = hasOwn(src, f.key) ? cleanValue(f, src[f.key]) : f.def;
   if (opts && opts.games && r.win !== 'last' && !knownGame(opts.games, r.win)) r.win = 'last';
   if (r.respawn === 0) r.lives = 1;
+  if (r.win === 'last' && r.respawn > 0 && r.lives === 0 && r.pvp) r.lives = 3;
   if (r.target === 0) {
     if (r.win === 'elims') r.target = 15;
     else if (r.win === 'teamelims') r.target = 50;

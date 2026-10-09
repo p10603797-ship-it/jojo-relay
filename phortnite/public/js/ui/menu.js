@@ -27,8 +27,20 @@ export class Ui {
       this.app.sfx.ui();
       const g = this.app.game;
       // (mid best-of-N series PLAY AGAIN would end the series: not offered)
-      this.app.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: !!g && g.solo && !g.inSeries() });
+      this.app.hud.elim({ spectating: true, sub: 'Spectating — NEXT PLAYER (or fire / click) to switch', leave: true, again: !!g && g.solo && !g.inSeries() });
       this.app.resume();
+    });
+    // the portrait 'turn your iPad' screen: ↩ LOBBY (warm-up: back to the stage; a match: wait there)
+    const rot = $('#rotate .rot-lobby');
+    if (rot) rot.addEventListener('click', () => {
+      this.app.sfx.ui();
+      if (this.app.warming) this.app.warmUp(false); else this.app.backToLobby();
+    });
+    $('.es-nextp').addEventListener('click', () => {
+      const g = this.app.game;
+      if (!g || !g.cycleSpectate) return;
+      this.app.sfx.ui();
+      g.cycleSpectate();
     });
     $('.es-leave').addEventListener('click', () => { this.app.sfx.ui(); this.app.backToLobby(); });
     for (const el of [$('#elimscreen'), $('#menubtn')]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -134,8 +146,8 @@ export class Ui {
     const q = ['auto', 'low', 'medium', 'high', 'ultra'];
     const html = `<h2>SETTINGS</h2>
       <div class="setting"><span>Graphics quality</span><select id="s-q">${q.map((x) => `<option ${x === st.quality ? 'selected' : ''} value="${x}">${x[0].toUpperCase() + x.slice(1)}</option>`).join('')}</select></div>
-      <div class="setting"><span>Mouse / controller sensitivity</span><input id="s-sens" type="range" min="0.2" max="3" step="0.05" value="${st.sens}"></div>
       <div class="setting"><span>Touch look sensitivity</span><input id="s-tsens" type="range" min="0.3" max="3" step="0.05" value="${st.touchSens}"></div>
+      <div class="setting"><span>Mouse / controller sensitivity</span><input id="s-sens" type="range" min="0.2" max="3" step="0.05" value="${st.sens}"></div>
       <div class="setting"><span>Field of view</span><input id="s-fov" type="range" min="65" max="100" step="1" value="${st.fov}"></div>
       <div class="setting"><span>Volume</span><input id="s-vol" type="range" min="0" max="1" step="0.05" value="${st.volume}"></div>
       <div class="setting"><span>Auto-shoot when the crosshair is on an enemy</span><input id="s-auto" type="checkbox" ${st.autoFire ? 'checked' : ''}></div>

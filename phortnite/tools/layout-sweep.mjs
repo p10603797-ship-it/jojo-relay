@@ -1,7 +1,9 @@
-// Touch HUD layout sweep: the rectangles of every visible touch button and HUD block on 8 iPad /
-// phone viewports, in each game state (warm-up, build, edit, match, bus, sky, dead, and a team mode
-// with the mode HUD, teammates panel and a notice: King of the Hill). Reports
-// overlapping pairs and anything off screen; expects none.
+// Touch HUD layout sweep: the rectangles of every visible touch button and HUD block on 9 iPad /
+// phone viewports, in each game state (warm-up, build, edit, an elimination with loot at your feet
+// in gun and build mode, editing during a reload, match, bus, sky, dead, and a team mode with the
+// mode HUD, teammates panel and a notice: King of the Hill). The elimination banner is measured by
+// its text (each line's ink, a cut-short name by its box), not its block. Reports overlapping
+// pairs and anything off screen; expects none.
 //
 //   node tools/layout-sweep.mjs [url] [--shots dir] [--json out.json] [--scale 1.3] [--only 1180x820,844x390]
 // The page must be served (npm start). Rendering is switched off while measuring (the DOM is all
@@ -19,9 +21,9 @@ const PW = process.env.PLAYWRIGHT || '/opt/node22/lib/node_modules/playwright/in
 const { chromium } = await import(PW);
 
 const ONLY = opt('--only'); // e.g. --only 1180x820,844x390
-const VPS = [[1024, 768], [1080, 810], [1133, 744], [1180, 820], [1194, 834], [1366, 1024], [844, 390], [932, 430]]
+const VPS = [[1024, 768], [1080, 810], [1133, 744], [1180, 820], [1194, 834], [1366, 1024], [844, 390], [932, 430], [667, 375]]
   .filter(([w, h]) => !ONLY || ONLY.split(',').includes(`${w}x${h}`));
-const HUD = ['#bars', '#hotbar', '#ammo', '#mats', '#minimap', '#stats', '#poi', '#killfeed', '#menubtn', '#buildbar', '#lobbypanel', '#busprompt', '#editchips', '#prompt', '#modehud', '.mh-mates', '#notice'];
+const HUD = ['#bars', '#hotbar', '#ammo', '#mats', '#minimap', '#stats', '#poi', '#killfeed', '#menubtn', '#buildbar', '#lobbypanel', '#busprompt', '#editchips', '#prompt', '#modehud', '.mh-mates', '#notice', '#progress', '#shieldbreak'];
 const t00 = Date.now();
 const log = (...a) => console.log(`+${((Date.now() - t00) / 1000).toFixed(0)}s`, ...a);
 
@@ -51,6 +53,24 @@ const rects = () => ev((HUD) => {
   };
   document.querySelectorAll('#touch .tbtn').forEach((el) => { out[`btn:${el.className.split(' ')[1].replace('tb-', '')}`] = r(el); });
   for (const s of HUD) { const el = document.querySelector(s); if (el && (s !== '#killfeed' || el.children.length)) out[s] = r(el); }
+  // the elimination banner, line by line, by its text
+  const eb = document.querySelector('#elimbanner');
+  if (eb) {
+    for (const line of eb.children) {
+      const box = r(line);
+      if (!box.vis) continue;
+      let x = Infinity, y = Infinity, rr = -Infinity, bb = -Infinity;
+      const add = (q) => { if (!(q.width > 0)) return; x = Math.min(x, q.x); y = Math.min(y, q.y); rr = Math.max(rr, q.right); bb = Math.max(bb, q.bottom); };
+      const walk = (n) => {
+        for (const c of n.childNodes) {
+          if (c.nodeType === 3) { const rg = document.createRange(); rg.selectNodeContents(c); add(rg.getBoundingClientRect()); }
+          else if (c.nodeType === 1) { if (getComputedStyle(c).overflow === 'hidden') add(c.getBoundingClientRect()); else walk(c); }
+        }
+      };
+      walk(line);
+      if (x < Infinity) out[`elim:${line.className.replace('eb-', '')}`] = { x: Math.round(x), y: Math.round(y), w: Math.round(rr - x), h: Math.round(bb - y), vis: true };
+    }
+  }
   return out;
 }, HUD);
 // HUD blocks other packages are replacing (lobby-party turns the warm-up panel into a compact chip):
@@ -87,6 +107,9 @@ await ev(() => {
 await p.waitForFunction(() => { const g = window.__phortnite.game; return g && g.me && g.phase === 'lobby' && g.me.alive; }, null, { timeout: 120000, polling: 100 });
 await ev(() => {
   window.__phortnite.input.setTouchMode(true);
+  // the same open spot every run (the warm-up spawn is random: a slope there can hide the wall)
+  const g = window.__phortnite.game, me = g.me, d = g.world.data, sp = d.spawns[0];
+  me.mover.teleport(sp.x, d.heightAt(sp.x, sp.z) + 0.2, sp.z); me.mover.mode = 'air'; me.mover.vel.set(0, 0, 0);
   // a wall to edit right in front and a gun on the ground: the EDIT and pick-up buttons show too
   window.__sweep = {
     setup(build) {
@@ -98,6 +121,27 @@ await ev(() => {
       if (t.free) g.builds.add({ k: t.k, m: 'wood', by: me.id });
       g.loot.add({ id: 99001, item: { k: 'ar', r: 3, m: 30 }, x: me.pos.x + 0.6, y: me.pos.y + 0.05, z: me.pos.z + 0.6 });
     },
+    // my elimination (a long name and a streak) with its loot at my feet and the shield-break pop,
+    // held on screen (they animate out after a moment)
+    elim(on) {
+      const g = window.__phortnite.game, eb = document.querySelector('#elimbanner'), sb = document.querySelector('#shieldbreak');
+      if (on) {
+        g.hud.elimBanner('SIR BUILDS-A-LOT', 2, 'DOUBLE ELIM!');
+        g.hud.shieldBreak();
+        for (const e of [eb, sb]) { e.style.animation = 'none'; e.style.opacity = '1'; }
+      } else {
+        eb.classList.remove('show', 'streak'); sb.classList.remove('show');
+        for (const e of [eb, sb]) { e.style.animation = ''; e.style.opacity = ''; }
+      }
+    },
+    // a real reload of a near-empty gun
+    reload() {
+      const me = window.__phortnite.game.me;
+      me.resetInventory({ slots: [{ k: 'ar', r: 3, m: 5 }, { k: 'shotgun', r: 2, m: 5 }], ammo: { medium: 300, shells: 20 } });
+      me.select(1);
+      me.reloadT = -1;
+      me.startReload();
+    },
   };
 });
 const out = {};
@@ -105,6 +149,14 @@ const states = {
   warmup: async () => { await ev(() => window.__sweep.setup(false)); await frames(4); },
   build: async () => { await ev(() => window.__sweep.setup(true)); await frames(4); },
   edit: async () => { await ev(() => { window.__sweep.setup(false); }); await frames(3); await ev(() => { const g = window.__phortnite.game; const bc = g.buildClient; const t = bc.target || bc.findTarget(); if (t) bc.openEdit(t); }); await frames(3); },
+  editreload: async () => {
+    await ev(() => { const g = window.__phortnite.game; g.buildClient.closeEdit(); window.__sweep.setup(false); window.__sweep.reload(); });
+    await frames(3);
+    await ev(() => { const g = window.__phortnite.game; const bc = g.buildClient; const t = bc.target || bc.findTarget(); if (t) bc.openEdit(t); window.__sweep.elim(false); });
+    await frames(2);
+  },
+  elimloot: async () => { await ev(() => { const g = window.__phortnite.game; g.buildClient.closeEdit(); g.me.reloadT = -1; window.__sweep.setup(false); window.__sweep.elim(true); }); await frames(4); },
+  elimbuild: async () => { await ev(() => { window.__sweep.setup(true); window.__sweep.elim(true); }); await frames(4); },
 };
 let total = 0;
 const foreign = (R0) => {
@@ -138,7 +190,8 @@ for (const [w, h] of VPS) {
   await p.setViewportSize({ width: w, height: h });
   await frames(2);
   for (const [st, fn] of Object.entries(states)) { await fn(); await run(`${w}x${h}`, w, h, st); }
-  await ev(() => window.__phortnite.game.buildClient.closeEdit());
+  // (everything back as it was for the next viewport)
+  await ev(() => { const g = window.__phortnite.game; g.buildClient.closeEdit(); window.__sweep.elim(false); g.me.reloadT = -1; g.me.buildMode = false; g.me.onInventory(); });
 }
 // a match: bus, skydive, on the ground with a loadout, dead
 await ev(() => { const g = window.__phortnite.game; g.me.buildMode = false; g.me.onInventory(); g.startMatch(4, 0); });

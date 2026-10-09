@@ -44,9 +44,13 @@ const DZ = [0, 1, 1, 1, 0, -1, -1, -1];
 const DIR = [5, 6, 7, 4, -1, 0, 3, 2, 1]; // DIR[(dz + 1) * 3 + dx + 1] = d
 /**
  * Waypoint codes: >= 0 a graph node; <= VIA a corner on the way into node VIA - code; ROOM a door
- * or room point (no graph node); STAIR a point of a flight of stairs (walked exactly).
+ * or room point (no graph node); STAIR a point of a flight of stairs (walked exactly); PAD the
+ * launch pad itself, just before a pad link (walked exactly, so the pad throws you).
  */
-export const ROOM = -1, STAIR = -2, VIA = -10;
+export const ROOM = -1, STAIR = -2, PAD = -3, VIA = -10;
+export const PADS_OFF_S = 60; // a pad that didn't throw anyone is left out of routes this long
+const PAD_CLIMB = 1.0;        // the walk onto a pad: no steeper than 45° uphill (per 0.5 m)
+const PAD_REACH = 1.2;        // ...up to this far from its centre (inside its trigger, traversal.padAt)
 /** Graph node of a waypoint code (-1: not a graph point). */
 export const wpNode = (code) => (code >= 0 ? code : code <= VIA ? VIA - code : -1);
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -116,7 +120,9 @@ export class Nav {
     this.comp = new Int32Array(this.nn).fill(-1);  // connected component
     this.extra = new Map();                        // node -> [[to, cost], ...] (launch pads)
     this.vias = new Map();                         // u * 8 + d -> fine cells to walk via (links round a corner)
-    this.padsOn = true;                            // launch pads throw you (cleared if one doesn't)
+    this.padBad = new Map();                       // pad node -> until (page clock): a pad that didn't throw a walker
+    this.padFails = new Map();                     // pad node -> times it failed
+    this.cadjX = null;                             // component links without those pads
     this.ready = false;
     this.stage = 0;
     this.row = 0;
@@ -442,15 +448,19 @@ export class Nav {
     return D[lb] * C * avg * 0.85 + wade;
   }
 
-  /** Launch pads: one-way links from the pad's node to open ground it can throw you to. */
+  /**
+   * Launch pads: one-way links from the pad's approach node (padApproach) to open ground it can
+   * throw you to.
+   */
   pads() {
     const d = this.data;
     for (const p of d.pads || []) {
-      if (!p) continue;
+      // (a bounce mushroom throws you a few metres: walking is as good)
+      if (!p || p.kind === 'mushroom') continue;
       // (a pad up on a roof is no use to someone walking the ground graph)
       const py = p.y ?? d.heightAt(p.x, p.z);
       if (p.roof || py > d.heightAt(p.x, p.z) + 2.5) continue;
-      const u = this.nodeAt(p.x, p.z, 2);
+      const u = this.padApproach(p);
       if (u < 0) continue;
       const pw = p.power || 1;
       const list = [];
@@ -462,11 +472,55 @@ export class Nav {
           const vi = this.rep[v];
           if (this.flags[vi] & F_WATER) continue;
           if (d.heightAt(this.nodeX[v], this.nodeZ[v]) > py + 25) continue;
-          list.push([v, r * 0.5 + 8]);
+          list.push([v, r * 0.5 + 8, p.x, p.z, py]); // (the pad's own spot: the route walks onto it)
         }
       }
       if (list.length) this.extra.set(u, (this.extra.get(u) || []).concat(list));
     }
+  }
+
+  /**
+   * The node a walker gets onto pad p from: the nearest one (within 16 m) whose straight walk onto
+   * the pad is clear, or -1 (then the pad is no route). A geyser on the volcano's flank with a rock
+   * in the way, or the crater's geysers in their lava, would otherwise be a route the bots walk
+   * forever and never get thrown.
+   */
+  padApproach(p) {
+    const cx = Math.floor((p.x - this.x0) / CC), cz = Math.floor((p.z - this.x0) / CC);
+    const cands = [];
+    for (let a = -2; a <= 2; a++) {
+      for (let b = -2; b <= 2; b++) {
+        const nx = cx + b, nz = cz + a;
+        if (nx < 0 || nz < 0 || nx >= this.cnx || nz >= this.cnx) continue;
+        const n = nz * this.cnx + nx;
+        if (this.rep[n] < 0) continue;
+        const L = Math.hypot(this.nodeX[n] - p.x, this.nodeZ[n] - p.z);
+        if (L <= 16) cands.push([L, n]);
+      }
+    }
+    cands.sort((x, y) => x[0] - y[0]);
+    for (const [, n] of cands) if (this.padWalk(this.nodeX[n], this.nodeZ[n], p)) return n;
+    return -1;
+  }
+
+  /** Can someone walk straight from (ax, az) onto pad p: no water, lava, house or solid object in the way, nothing too steep? */
+  padWalk(ax, az, p) {
+    const d = this.data, hAt = d.heightAt, solid = d.solidNear;
+    const L = Math.hypot(p.x - ax, p.z - az);
+    if (L <= PAD_REACH) return true;
+    const ux = (p.x - ax) / L, uz = (p.z - az) / L;
+    const n = Math.ceil((L - PAD_REACH) / 0.5);
+    let hp = hAt(ax, az);
+    for (let k = 1; k <= n; k++) {
+      const t = Math.min(L - PAD_REACH, k * 0.5);
+      const x = ax + ux * t, z = az + uz * t;
+      const h = hAt(x, z);
+      if (h < WATER_H || (h - hp) / 0.5 > PAD_CLIMB) return false;
+      hp = h;
+      if (this.flagsAt(x, z) & (F_BLOCK | F_HOUSE | F_WATER | F_CLIFF)) return false;
+      if (solid && solid(x, h + SOLID_Y, z, null, 0.4)) return false;
+    }
+    return true;
   }
 
   /**
@@ -534,8 +588,8 @@ export class Nav {
     if (a < 0 || b < 0) return false;
     if (a === b) return true;
     if (!this.exits[a] || !this.entries[b]) return false;
-    // (pads count while they work: one that didn't throw us turns them off, see PathFollower)
-    const adj = this.padsOn ? this.cadjP : this.cadjG, key = this.padsOn ? a : a + this.ncomp;
+    // (pads count while they work: one that didn't throw us is left out a while, see PathFollower)
+    const adj = this.padBad.size ? this.padAdj() : this.cadjP, key = a;
     let r = this.creach.get(key);
     if (!r) {
       r = new Uint8Array(this.ncomp);
@@ -655,8 +709,61 @@ export class Nav {
    * A* from node s to node g. blocked: optional Map(edge key u * nn + v -> until) of links this
    * bot gave up on (t = now, s). Returns an Int32Array of nodes (s ... g), or null.
    */
+  /** Component links with the pads that work (none left out: cadjP). */
+  padAdj() {
+    if (this.cadjX) return this.cadjX;
+    const comp = this.comp;
+    const adj = this.cadjG.map((a) => new Set(a));
+    for (const [u, list] of this.extra) {
+      if (this.padBad.has(u)) continue;
+      for (const [v] of list) if (comp[u] >= 0 && comp[v] >= 0 && comp[u] !== comp[v]) adj[comp[u]].add(comp[v]);
+    }
+    this.cadjX = adj.map((set) => Int32Array.from(set));
+    return this.cadjX;
+  }
+
+  /** Do the pads all work right now (none left out of routes)? */
+  get padsOn() { return this.padBad.size === 0; }
+
+  /** Routes planned with or without some pad are planned again. */
+  padsChanged() {
+    this.cache.clear();
+    if (this.creach) this.creach.clear();
+    this.cadjX = null;
+  }
+
+  /**
+   * Pads back once their time-out is over. On the page's clock: bots' own clocks differ, and the
+   * Nav outlives a match.
+   */
+  padsCheck() {
+    if (!this.padBad.size) return;
+    const t = now();
+    let back = false;
+    for (const [u, until] of this.padBad) if (t >= until) { this.padBad.delete(u); back = true; }
+    if (back) this.padsChanged();
+  }
+
+  /**
+   * The pad at node u did not throw a walker: leave that pad (every pad when u is not given) out
+   * of routes for PADS_OFF_S, twice as long each time it fails again (up to 16x). The others keep
+   * working.
+   */
+  padsOff(u = -1) {
+    const t = now();
+    const off = (k) => {
+      const n = Math.min(4, this.padFails.get(k) || 0);
+      this.padFails.set(k, n + 1);
+      this.padBad.set(k, t + PADS_OFF_S * 1000 * 2 ** n);
+    };
+    if (u >= 0) off(u);
+    else for (const k of this.extra.keys()) off(k);
+    this.padsChanged();
+  }
+
   path(s, g, blocked = null, t = 0) {
     if (s < 0 || g < 0) return null;
+    this.padsCheck();
     if (s === g) return Int32Array.of(s);
     if (!this.canReach(s, g)) return null;
     const useCache = !blocked || !blocked.size;
@@ -696,7 +803,8 @@ export class Nav {
     };
     G[s] = 0; P[s] = -1; seen[s] = stamp;
     heap.push(s, h(s));
-    const extra = this.padsOn && this.extra.size ? this.extra : null;
+    const extra = this.extra.size ? this.extra : null;
+    const bad = this.padBad.size ? this.padBad : null;
     const bl = blocked && blocked.size ? blocked : null;
     // with links blocked the goal may be cut off: don't search the whole island to find out
     let budget = bl ? 4000 : Infinity;
@@ -718,7 +826,7 @@ export class Nav {
         if (seen[v] !== stamp || ng < G[v]) { seen[v] = stamp; G[v] = ng; P[v] = u; heap.push(v, ng + h(v)); }
       }
       if (extra) {
-        const ex = extra.get(u);
+        const ex = bad && bad.has(u) ? null : extra.get(u);
         if (ex) {
           for (const [v, c] of ex) {
             if (closed[v] === stamp) continue;
@@ -778,13 +886,21 @@ export class Nav {
       const n = this.nodeAt(cx, cz, 8);
       if (n >= 0) { dist[n] = 0; heap.push(n, 0); }
     }
+    // outward from the circle over the REVERSE links: dist[v] is the cost of walking v -> u -> ...
+    // into the circle (a one-way link, a slope you can only slide down, counts in its own direction)
+    const done = this.fdone && this.fdone.length === nn ? this.fdone.fill(0) : (this.fdone = new Uint8Array(nn));
     while (heap.size) {
       const u = heap.pop();
+      if (done[u]) continue; // (a stale heap entry)
+      done[u] = 1;
       const du = dist[u];
+      const ux = u % cnx, uz = (u / cnx) | 0;
       for (let d = 0; d < 8; d++) {
-        const c = ec[u * 8 + d];
+        const vx = ux + DX[d], vz = uz + DZ[d];
+        if (vx < 0 || vz < 0 || vx >= cnx || vz >= cnx) continue;
+        const v = vz * cnx + vx;
+        const c = ec[v * 8 + ((d + 4) & 7)]; // the link v -> u
         if (!(c < Infinity)) continue;
-        const v = u + DZ[d] * cnx + DX[d];
         const nd = du + c;
         if (nd < dist[v]) { dist[v] = nd; heap.push(v, nd); }
       }
@@ -899,17 +1015,32 @@ export class Nav {
     return out;
   }
 
-  /** Waypoints [x, y, z, code, ...] along a node path (with the corners of links that bend). */
+  /**
+   * Waypoints [x, y, z, code, ...] along a node path (with the corners of links that bend, and the
+   * pad's own spot before a launch pad link: the pad node is only the block's most walkable cell).
+   */
   nodePts(nodes, out = []) {
     for (let k = 0; k < nodes.length; k++) {
       const n = nodes[k];
       if (k > 0) {
-        const via = this.viaOf(nodes[k - 1], n);
-        if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, VIA - n);
+        const pad = this.padOf(nodes[k - 1], n);
+        if (pad) out.push(pad[0], pad[2], pad[1], PAD); // (with its height: a walker below it hops up)
+        else {
+          const via = this.viaOf(nodes[k - 1], n);
+          if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, VIA - n);
+        }
       }
       out.push(this.nodeX[n], NaN, this.nodeZ[n], n);
     }
     return out;
+  }
+
+  /** The pad [x, z] of a launch pad link u -> v, or null for a walk. */
+  padOf(u, v) {
+    const ex = this.extra.get(u);
+    if (!ex) return null;
+    for (const e of ex) if (e[0] === v && e.length > 3) return [e[2], e[3], e.length > 4 ? e[4] : NaN];
+    return null;
   }
 
   lineWalkShort(ax, az, bx, bz) { return Math.hypot(bx - ax, bz - az) < 40 && this.lineWalk(ax, az, bx, bz); }
@@ -1050,7 +1181,7 @@ export class PathFollower {
   get precise() {
     if (!this.pts || this.i >= this.pts.length >> 2) return false;
     const c = this.pts[this.i * 4 + 3];
-    return c === STAIR || (c === ROOM && this.i < (this.pts.length >> 2) - 1);
+    return c === STAIR || c === PAD || (c === ROOM && this.i < (this.pts.length >> 2) - 1);
   }
 
   step(px, py, pz, t, dt) {
@@ -1078,7 +1209,7 @@ export class PathFollower {
       const wx = P[j] - px, wz = P[j + 2] - pz, wy = P[j + 1];
       const d2 = wx * wx + wz * wz;
       const code = P[j + 3];
-      const near = code >= 0 ? 2.6 : code <= VIA ? 1.6 : code === STAIR ? 0.7 : 1.4;
+      const near = code >= 0 ? 2.6 : code <= VIA ? 1.6 : code === STAIR ? 0.7 : code === PAD ? 0.9 : 1.4;
       if (d2 < near * near && (!(wy === wy) || Math.abs(wy - py) < (code === STAIR ? 1.2 : 2.4))) { this.next(); continue; }
       break;
     }
@@ -1096,7 +1227,13 @@ export class PathFollower {
     }
     const j = this.i * 4;
     this.tx = P[j]; this.ty = P[j + 1] === P[j + 1] ? P[j + 1] : py; this.tz = P[j + 2];
-    if (this.i > 0 && P[j + 3] >= 0) this.pad = nav.isPad(wpNode(P[j - 1]), P[j + 3]);
+    // on a pad link (walking onto the pad, or thrown toward its far end): no sprinting
+    if (P[j + 3] === PAD) this.pad = true;
+    else if (this.i > 0 && P[j + 3] >= 0) {
+      let u = -1;
+      for (let k = this.i - 1; k >= 0 && u < 0; k--) u = wpNode(P[k * 4 + 3]);
+      this.pad = u >= 0 && nav.isPad(u, P[j + 3]);
+    }
     this.progress(Math.hypot(this.tx - px, this.tz - pz), t, dt, px, pz);
     return 1;
   }
@@ -1116,13 +1253,15 @@ export class PathFollower {
     this.stuckT = t; this.stuckX = px; this.stuckZ = pz;
     let v = -1, u = -1;
     if (P && this.i < P.length >> 2) {
-      v = wpNode(P[this.i * 4 + 3]);
+      // stuck on the way onto a pad: the link to blame is the pad's (to the node after it)
+      const k0 = P[this.i * 4 + 3] === PAD && this.i + 1 < P.length >> 2 ? this.i + 1 : this.i;
+      v = wpNode(P[k0 * 4 + 3]);
       for (let k = this.i - 1; k >= 0 && u < 0; k--) { const w = wpNode(P[k * 4 + 3]); if (w >= 0 && w !== v) u = w; }
     }
     if (v >= 0 && u >= 0) {
       this.blocked.set(u * nn + v, t + BLOCK_S);
       this.blocked.set(v * nn + u, t + BLOCK_S);
-      if (nav.isPad(u, v)) nav.padsOn = false; // stood on a pad and nothing threw us
+      if (nav.isPad(u, v)) nav.padsOff(u); // stood on a pad and nothing threw us: that pad is off for a while
     }
     // stuck here again (or with no link to blame): stay off the node we can't reach
     if (again || u < 0) {

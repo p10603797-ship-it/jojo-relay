@@ -7,6 +7,7 @@ import { MAP } from '../../shared/constants.js';
 import { encodeRules, decodeRules, describeRules, placeList, prettyCode, areaName } from '../../shared/modes/code.js';
 import { GAMES } from '../../shared/modes/games/index.js';
 import { BIOMES } from '../../shared/world/keys.js';
+import { resolveArea, fullArea } from '../../shared/modes/runtime.js';
 
 const STORE = 'phortnite.modes';
 const MAX_SAVED = 12;
@@ -83,7 +84,7 @@ const LABELS = {
   bigHead: ON_OFF,
   fallDamage: ON_OFF,
   mystery: ON_OFF,
-  pvp: { true: 'On', false: 'Off (No Damage)' },
+  pvp: { true: 'Yes', false: 'No (No Damage)' },
   bots: (v) => String(v),
   botSkill: { normal: 'Normal', easy: 'Easy', hard: 'Hard', mixed: 'Mixed' },
   maxPlayers: (v) => String(v),
@@ -116,22 +117,69 @@ const TABS = [
   ]],
   ['BUILD', [['build', 'Building'], ['mats', 'Start materials', (r) => r.build === 'on'], ['harvest', 'Harvesting', (r) => r.build === 'on']]],
   ['MUTATORS', [
-    ['gravity', 'Gravity'], ['speed', 'Speed'], ['jump', 'Jump'], ['dmg', 'Damage'], ['bigHead', 'Big heads'], ['oneShot', 'One shot'],
+    ['gravity', 'Gravity'], ['speed', 'Speed'], ['jump', 'Jump'], ['dmg', 'Damage amount'], ['bigHead', 'Big heads'], ['oneShot', 'One shot'],
     ['headOnly', 'Headshots only'], ['mystery', 'Mystery mutators'], ['hp', 'Health'], ['shield', 'Start shield'], ['siphon', 'Siphon'],
-    ['fallDamage', 'Fall damage'], ['pvp', 'Damage'],
+    ['fallDamage', 'Fall damage'], ['pvp', 'Players can hurt each other'],
   ]],
   ['BOTS', [['bots', 'Bots'], ['botSkill', 'Bot skill'], ['maxPlayers', 'Max players']]],
 ];
 const FIELD = Object.fromEntries(RULE_FIELDS.map((f) => [f.key, f]));
 
 /** Rule changes that come with picking a way to win (so a new mode plays right straight away). */
-function goalPreset(win) {
+export function goalPreset(win) {
   const g = own(GAMES, win) ? GAMES[win] : null;
   const base = g && g.defaults ? { ...g.defaults } : {};
-  if (win === 'elims' || win === 'teamelims' || win === 'time') Object.assign(base, { respawn: 3, lives: 0, spawn: 'ground', ...base });
+  if (win === 'elims' || win === 'teamelims' || win === 'time') {
+    // respawn fights: in the middle of the big island (the whole 1.6 km island is a long walk to
+    // the next fight) and on a clock, like the curated rumbles
+    const arena = { respawn: 3, lives: 0, spawn: 'ground', timeLimit: 600 };
+    if ((MAP.size || 0) > 700) arena.area = 'center';
+    Object.assign(base, { ...arena, ...base });
+  }
   if (win === 'teamelims' && !base.teams) base.teams = 'two';
   if (win === 'last') Object.assign(base, { respawn: 0 });
   return { ...base, win };
+}
+
+/**
+ * Picking another way to win: first undo what the old goal's preset set (only the fields the
+ * player has not changed since, so their own edits stay), then the new goal's preset. Without it
+ * presets pile up: Hide & Seek, then Floor is Lava, would be zero-build pickaxe-only lava.
+ */
+export function goalChange(rules, win) {
+  const defs = normalizeRules({});
+  const fresh = normalizeRules(goalPreset(rules.win));
+  const undo = {};
+  for (const f of RULE_FIELDS) {
+    const k = f.key;
+    if (k !== 'win' && fresh[k] !== defs[k] && rules[k] === fresh[k]) undo[k] = defs[k];
+  }
+  const next = { ...undo, ...goalPreset(win) };
+  // WHERE is the player's (or the curated mode's) choice: a goal's own play area only replaces the
+  // whole island, or the area the old goal's preset put there
+  const fromPreset = fresh.area !== defs.area && rules.area === fresh.area;
+  if (rules.area && rules.area !== defs.area && !fromPreset) next.area = rules.area;
+  return next;
+}
+
+/** Last standing with respawn and damage on: unlimited lives could never end. */
+const endlessLast = (r) => r.win === 'last' && r.respawn > 0 && r.pvp;
+
+/**
+ * Is a biome worth its own WHERE chip? Its circle (resolveArea: the biome's largest patch) must be
+ * smaller than the island and mostly that biome: the beach is a thin ring around everything.
+ */
+function biomeFits(world, b) {
+  const a = resolveArea(world, `biome:${b}`);
+  if (!(a.r < fullArea().r * 0.85)) return false;
+  let land = 0, mine = 0;
+  for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) {
+    const x = a.x - a.r + (2 * a.r * (i + 0.5)) / 16, z = a.z - a.r + (2 * a.r * (j + 0.5)) / 16;
+    if ((x - a.x) ** 2 + (z - a.z) ** 2 > a.r * a.r || !(world.heightAt(x, z) > 0.5)) continue;
+    land++;
+    if (world.biomeAt(x, z) === b) mine++;
+  }
+  return land > 0 && mine / land >= 0.2;
 }
 
 // ------------------------------------------------------------------ the sheet
@@ -193,6 +241,7 @@ export function createCreator(app, opts = {}) {
     if (key === 'area') return areaHtml();
     const f = FIELD[key];
     const chips = f.options.map((v, i) => {
+      if (key === 'lives' && v === 0 && endlessLast(rules)) return ''; // could never end (normalizeRules makes it 3)
       const off = key === 'win' && v !== 'last' && !own(GAMES, v);
       return chip(key, v, i, rules[key] === v, off);
     }).join('');
@@ -203,14 +252,7 @@ export function createCreator(app, opts = {}) {
   function areaHtml() {
     const base = [['full', 'Whole Island'], ['center', 'The Middle'], ['random', 'Random Spot']];
     let biomes = BIOMES.filter((b) => b !== 'ocean');
-    if (world && typeof world.biomeAt === 'function' && world.size) {
-      const seen = new Set();
-      for (let i = 0; i < 24; i++) for (let j = 0; j < 24; j++) {
-        const x = -world.half + (i + 0.5) * world.size / 24, z = -world.half + (j + 0.5) * world.size / 24;
-        if (world.heightAt(x, z) > 0.5) seen.add(world.biomeAt(x, z));
-      }
-      biomes = biomes.filter((b) => seen.has(b));
-    }
+    if (world && typeof world.biomeAt === 'function' && world.size) biomes = biomes.filter((b) => biomeFits(world, b));
     const chips = base.map(([v, t]) => `<button class="mc-chip${rules.area === v ? ' sel' : ''}" data-area="${v}">${t}</button>`).join('')
       + biomes.map((b) => `<button class="mc-chip${rules.area === `biome:${b}` ? ' sel' : ''}" data-area="biome:${b}">${esc(areaName(`biome:${b}`).replace(/^the /, ''))}</button>`).join('');
     return `<section class="mc-field mc-where"><h4>Where on the island</h4>
@@ -254,14 +296,52 @@ export function createCreator(app, opts = {}) {
       g.strokeRect(4, 4, S - 8, S - 8);
     }
     const dots = root.querySelector('.mc-dots');
-    const html = regions().map((r) => {
+    // labels that would run into one another are left out (the selected place's always shows,
+    // and its name is under the map too); bigger places first
+    const px = dots.clientWidth || 360;
+    const kept = [];
+    const regs = regions();
+    const order = regs.slice().sort((p, q) => (a === `poi:${q.name}`) - (a === `poi:${p.name}`) || (q.r || 0) - (p.r || 0));
+    const showLabel = new Set();
+    const at = (r) => [toX(r.x) / S * px, toY(r.z) / S * px];
+    for (const r of order) {
+      // the label sits centred 18 px under its dot: it must not cover another dot or a kept label
+      const [cx, cy] = at(r);
+      const w = r.name.length * 7 + 6, ly = cy + 18;
+      const box = [cx - w / 2, ly - 8, cx + w / 2, ly + 8];
+      const coversDot = regs.some((o) => { if (o === r) return false; const [ox, oy] = at(o); return Math.abs(ox - cx) < w / 2 + 8 && Math.abs(oy - ly) < 16; });
+      if (a === `poi:${r.name}` || (!coversDot && !kept.some((b) => b[0] < box[2] && box[0] < b[2] && b[1] < box[3] && box[1] < b[3]))) {
+        kept.push(box);
+        showLabel.add(r.name);
+      }
+    }
+    const html = regs.map((r) => {
       const sel = a === `poi:${r.name}`;
-      return `<button class="mc-dot${sel ? ' sel' : ''}" data-area="poi:${esc(r.name)}" style="left:${(toX(r.x) / S * 100).toFixed(2)}%;top:${(toY(r.z) / S * 100).toFixed(2)}%"><i></i><span>${esc(r.name)}</span></button>`;
+      return `<button class="mc-dot${sel ? ' sel' : ''}${showLabel.has(r.name) ? '' : ' nolabel'}" tabindex="0" aria-label="${esc(r.name)}" data-area="poi:${esc(r.name)}" style="left:${(toX(r.x) / S * 100).toFixed(2)}%;top:${(toY(r.z) / S * 100).toFixed(2)}%"><i></i><span>${esc(r.name)}</span></button>`;
     }).join('');
     if (dots.dataset.html !== html) { dots.innerHTML = html; dots.dataset.html = html; }
     const note = root.querySelector('.mc-areanote');
-    const missing = a.startsWith('poi:') && !regions().some((r) => r.name === a.slice(4));
-    note.textContent = missing ? `${a.slice(4)} is not on this island: the whole island is used.` : a === 'random' ? 'A different place every match.' : '';
+    const missing = a.startsWith('poi:') && !regs.some((r) => r.name === a.slice(4));
+    note.textContent = missing ? `${a.slice(4)} is not on this island: the whole island is used.`
+      : a === 'random' ? 'A different place every match.' : a.startsWith('poi:') ? `📍 ${a.slice(4)}` : '';
+  }
+
+  /** A tap on the map picks the nearest place (within 28 px): 26 places are closer than a finger. */
+  function pickOnMap(e) {
+    const dots = root.querySelector('.mc-dots');
+    if (!dots || !world) return false;
+    const b = dots.getBoundingClientRect();
+    if (!b.width) return false;
+    const s = b.width / world.size;
+    let best = null, bd = Infinity;
+    for (const r of regions()) {
+      const d = Math.hypot(b.left + (r.x + world.half) * s - e.clientX, b.top + (r.z + world.half) * s - e.clientY);
+      if (d < bd) { bd = d; best = r; }
+    }
+    if (!best || bd > 28) return true;
+    app && app.sfx && app.sfx.ui && app.sfx.ui();
+    update({ area: `poi:${best.name}` });
+    return true;
   }
 
   function render() {
@@ -286,13 +366,16 @@ export function createCreator(app, opts = {}) {
     const v = f.options[i];
     if (v === undefined) return;
     const change = { [key]: v };
-    if (key === 'win') Object.assign(change, goalPreset(v));
-    if (key === 'respawn' && v > 0 && rules.respawn === 0) change.lives = 0; // respawn on: unlimited lives
+    if (key === 'win') Object.assign(change, goalChange(rules, v));
+    // respawn on: unlimited lives (last standing: 3, or it could never end)
+    if (key === 'respawn' && v > 0 && rules.respawn === 0) change.lives = endlessLast({ ...rules, ...change }) ? 3 : 0;
     if (key === 'teams' && v === 'humans' && rules.bots < 5) change.bots = 15;
     update(change);
   }
 
   root.addEventListener('click', (e) => {
+    // the WHERE map: the nearest place to the tap (its dots are drawn, not tapped one by one)
+    if (e.target.closest && e.target.closest('.mc-dots') && e.detail !== 0) { if (pickOnMap(e)) return; }
     const t = e.target.closest('button');
     if (!t || !root.contains(t) || t.disabled) return;
     app && app.sfx && app.sfx.ui && app.sfx.ui();
@@ -335,14 +418,28 @@ export function createCreator(app, opts = {}) {
   root.addEventListener('pointerdown', (e) => e.stopPropagation());
 
   let closed = false;
+  const startCode = encodeRules(rules);
   function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
-  function close() {
-    if (closed) return;
+  /**
+   * Close the creator. auto = true: closed for the player (the party's match is starting), so
+   * changes they did not save go to MY MODES instead of being lost. Returns true when it saved.
+   */
+  function close(auto = false) {
+    if (closed) return false;
     closed = true;
+    let kept = false;
+    if (auto === true) {
+      const code = encodeRules(rules);
+      if (code !== startCode && !loadSaved().some((m) => m.code === code)) {
+        saveMode(describeRules(rules).name, rules);
+        kept = true;
+      }
+    }
     window.removeEventListener('keydown', onKey, true);
     root.classList.add('closing');
     setTimeout(() => root.remove(), 180);
     opts.onClose && opts.onClose();
+    return kept;
   }
   window.addEventListener('keydown', onKey, true);
   (opts.parent || document.body).appendChild(root);

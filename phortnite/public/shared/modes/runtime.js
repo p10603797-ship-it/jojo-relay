@@ -8,6 +8,8 @@ import { mulberry32 } from '../rng.js';
 import { GAMES } from './games/index.js';
 import { cleanLoadout } from '../loot.js';
 
+const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+
 // ------------------------------------------------------------------ areas
 const AREA_CACHE = new WeakMap(); // world -> Map(area key -> {x, z, r})
 
@@ -48,7 +50,11 @@ export function resolveArea(world, area, rng = Math.random) {
   return { ...out };
 }
 
-/** Bounding circle of a biome's land (centroid, then the 97th-percentile distance), or null. */
+/**
+ * Bounding circle of a biome's land (centroid, then the 97th-percentile distance), or null. A biome
+ * in several patches (forest split by the mountains) uses its largest connected patch: a circle
+ * around all of them would be most of the island.
+ */
 function biomeCircle(world, key) {
   const bi = BIOMES.indexOf(key);
   if (bi < 0 || !world) return null;
@@ -56,10 +62,33 @@ function biomeCircle(world, key) {
   if (world.biome && world.N) {
     const { N, cell, half } = world;
     const step = N > 200 ? 2 : 1;
-    for (let iz = 0; iz < N; iz += step) {
-      for (let ix = 0; ix < N; ix += step) {
-        if (world.biome[iz * N + ix] === bi) { xs.push(-half + ix * cell); zs.push(-half + iz * cell); }
+    const M = Math.ceil(N / step);
+    const on = new Uint8Array(M * M);
+    for (let jz = 0; jz < M; jz++) for (let jx = 0; jx < M; jx++) if (world.biome[jz * step * N + jx * step] === bi) on[jz * M + jx] = 1;
+    // the largest 4-connected patch
+    const comp = new Int32Array(M * M).fill(-1);
+    let best = -1, bestN = 0;
+    const stack = [];
+    for (let i = 0; i < M * M; i++) {
+      if (!on[i] || comp[i] >= 0) continue;
+      let n = 0;
+      comp[i] = i;
+      stack.push(i);
+      while (stack.length) {
+        const j = stack.pop();
+        n++;
+        const jx = j % M, jz = (j / M) | 0;
+        if (jx > 0 && on[j - 1] && comp[j - 1] < 0) { comp[j - 1] = i; stack.push(j - 1); }
+        if (jx < M - 1 && on[j + 1] && comp[j + 1] < 0) { comp[j + 1] = i; stack.push(j + 1); }
+        if (jz > 0 && on[j - M] && comp[j - M] < 0) { comp[j - M] = i; stack.push(j - M); }
+        if (jz < M - 1 && on[j + M] && comp[j + M] < 0) { comp[j + M] = i; stack.push(j + M); }
       }
+      if (n > bestN) { bestN = n; best = i; }
+    }
+    for (let j = 0; j < M * M; j++) {
+      if (comp[j] !== best) continue;
+      xs.push(-half + (j % M) * step * cell);
+      zs.push(-half + ((j / M) | 0) * step * cell);
     }
   } else if (typeof world.biomeAt === 'function') {
     const half = world.half || MAP.size / 2;
@@ -93,6 +122,8 @@ export function botCountFor(rules, humans, maxTotal = 32) {
   const cap = Math.max(0, Math.min(rules.maxPlayers, maxTotal) - humans);
   let n = Math.max(0, Math.min(rules.bots | 0, cap));
   const T = rules.teams;
+  // friends vs bots needs someone to play against, whatever maxPlayers says (MAX_TOTAL 32 > 16 humans)
+  if (T === 'humans' && humans > 0 && n < 1 && maxTotal > humans) n = 1;
   if (n > 0 && typeof T === 'number' && T > 1) {
     const rem = (humans + n) % T;
     if (rem) {
@@ -104,9 +135,20 @@ export function botCountFor(rules, humans, maxTotal = 32) {
 }
 
 /**
+ * 'two' (two big teams): the team of the i-th human (join order) when nHumans humans and `total`
+ * players in all play. The party stays together on team 1, up to half of everyone; only when the
+ * humans are more than half (few or no bots) do the extra humans play on team 2, so team 2 is
+ * never empty. The lobby uses the same rule for its team colours.
+ */
+export function twoTeamFor(i, nHumans, total) {
+  const cap = Math.ceil(Math.max(total, nHumans) / 2);
+  return i < Math.min(nHumans, cap) ? 1 : 2;
+}
+
+/**
  * Put players into teams (sets p.team) and return the listed teams [{id, name, color}]:
  * - teams N (2-4): humans fill teams in join order, so a party stays together; bots fill the rest
- * - 'two': humans alternate between two big teams, bots fill the smaller one
+ * - 'two': the party together on team 1 (twoTeamFor), bots fill the smaller team
  * - 'humans': every human on one squad against bots who each play alone (today's squad mode)
  * - 1: free for all, everyone alone (team 1000 + id, not listed)
  */
@@ -119,7 +161,8 @@ export function assignTeams(humans, bots, rules) {
   }
   if (T === 'two') {
     let n1 = 0, n2 = 0;
-    humans.forEach((p, i) => { p.team = (i % 2) + 1; if (p.team === 1) n1++; else n2++; });
+    const total = humans.length + bots.length;
+    humans.forEach((p, i) => { p.team = twoTeamFor(i, humans.length, total); if (p.team === 1) n1++; else n2++; });
     for (const b of bots) {
       if (n1 <= n2) { b.team = 1; n1++; } else { b.team = 2; n2++; }
     }
@@ -144,10 +187,24 @@ const FAR_ENOUGH = 160;  // m: teams this far apart are spread enough (beyond it
 // island: Team Rumble / FFA arenas on the whole island started 600 m+ apart and nobody met)
 const TOO_FAR = 2.2 * FAR_ENOUGH;
 
-/** Open land a player can stand on: above the sea, not too steep, not inside anything. */
+/** Is (x, z) within pad m of a lava pool's edge (world.lava: [{x, z, r, y}])? */
+export function nearLava(world, x, z, pad = 0) {
+  const lava = world && world.lava;
+  if (!lava || !lava.length) return false;
+  for (const L of lava) {
+    if (!L || !(L.r > 0)) continue;
+    const R = L.r + pad;
+    if ((x - L.x) * (x - L.x) + (z - L.z) * (z - L.z) < R * R) return true;
+  }
+  return false;
+}
+
+/** Open land a player can stand on: above the sea, not too steep, not inside anything, not in lava. */
 export function standable(world, x, z, destroyed = null) {
   const h = world.heightAt(x, z);
   if (!(h > 1.5)) return false;
+  // the volcano's crater: the whole pool (and the painted rim around it) is a death pit
+  if (nearLava(world, x, z, 4)) return false;
   const sl = Math.abs(world.heightAt(x + 1, z) - world.heightAt(x - 1, z)) * 0.5 + Math.abs(world.heightAt(x, z + 1) - world.heightAt(x, z - 1)) * 0.5;
   if (sl >= 0.6) return false;
   return !world.solidNear(x, h + 0.9, z, destroyed, 0.45);
@@ -166,7 +223,7 @@ export function spawnCandidates(world, area, rng = Math.random, want = 48, base 
   if (!base) {
     for (const s of world.spawnPoints || []) {
       const dx = s.x - area.x, dz = s.z - area.z;
-      if (dx * dx + dz * dz <= R2 && s.y > 1.5) out.push({ x: s.x, y: s.y, z: s.z });
+      if (dx * dx + dz * dz <= R2 && s.y > 1.5 && !nearLava(world, s.x, s.z, 4)) out.push({ x: s.x, y: s.y, z: s.z });
     }
   }
   for (let t = 0; t < want * 12 && out.length < want; t++) {
@@ -250,7 +307,14 @@ export function pickSpawns(world, area, players, rng = Math.random, cands = null
 /** A bot's skill (0..1) for rules.botSkill; i spreads 'mixed' evenly. 'normal' is today's mix. */
 export function rollBotSkill(level, rnd = Math.random, i = 0) {
   const r = (a, b) => a + rnd() * (b - a);
-  if (level === 'mixed') level = ['easy', 'normal', 'hard'][i % 3];
+  if (level === 'mixed') {
+    // thirds that don't overlap: the bots' brains treat a 'mixed' skill <= 0.45 as easy, so the
+    // normal third stays above it (else half the bots got easy brains)
+    const k = i % 3;
+    if (k === 0) return r(0.15, 0.45);
+    if (k === 2) return r(0.6, 0.95);
+    return r(0.46, 0.75);
+  }
   if (level === 'easy') return r(0.15, 0.45);
   if (level === 'hard') return r(0.6, 0.95);
   const x = rnd();
@@ -304,6 +368,9 @@ export class ModeRuntime {
     this.startLo.clear();
     this.list = players;
     this.teamList = teamList;
+    // a game may name its sides (infection's Survivors / Zombies): clients get the names in 'start'
+    const tn = this.game && this.game.teamNames;
+    if (tn) for (const t of teamList) if (own(tn, t.id)) t.name = tn[t.id];
     this.msNext = 0;
     this.msLast = '';
     this.ms = null;
@@ -346,7 +413,7 @@ export class ModeRuntime {
 
   addScore(key, n = 1) { this.scoreMap.set(key, (this.scoreMap.get(key) || 0) + n); }
   score(key) { return this.scoreMap.get(key) || 0; }
-  /** [[key, n]], best first (ties keep the order they first scored in). */
+  /** [[key, n]], best first. Never rely on the order of tied entries (timeUp calls a tie a draw). */
   scores() { return [...this.scoreMap.entries()].sort((a, b) => b[1] - a[1]); }
 
   /**
@@ -371,7 +438,10 @@ export class ModeRuntime {
     this.room.rosterDirty = true;
     // a team the match did not start with (infection's zombies): list it, so clients can show it
     if (id > 0 && id < 1000 && !this.teamList.some((t) => t.id === id)) {
-      this.teamList.push(teamInfo(id));
+      const t = teamInfo(id);
+      const tn = this.game && this.game.teamNames;
+      if (tn && own(tn, id)) t.name = tn[id];
+      this.teamList.push(t);
       this.teamList.sort((a, b) => a.id - b.id);
       if (this.started) this.room.teamsDirty = true;
     }
@@ -410,12 +480,16 @@ export class ModeRuntime {
     this.started = true;
   }
 
-  /** A player's loadout on respawn: the game's, else the mode's. */
+  /**
+   * A player's loadout on respawn: the game's, else the mode's, else nothing at all. Never null: on
+   * the wire lo:null means "keep your loot" (respawnKeep), and a client that dropped everything on
+   * death would otherwise respawn still holding it (a duplicate of what is now on the floor).
+   */
   respawnLoadout(p, defaultLoadout) {
-    const lo = this.call('loadout', p) || defaultLoadout(p);
+    const lo = this.call('loadout', p) || defaultLoadout(p) || {};
     const clean = cleanLoadout(lo);
-    if (clean && this.rules.ammo === 'infinite') clean.infAmmo = true;
-    if (clean) p.lo = clean;
+    if (this.rules.ammo === 'infinite') clean.infAmmo = true;
+    p.lo = clean;
     return clean;
   }
 
@@ -454,17 +528,21 @@ export class ModeRuntime {
     return w && typeof w === 'object' ? w : null;
   }
 
-  /** At the time limit: the top score wins (no scores: the team with the most players left). */
+  /**
+   * At the time limit: the top score wins; a tied top score is a draw ({reason: 'time', draw}); no
+   * scores: the team with the most players left.
+   */
   timeUp() {
-    const top = this.scores()[0];
-    if (top) return this.teamScores() ? { team: top[0], reason: 'time' } : { id: top[0], reason: 'time' };
+    const sc = this.scores(), top = sc[0];
+    if (top && !(sc[1] && sc[1][1] === top[1])) return this.teamScores() ? { team: top[0], reason: 'time' } : { id: top[0], reason: 'time' };
+    if (top) return { reason: 'time', draw: true };
     const n = new Map();
     for (const p of this.list) if (aliveOrComing(p)) n.set(p.team, (n.get(p.team) || 0) + 1);
     let best = null, bn = 0, tie = false;
     for (const [team, c] of n) {
       if (c > bn) { best = team; bn = c; tie = false; } else if (c === bn) tie = true;
     }
-    return best !== null && !tie ? { team: best, reason: 'time' } : { reason: 'time' };
+    return best !== null && !tie ? { team: best, reason: 'time' } : { reason: 'time', draw: true };
   }
 
   /**

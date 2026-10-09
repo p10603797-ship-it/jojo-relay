@@ -3,7 +3,7 @@
 // brain's pure parts (js/ai/goals.js, farsim.js, buildfight.js) with small fakes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode } from '../public/js/ai/nav.js';
+import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode, PAD, PADS_OFF_S } from '../public/js/ai/nav.js';
 import { generateWorld } from '../public/shared/worldgen.js';
 import * as goals from '../public/js/ai/goals.js';
 import { wantFar, farUpdate, FAR_IN, FAR_OUT } from '../public/js/ai/farsim.js';
@@ -69,7 +69,8 @@ const TODAY = generateWorld();
 function routeCells(nav, pts) {
   const out = [];
   for (let k = 4; k < pts.length; k += 4) {
-    if (nav.isPad(wpNode(pts[k - 1]), wpNode(pts[k + 3]))) continue;
+    // (a pad link's throw: from the pad's own spot, PAD, to where it lands)
+    if (pts[k - 1] === PAD || nav.isPad(wpNode(pts[k - 1]), wpNode(pts[k + 3]))) continue;
     const ax = pts[k - 4], az = pts[k - 2], bx = pts[k], bz = pts[k + 2];
     const L = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(L / 2));
     for (let j = 0; j <= n; j++) {
@@ -432,6 +433,34 @@ test('bots: the mode decides the goal (hill, Juggernaut, zombies, survivors) and
   assert.equal(goals.inArea(g, 0, 0), false);
 });
 
+test('bots: with only a pickaxe (Pickaxe Party, the last gun-game rung) a bot runs down the nearest enemy', () => {
+  const out = {};
+  let g = fakeGame({ win: 'gungame' });
+  let gun = false;
+  const bot = fakeActor(g, 1, 0, 0, { hasGun: () => gun });
+  const near = fakeActor(g, 2, 30, 10), far = fakeActor(g, 3, 120, 0);
+  for (const a of [bot, near, far]) g.bots.set(a.id, a);
+  assert.equal(goals.meleeOnly(bot), true);
+  assert.equal(goals.modeGoal(bot, out), 'hunt');
+  assert.deepEqual([out.x, out.z], [30, 10], 'the nearest enemy');
+  gun = true;
+  assert.equal(goals.meleeOnly(bot), false, 'a gun in hand: plays as usual');
+  assert.equal(goals.modeGoal(bot, out), '');
+  // Pickaxe Party: the loot pool has no guns
+  g = fakeGame({ loot: 'pickaxe' });
+  const p = fakeActor(g, 1, 0, 0, { hasGun: () => false });
+  g.bots.set(1, p); g.bots.set(2, fakeActor(g, 2, 50, 0));
+  assert.equal(goals.modeGoal(p, out), 'hunt');
+  // not in an ordinary match, not for hiders, not in the lobby, not with nobody in reach
+  assert.equal(goals.meleeOnly(fakeActor(fakeGame(), 1, 0, 0, { hasGun: () => false })), false);
+  assert.equal(goals.meleeOnly(fakeActor(fakeGame({ win: 'hideseek', loot: 'pickaxe' }), 1, 0, 0, { team: 1, hasGun: () => false })), false);
+  assert.equal(goals.meleeOnly(fakeActor(fakeGame({ loot: 'pickaxe' }, { phase: 'lobby' }), 1, 0, 0, { hasGun: () => false })), false);
+  g = fakeGame({ loot: 'pickaxe' });
+  const lone = fakeActor(g, 1, 0, 0, { hasGun: () => false });
+  g.bots.set(1, lone); g.bots.set(2, fakeActor(g, 2, 400, 0));
+  assert.equal(goals.modeGoal(lone, out), '', 'too far to chase');
+});
+
 test('bots: a human teammate within reach is followed when there is nothing else to do', () => {
   const out = {};
   const g = fakeGame({ teams: 2 });
@@ -527,4 +556,105 @@ test('bots: build fights place a piece every 0.1-0.3 s, box up with a roof, and 
   // a slow, easy bot builds more slowly; and nobody builds when the rules say no
   g.rules.build = 'off';
   assert.equal(B.start('wall', 0), false);
+});
+
+test('nav: pad routes walk onto the pad itself; mushrooms are not pad links; a pad that fails is off for a while only', () => {
+  const nav = built(TODAY).nav;
+  const pads = (TODAY.pads || []).filter((p) => p.kind === 'mushroom');
+  for (const p of pads) {
+    const u = nav.nodeAt(p.x, p.z, 2);
+    if (u >= 0) for (const e of nav.extra.get(u) || []) assert.ok(e.length > 3, 'only real pads have links');
+  }
+  let padRoutes = 0;
+  for (const [u, list] of nav.extra) {
+    for (const [v, , px, pz] of list.slice(0, 2)) {
+      const pts = nav.nodePts(Int32Array.of(u, v));
+      const k = pts.indexOf(PAD, 3);
+      assert.ok(k > 0 && (k & 3) === 3, 'a PAD waypoint before the throw');
+      assert.deepEqual([pts[k - 3], pts[k - 1]], [px, pz], 'on the pad');
+      assert.ok(TODAY.pads.some((p) => Math.hypot(p.x - px, p.z - pz) < 0.01 && p.kind !== 'mushroom'));
+      padRoutes++;
+    }
+  }
+  assert.ok(padRoutes > 0);
+  // a pad's route starts where the walk onto it is clear: never across the crater's lava, never
+  // from a node 20 m off and 30 m up the wall
+  const linked = new Map();
+  for (const [u, list] of nav.extra) for (const e of list) linked.set(`${e[2]},${e[3]}`, u);
+  for (const p of TODAY.pads.filter((q) => q.kind === 'geyser')) {
+    const inCrater = (TODAY.lava || []).some((l) => Math.hypot(p.x - l.x, p.z - l.z) < l.r + 6);
+    const u = linked.get(`${p.x},${p.z}`);
+    if (inCrater) assert.equal(u, undefined, `crater geyser ${p.id} is not a route`);
+    else if (u !== undefined) {
+      assert.ok(Math.hypot(nav.nodeX[u] - p.x, nav.nodeZ[u] - p.z) <= 16);
+      assert.ok(nav.padWalk(nav.nodeX[u], nav.nodeZ[u], p), `geyser ${p.id}: a clear walk on`);
+    }
+  }
+  // one pad that fails is off for a while (longer each time); the others still route
+  const [u1] = [...nav.extra.keys()];
+  const [u2] = [...nav.extra.keys()].slice(1);
+  nav.padsOff(u1);
+  assert.equal(nav.padsOn, false);
+  assert.ok(nav.padBad.has(u1) && !nav.padBad.has(u2), 'only that pad');
+  const [v2] = nav.extra.get(u2)[0];
+  const r2 = nav.path(u2, v2, null, 0);
+  assert.ok(r2 && r2.length === 2, 'another pad still throws you');
+  const v1 = nav.extra.get(u1)[0][0];
+  const r1 = nav.path(u1, v1, null, 0);
+  assert.ok(!r1 || r1.length > 2, 'the failed pad is not used');
+  const first = nav.padBad.get(u1);
+  nav.padBad.set(u1, 0); // (the time-out is over)
+  nav.path(0, 1, null, 0);
+  assert.equal(nav.padsOn, true, 'pads come back');
+  nav.padsOff(u1);
+  assert.ok(nav.padBad.get(u1) - first > PADS_OFF_S * 1000 * 0.9, 'twice as long the second time');
+});
+
+test('nav: the storm flow field follows real (one-way aware) links: every flow path reaches the circle', () => {
+  const nav = built(TODAY).nav;
+  const circles = [[4, -477, 85], [-141, -347, 40], [-157, -436, 85], [0, 0, 120], [300, 200, 60]];
+  for (const [cx, cz, r] of circles) {
+    const f = nav.flowTo(cx, cz, r);
+    let n = 0, short = 0;
+    for (let s = 0; s < nav.nn; s += 7) {
+      if (nav.rep[s] < 0 || !(f.dist[s] < Infinity) || f.dist[s] === 0) continue;
+      n++;
+      const p = nav.flowPath(f, s, 2000);
+      if (f.dist[p[p.length - 1]] !== 0) short++;
+    }
+    assert.equal(short, 0, `circle (${cx}, ${cz}) r ${r}: ${short} of ${n} flow paths stop short`);
+  }
+});
+
+test('pads: a geyser on a slope fires for someone walking up to its rim; a roof pad never fires from the floor below', async () => {
+  const { Traversal } = await import('../public/js/world/traversal.js');
+  // a 33° slope rising toward -z, the geyser in the middle of it
+  const heightAt = (x, z) => 10 - z * 0.65;
+  const T = { heightAt, pads: [{ id: 1, kind: 'geyser', x: 0, z: 0, y: 10, top: 0.3 }, { id: 2, kind: 'launch', x: 50, z: 0, y: 30, top: 0.3, roof: true }] };
+  const at = (x, z, dy = 0) => Traversal.prototype.padAt.call(T, x, heightAt(x, z) + dy, z);
+  // walking up from below (+z): standing on the slope 1.5 m and 2.1 m out (at the rim, capsule and all)
+  assert.equal(at(0, 1.5)?.id, 1, 'below its centre on the slope');
+  assert.equal(at(0, 2.1)?.id, 1, 'touching the rim');
+  assert.equal(at(0, 2.6), null, 'not from further off');
+  assert.equal(at(0, -1.5)?.id, 1, 'from above too');
+  assert.equal(at(0, 0, 3), null, 'flying over it');
+  // the roof pad: 20 m over the ground; someone on the ground floor under it is not on it
+  const roofT = { heightAt: () => 10, pads: [T.pads[1]] };
+  assert.equal(Traversal.prototype.padAt.call(roofT, 50, 10, 0), null);
+  assert.equal(Traversal.prototype.padAt.call(roofT, 50, 30, 0)?.id, 2);
+});
+
+test('bots: in a lava pool the way out is the pool\'s nearest geyser (else straight out past its edge)', () => {
+  const lava = [{ x: 0, z: 0, r: 28, y: 60 }, { x: 200, z: 0, r: 6, y: 30 }];
+  const pads = [{ kind: 'geyser', x: 17, z: 0, y: 50 }, { kind: 'geyser', x: -17, z: 0, y: 50 }, { kind: 'mushroom', x: 5, z: 0, y: 50 }, { kind: 'geyser', x: 60, z: 0, y: 70 }];
+  const data = { lava, pads, heightAt: () => 50 };
+  const bot = (x, y, z) => ({ game: { world: { data } }, pos: { x, y, z } });
+  const e = goals.lavaEscape(bot(10, 50, 1));
+  assert.deepEqual([e.x, e.z, e.pad], [17, 0, true]);
+  assert.equal(goals.lavaEscape(bot(-12, 50, 0)).x, -17);
+  assert.equal(goals.lavaEscape(bot(10, 70, 0)), null, 'above the lava');
+  assert.equal(goals.lavaEscape(bot(40, 50, 0)), null, 'outside the pool');
+  const f = goals.lavaEscape(bot(203, 29, 0));
+  assert.equal(f.pad, false);
+  assert.ok(f.x > 206, 'straight out of a pool with no geyser');
 });

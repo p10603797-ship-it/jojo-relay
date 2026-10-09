@@ -115,10 +115,13 @@ button { font-family: inherit; }
 /* ------------------------------------------------------------------ modal */
 #modal { position: fixed; inset: 0; z-index: 60; background: rgba(5, 3, 20, 0.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
 .modal-card {
-  position: relative; width: min(720px, 100%); max-height: calc(100% - 20px); overflow: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y;
+  /* the body scrolls, the card (and its ✕) stays put */
+  position: relative; width: min(720px, 100%); max-height: calc(100% - 20px); display: flex; flex-direction: column; overflow: hidden;
   background: linear-gradient(180deg, #2a2070, #160f44); border-radius: 12px; padding: 26px 26px 22px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
+.modal-body { min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; padding-right: 4px; }
+.modal-x { z-index: 2; }
 .modal-x { position: absolute; top: 10px; right: 10px; width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 20px; cursor: pointer; }
 .modal-body h2 { font-family: var(--font-title); font-weight: normal; font-size: 32px; margin: 0 0 14px; letter-spacing: 1px; }
 .modal-body h3 { font-family: var(--font-title); font-weight: normal; font-size: 20px; margin: 18px 0 8px; color: var(--yellow); letter-spacing: 1px; }
@@ -128,8 +131,9 @@ button { font-family: inherit; }
 .modal-body td:first-child { width: 42%; opacity: 0.8; }
 .modal-body kbd { background: #fff; color: #222; border-radius: 4px; padding: 1px 6px; font-family: var(--font-hud); font-size: 13px; box-shadow: 0 2px 0 #999; }
 .setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.08); font-family: system-ui, -apple-system, sans-serif; }
-.setting input[type=range] { width: 50%; accent-color: var(--yellow); height: 28px; }
-.setting input[type=checkbox] { width: 26px; height: 26px; accent-color: var(--yellow); }
+.setting { min-height: 56px; }
+.setting input[type=range] { width: 50%; accent-color: var(--yellow); height: 44px; }
+.setting input[type=checkbox] { width: 40px; height: 40px; flex: none; accent-color: var(--yellow); }
 .setting select { font-size: 16px; }
 .mp-list { list-style: none; padding: 0; margin: 10px 0; display: flex; flex-direction: column; gap: 8px; }
 .mp-list li { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 8px; background: rgba(255, 255, 255, 0.07); }
@@ -192,6 +196,8 @@ body.ctx-canedit:not(.touch):not(.ctx-editing) #crosshair::after { content: 'G  
 
 /* enemy shield broken by my shot */
 #shieldbreak { position: absolute; left: calc(50% + 30px); top: calc(50% - 70px); width: 40px; height: 47px; opacity: 0; pointer-events: none; filter: drop-shadow(0 0 6px rgba(70, 180, 255, 0.9)); }
+/* (touch: left of the crosshair, the pick-up pill sits up and right of it) */
+body.touch #shieldbreak { left: calc(50% - 70px); }
 #shieldbreak svg { width: 100%; height: 100%; display: block; }
 #shieldbreak.show { animation: shbreak 0.9s ease-out forwards; }
 @keyframes shbreak { 0% { opacity: 0; transform: scale(1.8) rotate(-12deg); } 12% { opacity: 1; transform: scale(1) rotate(0); } 70% { opacity: 1; transform: translateY(-4px); } 100% { opacity: 0; transform: translateY(-14px) scale(0.9); } }
@@ -205,6 +211,15 @@ body.ctx-canedit:not(.touch):not(.ctx-editing) #crosshair::after { content: 'G  
 #elimbanner .eb-streak { font-family: var(--font-title); font-size: 40px; line-height: 1.05; background: linear-gradient(180deg, #fff, #ffd23f 55%, #ff8a1c); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 3px 0 #6a3a00); display: none; }
 #elimbanner.streak .eb-streak { display: block; }
 #elimbanner.show { animation: ebin 2.6s ease-out forwards; }
+/* iPad (touch): bottom-anchored just above the ammo line (the streak grows upward), a little
+   smaller, and smaller still with bigger buttons (--ui-tb-scale, set with the buttons' --tb-scale):
+   clear of the pick-up pill and of the right-hand action buttons; a very long name is cut short */
+@media (min-height: 461px) {
+  body.touch #elimbanner { top: auto; bottom: calc(var(--sab) + 122px); }
+  body.touch #elimbanner .eb-main { font-size: calc(24px * (1.6 - 0.6 * var(--ui-tb-scale, 1))); }
+  body.touch #elimbanner .eb-streak { font-size: calc(32px * (1.6 - 0.6 * var(--ui-tb-scale, 1))); }
+  body.touch #elimbanner .eb-main b { display: inline-block; max-width: 8em; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+}
 @keyframes ebin { 0% { opacity: 0; transform: translateX(-50%) scale(1.5); } 10% { opacity: 1; transform: translateX(-50%) scale(1); } 80% { opacity: 1; transform: translateX(-50%); } 100% { opacity: 0; transform: translateX(-50%) translateY(10px); } }
 
 /* edit choices (one tap each) under the crosshair */
@@ -306,6 +321,10 @@ body.touch #prompt kbd { display: none; }
 
 #progress { position: absolute; left: 50%; top: 56%; transform: translate(-50%, -50%); display: none; align-items: center; gap: 10px; }
 #progress.show { display: flex; }
+/* the edit choices sit under the crosshair: the reload / heal ring goes above it, a little left
+   (clear of the shield-break pop, up and right of the crosshair). The ring moves, never the
+   chips, so the tap targets don't jump when a reload ends */
+body.ctx-editing #progress { top: calc(50% - 62px); left: calc(50% - 60px); }
 #progress .ring { width: 54px; height: 54px; }
 #progress svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 #progress circle { fill: none; stroke-width: 4; }
@@ -352,7 +371,9 @@ body.touch #prompt kbd { display: none; }
 #fullmap canvas { width: min(92vh, 92vw); height: min(92vh, 92vw); max-width: 900px; max-height: 900px; border-radius: 8px; border: 3px solid #fff; }
 .fm-close { font-size: 13px; opacity: 0.7; }
 
-#rotate { display: none; position: fixed; inset: 0; z-index: 100; background: #1a0f3d; align-items: center; justify-content: center; font-family: var(--font-title); font-size: 30px; text-align: center; padding: 30px; }
+#rotate { display: none; position: fixed; inset: 0; z-index: 100; background: #1a0f3d; align-items: center; justify-content: center; flex-direction: column; gap: 28px; font-family: var(--font-title); font-size: 30px; text-align: center; padding: 30px; }
+/* a way back to the lobby (which works in portrait) without turning the iPad */
+#rotate .rot-lobby { min-height: 56px; padding: 0 28px; font-size: 22px; }
 @media (orientation: portrait) and (max-width: 1100px) { body.touch.ingame #rotate { display: flex; } }
 
 /* ------------------------------------------------------------------ touch controls (Touch HUD 2.0) */
@@ -459,6 +480,9 @@ body.touch.ingame.ctx-bus .tb-jump .ico, body.touch.ingame.inbus .tb-jump .ico {
 body.touch.ingame.ctx-bus .tb-jump .jl, body.touch.ingame.inbus .tb-jump .jl { display: block; font-family: var(--font-title); font-size: 22px; letter-spacing: 1px; text-shadow: none; }
 body.touch.ingame.ctx-sky .tbtn { display: none; }
 body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
+/* out of the match (spectating): your own empty hotbar, ammo line and 0/0 bars are clutter, and
+   the ammo line ran into the spectate card */
+body.ingame.dead #hotbar, body.ingame.dead #ammo, body.ingame.dead #bars { display: none; }
 
 /* small iPads in landscape (1024 x 768, 1133 x 744) and big phones */
 @media (max-height: 780px) {
@@ -520,6 +544,24 @@ body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
   body.touch.ingame.ctx-bus .tb-jump, body.touch.ingame.inbus .tb-jump { --x: 174px; --y: 153px; }
   #editchips { top: calc(50% + 26px); gap: 6px; }
   #editchips .chip { height: 40px; min-width: 0; padding: 0 8px; font-size: 13px; }
-  #elimbanner { top: 60%; }
-  #elimbanner .eb-main { font-size: 22px; } #elimbanner .eb-streak { font-size: 28px; }
+  /* (phones: a little left of centre and smaller, a long name cut short: clear of the action
+     buttons on the right and of the ammo line under it) */
+  #elimbanner { top: 54%; left: 41%; }
+  #elimbanner .eb-main { font-size: 19px; } #elimbanner .eb-streak { font-size: 24px; } #elimbanner .eb-count { font-size: 13px; }
+  #elimbanner .eb-main b { display: inline-block; max-width: 7em; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+
+}
+
+/* the smallest phones in landscape (667 x 375, iPhone SE / 8): a smaller hotbar a little left of
+   centre, narrower bars and the button layout pulled into the corner, so the hotbar clears the
+   bars and the build arc, and the arc clears the mats and the edit chips (tools/layout-sweep.mjs) */
+@media (max-height: 460px) and (max-width: 700px) {
+  #touch { --lay: 0.66; }
+  body.touch #hotbar { gap: 4px; left: calc(50% - 24px); }
+  body.touch .slot { width: 40px; height: 40px; font-size: 9px; }
+  body.touch #ammo { left: calc(50% - 24px); bottom: calc(52px + var(--sab)); }
+  body.touch #bars { width: 150px; }
+  /* (a little left of centre, like the hotbar: clear of the EDIT button at the smaller button sizes) */
+  #editchips { top: calc(50% + 34px); left: calc(50% - 40px); gap: 4px; }
+  #editchips .chip { font-size: 12px; padding: 0 6px; }
 }

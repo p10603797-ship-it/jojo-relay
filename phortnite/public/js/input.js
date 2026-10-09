@@ -326,6 +326,8 @@ export class Input {
       this.troot.style.setProperty('--tb-scale', String(sc));
       this.troot.style.setProperty('--tb-alpha', String(al));
     }
+    // (the HUD outside the buttons makes room for bigger ones: the elimination banner)
+    if (typeof document !== 'undefined' && document.documentElement) document.documentElement.style.setProperty('--ui-tb-scale', String(sc));
   }
 
   // ------------------------------------------------------------------ per frame
@@ -445,13 +447,15 @@ export class Input {
     if (btn(6)) s.ads = true;
     if (edge(6)) s.adsPressed = true; // in build mode: next material
     if (edge(0)) s.jump = true;
-    if (edge(1)) this.crouchToggle = !this.crouchToggle;
-    // hold B to edit (the press already toggled crouch: s.editPad tells the edit to undo that)
+    // B: a tap crouches (on release), holding it edits (no crouch flicker while it is held)
     if (btn(1)) {
       const now = performance.now();
       if (!this.padBT) this.padBT = now;
       if (!this.padBFired && now - this.padBT >= PAD_EDIT_HOLD * 1000) { s.edit = true; s.editPad = true; this.padBFired = true; }
-    } else { this.padBT = 0; this.padBFired = false; }
+    } else {
+      if (this.padBT && !this.padBFired) this.crouchToggle = !this.crouchToggle;
+      this.padBT = 0; this.padBFired = false;
+    }
     if (edge(2)) s.reload = true;
     if (edge(3)) s.buildToggle = true;
     if (edge(5)) s.scroll += 1;

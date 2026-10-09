@@ -295,6 +295,9 @@ class App {
       if (el.big) { el.big.classList.remove('show'); el.big.innerHTML = ''; }
     }
     this.shareHtml = '';
+    // a 3-2-1 from the party we are leaving would lock PLAY in the next one (before the replay:
+    // a joiner's welcome may start the new party's countdown)
+    if (this.lobby) this.lobby.resetCountdown();
     const game = new Game(this, net, { solo: net.kind === 'solo', name: this.settings.name, skin: this.settings.skin });
     this.game = game;
     document.body.classList.add('ingame');
@@ -330,7 +333,13 @@ class App {
     this.saveResume();
     if (net.kind === 'server' || net.kind === 'p2p') {
       const code = m.code, token = m.resume;
-      net.rejoin = () => ({ t: 'join', code, hello: this.hello({ resume: token, keep: true }) });
+      // keep: which match / phase this page's game is in and whether I am alive there, so the room
+      // sends a full welcome (a rebuilt game) when the match started or I respawned while away
+      net.rejoin = () => {
+        const cur = this.game && this.game.net === net ? this.game : null;
+        const keep = cur ? { match: cur.match | 0, live: cur.phase !== 'lobby', alive: !!(cur.me && cur.me.alive) } : true;
+        return { t: 'join', code, hello: this.hello({ resume: token, keep }) };
+      };
     }
     if (this.rejoinState && this.rejoinState.code === m.code) this.rejoinState = null;
   }
@@ -386,8 +395,10 @@ class App {
     this.invite.join(r.code, { kind: r.kind === 'server' ? 'server' : 'p2p', fromLink: true, resume: back && back.code === r.code ? back.token : undefined });
   }
 
+  /** The party's host (a P2P party names its host even after the crown moved), else its leader. */
   hostName(g) {
-    const row = g && g.roster.get(g.leader);
+    const host = g && g.partyInfo && g.partyInfo.host;
+    const row = g && (g.roster.get(host) || g.roster.get(g.leader));
     return row ? row.name : '';
   }
 
@@ -452,6 +463,8 @@ class App {
       this.lobby.netStatus('');
       this.later(g, () => {
         this.enterParty(net, { replay: [w, ...buf], off });
+        // still in the match (it started, or I respawned, while I was away): revive() says 'Back in the game!'
+        if (w.resumed && w.me && w.me.alive && w.phase !== 'lobby') return;
         this.lobby.toast(w.phase === 'lobby' ? 'Reconnected! 👍' : 'You were away too long: watching until the next match.', { ms: 5000 });
       });
       setTimeout(off, 1000); // in case the party changed meanwhile
@@ -482,6 +495,8 @@ class App {
   showStage(on) {
     if (!this.stage) return;
     this.stageOn = on;
+    // the match goes on behind the stage (BACK TO LOBBY): its sounds don't
+    if (this.sfx && this.sfx.setGame) this.sfx.setGame(on ? 0 : 1);
     this.stage.show(on);
     this.lobby.show(on);
     if (this.music) this.music.lobby(on);
@@ -504,6 +519,9 @@ class App {
       if (!g || g.phase !== 'lobby' || !g.me) return;
       this.warming = true;
       if (!g.me.alive) g.spawnWarmup();
+      // no banners, notices or kill counts from the last match on the warm-up island
+      if (this.hud.reset) this.hud.reset();
+      g.kills = 0;
       this.showStage(false);
       this.lobby.toast('Warm-up! Unlimited ammo and materials. Tap <b>↩ LOBBY</b> to go back.', { ms: 4000 });
     } else {
@@ -527,7 +545,7 @@ class App {
     if (!g || !inMatch(g)) return;
     this.showStage(false);
     if (!g.me || !g.me.alive) {
-      this.hud.elim({ spectating: true, sub: 'Spectating — tap fire / click to switch player', leave: true, again: g.solo });
+      this.hud.elim({ spectating: true, sub: 'Spectating — NEXT PLAYER (or fire / click) to switch', leave: true, again: g.solo });
     }
   }
 

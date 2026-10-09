@@ -134,14 +134,15 @@ export function surfaceGrid(G, L, plans, lava) {
       surface[i] = s;
     }
   }
-  // lava discs
+  // lava discs: painted exactly where lava hurts (the Room's inLava: inside r and below its top)
   for (const l of lava) {
-    const R = l.r + 2;
+    const R = l.r;
+    const top = (Number.isFinite(l.y) ? l.y : Infinity) + 1.2;
     const ix0 = Math.max(0, Math.floor((l.x - R + half) / cell)), ix1 = Math.min(N - 1, Math.ceil((l.x + R + half) / cell));
     const iz0 = Math.max(0, Math.floor((l.z - R + half) / cell)), iz1 = Math.min(N - 1, Math.ceil((l.z + R + half) / cell));
     for (let iz = iz0; iz <= iz1; iz++) for (let ix = ix0; ix <= ix1; ix++) {
       const x = -half + ix * cell, z = -half + iz * cell;
-      if ((x - l.x) * (x - l.x) + (z - l.z) * (z - l.z) <= R * R) surface[iz * N + ix] = SI.lava;
+      if ((x - l.x) * (x - l.x) + (z - l.z) * (z - l.z) <= R * R && heights[iz * N + ix] < top) surface[iz * N + ix] = SI.lava;
     }
   }
   return surface;
