@@ -433,6 +433,34 @@ test('bots: the mode decides the goal (hill, Juggernaut, zombies, survivors) and
   assert.equal(goals.inArea(g, 0, 0), false);
 });
 
+test('bots: with only a pickaxe (Pickaxe Party, the last gun-game rung) a bot runs down the nearest enemy', () => {
+  const out = {};
+  let g = fakeGame({ win: 'gungame' });
+  let gun = false;
+  const bot = fakeActor(g, 1, 0, 0, { hasGun: () => gun });
+  const near = fakeActor(g, 2, 30, 10), far = fakeActor(g, 3, 120, 0);
+  for (const a of [bot, near, far]) g.bots.set(a.id, a);
+  assert.equal(goals.meleeOnly(bot), true);
+  assert.equal(goals.modeGoal(bot, out), 'hunt');
+  assert.deepEqual([out.x, out.z], [30, 10], 'the nearest enemy');
+  gun = true;
+  assert.equal(goals.meleeOnly(bot), false, 'a gun in hand: plays as usual');
+  assert.equal(goals.modeGoal(bot, out), '');
+  // Pickaxe Party: the loot pool has no guns
+  g = fakeGame({ loot: 'pickaxe' });
+  const p = fakeActor(g, 1, 0, 0, { hasGun: () => false });
+  g.bots.set(1, p); g.bots.set(2, fakeActor(g, 2, 50, 0));
+  assert.equal(goals.modeGoal(p, out), 'hunt');
+  // not in an ordinary match, not for hiders, not in the lobby, not with nobody in reach
+  assert.equal(goals.meleeOnly(fakeActor(fakeGame(), 1, 0, 0, { hasGun: () => false })), false);
+  assert.equal(goals.meleeOnly(fakeActor(fakeGame({ win: 'hideseek', loot: 'pickaxe' }), 1, 0, 0, { team: 1, hasGun: () => false })), false);
+  assert.equal(goals.meleeOnly(fakeActor(fakeGame({ loot: 'pickaxe' }, { phase: 'lobby' }), 1, 0, 0, { hasGun: () => false })), false);
+  g = fakeGame({ loot: 'pickaxe' });
+  const lone = fakeActor(g, 1, 0, 0, { hasGun: () => false });
+  g.bots.set(1, lone); g.bots.set(2, fakeActor(g, 2, 400, 0));
+  assert.equal(goals.modeGoal(lone, out), '', 'too far to chase');
+});
+
 test('bots: a human teammate within reach is followed when there is nothing else to do', () => {
   const out = {};
   const g = fakeGame({ teams: 2 });

@@ -53,10 +53,12 @@ export function isHunter(bot) {
  */
 export function meleeOnly(bot) {
   if (isHunter(bot)) return true;
-  const g = bot.game, r = g.rules;
-  if (!r || passive(g) || g.phase === 'lobby' || bot.hasGun()) return false;
-  if (modeKey(g) === 'hideseek') return false; // hiders hide
-  return modeKey(g) === 'gungame' || r.loot === 'pickaxe';
+  const g = bot.game, r = g && g.rules;
+  if (!r || passive(g) || g.phase === 'lobby') return false;
+  const k = modeKey(g);
+  if (k === 'hideseek') return false; // hiders hide
+  if (k !== 'gungame' && r.loot !== 'pickaxe') return false;
+  return typeof bot.hasGun === 'function' && !bot.hasGun();
 }
 
 /**
