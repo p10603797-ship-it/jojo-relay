@@ -10,6 +10,23 @@ import { MapView } from './mapview.js';
 const $ = (s, r = document) => r.querySelector(s);
 const _v = new THREE.Vector3();
 
+// damage numbers: a hit this close (m) and this soon (s) after a live number adds to its total
+const STACK_DIST = 1.2, STACK_TIME = 0.7;
+const NUM_LIFE = 0.9; // s a number stays up after its last hit
+const dnSize = (dmg) => Math.round(Math.max(24, Math.min(52, 22 + dmg * 0.28)));
+
+/** Name + rarity of what the interact prompt offers (for the touch interact button). */
+function promptInfo(html) {
+  const r = /class="r(\d)"/.exec(html);
+  const text = html.replace(/<kbd>.*?<\/kbd>/g, '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  if (/^Open Chest/.test(text)) return { name: 'Chest', r: 5 };
+  return { name: text.replace(/^(Pick up|Swap for|Open)\s+/, ''), r: r ? +r[1] : -1 };
+}
+
+const SHIELD_SVG = '<svg viewBox="0 0 48 56" aria-hidden="true"><path d="M24 2 L44 9 V26 C44 40 35 49 24 54 C13 49 4 40 4 26 V9 Z" fill="#43b5ff" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>'
+  + '<path d="M24 4 L20 17 L28 24 L19 33 L25 41 L22 53" fill="none" stroke="#0b1c3a" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>'
+  + '<path d="M28 24 L38 20 M19 33 L9 30" fill="none" stroke="#0b1c3a" stroke-width="2.5" stroke-linecap="round"/></svg>';
+
 // Elimination siphon "+50" beside the health / shield bars (kept here so the feature is self-contained).
 // Each popup spans its bar's row of #bars (2 bars + 6px gap), so it stays centred at any bar height.
 const SIPHON_CSS = `
@@ -62,10 +79,13 @@ export class Hud {
       d.className = 'dn';
       d.style.display = 'none';
       this.el.dmg.appendChild(d);
-      this.nums.push({ el: d, t: 0, life: 0, pos: new THREE.Vector3(), active: false, dx: 0 });
+      this.nums.push({ el: d, t: 0, life: 0, pos: new THREE.Vector3(), active: false, dx: 0, ox: 0, oy: 0, total: 0, stack: false, hitT: 0, pop: 1, size: 0 });
     }
     this.noticeTimer = 0;
+    this.promptInfo = null;
+    this.onEditChip = null;
     this.initSiphon();
+    this.initFeel();
     this.mapView = new MapView(this, world);
     this.lobbyPanel = new LobbyPanel(this);
     this.endscreen = new EndScreen(this);
@@ -95,6 +115,27 @@ export class Hud {
     const mk = (cls) => { const d = document.createElement('div'); d.className = `siphon ${cls}`; bars.appendChild(d); return d; };
     this.el.sipSh = mk('sh');
     this.el.sipHp = mk('hp');
+  }
+
+  /** DOM for build 2.0 + hit feedback (index.html stays as it is): cone in the build bar, kill ring, shield-break icon, elimination banner, edit chips. */
+  initFeel() {
+    const mk = (tag, id, cls, html, parent) => {
+      let e = id ? document.getElementById(id) : null;
+      if (!e) {
+        e = document.createElement(tag);
+        if (id) e.id = id;
+        if (cls) e.className = cls;
+        if (html) e.innerHTML = html;
+        parent.appendChild(e);
+      }
+      return e;
+    };
+    const bb = this.el.buildbar;
+    if (bb && !bb.querySelector('[data-t=c]')) mk('div', null, 'bp', '<b>▲</b><span>Cone</span><kbd>V</kbd>', bb).dataset.t = 'c';
+    if (this.el.hit && !this.el.hit.querySelector('.ring')) mk('b', null, 'ring', '', this.el.hit);
+    this.el.shBreak = mk('div', 'shieldbreak', '', SHIELD_SVG, this.root);
+    this.el.elimBanner = mk('div', 'elimbanner', '', '<div class="eb-streak"></div><div class="eb-main"><span class="eb-x">✖</span> ELIMINATED <b></b></div><div class="eb-count"></div>', this.root);
+    this.el.editChips = mk('div', 'editchips', '', '', this.root);
   }
 
   /** Elimination siphon: a short "+N" beside each bar that grew (green health, blue shield). */
@@ -168,48 +209,154 @@ export class Hud {
     this.set('chs', s, (v) => this.el.cross.style.setProperty('--s', `${v + 5}px`));
   }
 
+  /** Hit confirm: 4 lines; yellow for a headshot; a kill is a red X with an expanding ring. */
   hitmarker(head, kill) {
     const h = this.el.hit;
     h.classList.remove('show', 'head', 'kill');
-    void h.offsetWidth;
+    void h.offsetWidth; // restart the animation (once per hit, never per frame)
     if (head) h.classList.add('head');
     if (kill) h.classList.add('kill');
     h.classList.add('show');
   }
 
+  /** Someone's shield just broke from my hit: a cracked-shield icon pops by the crosshair. */
+  shieldBreak() {
+    const e = this.el.shBreak;
+    if (!e) return;
+    e.classList.remove('show');
+    void e.offsetWidth;
+    e.classList.add('show');
+  }
+
+  /**
+   * A damage number at a world position. Player hits (kind '', 'shield', 'head') close to a live
+   * number stack into its running total, which pops; a small number for the single hit flies off.
+   * kind 'build' / 'mat' are plain one-off numbers.
+   */
   damageNumber(pos, amount, kind = '') {
-    const n = this.nums.find((x) => !x.active) || this.nums[0];
+    const stackable = typeof amount === 'number' && kind !== 'build' && kind !== 'mat';
+    if (stackable) {
+      let best = null, bd = STACK_DIST * STACK_DIST;
+      for (const n of this.nums) {
+        if (!n.active || !n.stack || n.hitT > STACK_TIME) continue;
+        const d = n.pos.distanceToSquared(pos);
+        if (d <= bd) { bd = d; best = n; }
+      }
+      if (best) {
+        best.total += amount;
+        best.hitT = 0;
+        best.t = 0;
+        best.pop = 0;
+        this.numStyle(best, kind, best.total);
+        this.spawnNumber(pos, amount, kind, false); // the single hit flies off to the side
+        return;
+      }
+    }
+    this.spawnNumber(pos, amount, kind, stackable);
+  }
+
+  spawnNumber(pos, amount, kind, stack) {
+    let n = null;
+    for (const x of this.nums) if (!x.active) { n = x; break; }
+    if (!n) { n = this.nums[0]; for (const x of this.nums) if (!x.stack && x.t > n.t) n = x; }
     n.active = true;
+    n.stack = stack;
     n.t = 0;
-    n.life = kind === 'mat' ? 0.9 : 0.85;
+    n.hitT = 0;
+    n.pop = 0;
+    n.small = !stack && typeof amount === 'number' && kind !== 'build' && kind !== 'mat';
+    n.life = stack ? NUM_LIFE : n.small ? 0.55 : kind === 'mat' ? 0.9 : 0.85;
     n.pos.copy(pos);
-    n.dx = (Math.random() - 0.5) * 60;
-    n.ox = (Math.random() - 0.5) * 50;
-    n.oy = (Math.random() - 0.5) * 30;
-    n.el.className = `dn ${kind}`;
-    n.el.textContent = kind === 'mat' ? amount : Math.round(amount);
+    const side = Math.random() < 0.5 ? -1 : 1;
+    n.dx = stack ? 0 : side * (60 + Math.random() * 50);
+    n.ox = stack ? (Math.random() - 0.5) * 16 : side * 26;
+    n.oy = stack ? -10 : (Math.random() - 0.5) * 20;
+    n.total = typeof amount === 'number' ? amount : 0;
+    if (typeof amount === 'number' && kind !== 'mat') this.numStyle(n, kind, amount);
+    else { n.el.className = `dn ${kind}`; n.el.textContent = amount; n.el.style.fontSize = ''; }
     n.el.style.display = 'block';
+  }
+
+  numStyle(n, kind, value) {
+    const cls = `dn ${kind}${n.small ? ' small' : ''}${n.stack ? ' total' : ''}`;
+    if (n.el.className !== cls) n.el.className = cls;
+    n.el.textContent = Math.round(value);
+    const size = n.small ? 20 : kind === 'build' ? 22 : dnSize(value);
+    if (size !== n.size) { n.size = size; n.el.style.fontSize = `${size}px`; }
   }
 
   updateNumbers(dt, camera, w, h) {
     for (const n of this.nums) {
       if (!n.active) continue;
       n.t += dt;
-      if (n.t > n.life) { n.active = false; n.el.style.display = 'none'; continue; }
+      n.hitT += dt;
+      n.pop += dt;
+      if (n.t > n.life) { n.active = false; n.stack = false; n.el.style.display = 'none'; continue; }
       _v.copy(n.pos).project(camera);
       if (_v.z > 1) { n.el.style.opacity = 0; continue; }
+      const rise = n.stack ? 22 : 50;
       const x = (_v.x * 0.5 + 0.5) * w + n.ox + n.dx * n.t;
-      const y = (-_v.y * 0.5 + 0.5) * h + n.oy - 50 * n.t - 20;
+      const y = (-_v.y * 0.5 + 0.5) * h + n.oy - rise * n.t - 20;
       const k = n.t / n.life;
-      const sc = n.t < 0.1 ? 1.5 - n.t * 5 : 1;
-      n.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -50%) scale(${sc})`;
-      n.el.style.opacity = k > 0.6 ? (1 - k) / 0.4 : 1;
+      // pop: 1.6 -> 1 over 0.15 s on every hit
+      const sc = n.pop < 0.15 ? 1.6 - (n.pop / 0.15) * 0.6 : 1;
+      n.el.style.transform = `translate(${x | 0}px, ${y | 0}px) translate(-50%, -50%) scale(${sc.toFixed(3)})`;
+      n.el.style.opacity = k > 0.6 ? ((1 - k) / 0.4).toFixed(3) : 1;
     }
+  }
+
+  /** Bottom-centre banner for my elimination: 'ELIMINATED <name>', my count, and a streak (DOUBLE…). */
+  elimBanner(name, count, streak = '') {
+    const e = this.el.elimBanner;
+    if (!e) return;
+    e.children[0].textContent = streak || '';
+    e.children[1].lastChild.textContent = String(name || '').toUpperCase();
+    e.children[2].textContent = `${count} ELIMINATION${count === 1 ? '' : 'S'}`;
+    e.classList.toggle('streak', !!streak);
+    e.classList.remove('show');
+    void e.offsetWidth;
+    e.classList.add('show');
+  }
+
+  /** The edit choices (labels in pick order) or null to close. hints: show the 1-5 keys. */
+  editChips(labels, hints = false) {
+    const e = this.el.editChips;
+    if (!e) return;
+    if (!labels) { e.classList.remove('show'); return; }
+    e.textContent = '';
+    labels.forEach((label, i) => {
+      const b = document.createElement('button');
+      b.className = `chip hudbtn${label === 'RESET' ? ' reset' : ''}`;
+      b.innerHTML = `${hints ? `<kbd>${i + 1}</kbd>` : ''}${label}`;
+      b.addEventListener('pointerdown', (ev) => { ev.preventDefault(); ev.stopPropagation(); if (this.onEditChip) this.onEditChip(i); });
+      e.appendChild(b);
+    });
+    e.classList.add('show');
+  }
+
+  /** Clear transient messages for a new session, without replaying their animations. */
+  reset() {
+    const el = this.el;
+    el.notice.classList.remove('show', 'storm');
+    el.notice.textContent = '';
+    this.noticeTimer = 0;
+    el.big.classList.remove('show');
+    el.big.innerHTML = '';
+    el.kf.textContent = '';
+    if (el.hitdirs) el.hitdirs.textContent = '';
+    for (const n of this.nums) { n.active = false; n.stack = false; n.el.style.display = 'none'; }
+    el.hit.classList.remove('show', 'head', 'kill');
+    if (el.shBreak) el.shBreak.classList.remove('show');
+    if (el.elimBanner) el.elimBanner.classList.remove('show');
+    this.editChips(null);
+    if (el.prompt) { el.prompt.classList.remove('show'); el.prompt.innerHTML = ''; }
+    this.cache.prompt = '';
+    this.promptInfo = null;
   }
 
   killfeed(html) {
     const d = document.createElement('div');
-    d.className = 'kf';
+    d.className = /class="me"/.test(html) ? 'kf mine' : 'kf';
     d.innerHTML = html;
     this.el.kf.appendChild(d);
     while (this.el.kf.children.length > 5) this.el.kf.firstChild.remove();
@@ -224,6 +371,8 @@ export class Hud {
   }
 
   big(html) {
+    // my eliminations have their own banner now (elimBanner, from js/world/buildClient.js)
+    if (/^ELIMINATED<small>/.test(html)) return;
     const b = this.el.big;
     b.innerHTML = html;
     b.classList.remove('show');
@@ -255,6 +404,7 @@ export class Hud {
     this.set('prompt', html || '', (v) => {
       this.el.prompt.innerHTML = v;
       this.el.prompt.classList.toggle('show', !!v);
+      this.promptInfo = v ? promptInfo(v) : null;
     });
   }
 

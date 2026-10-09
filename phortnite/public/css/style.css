@@ -11,8 +11,12 @@
   --sab: env(safe-area-inset-bottom, 0px);
   --sal: env(safe-area-inset-left, 0px);
   --sar: env(safe-area-inset-right, 0px);
+  --mm: 170px;   /* minimap size */
+  --gap: 6px;    /* gap between top-right HUD blocks */
+  --pill: 27px;  /* height of a stats pill */
   color-scheme: dark;
 }
+body.touch { --mm: 140px; }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
@@ -158,24 +162,59 @@ button { font-family: inherit; }
 #crosshair.pick b { width: 8px; height: 8px; left: -4px; top: -4px; background: none; border: 2px solid #fff; }
 #crosshair.hide { display: none; }
 #crosshair.lock i, #crosshair.lock b { background: #ff4040; }
+/* keyboard: one of your pieces is under the crosshair */
+body.ctx-canedit:not(.touch):not(.ctx-editing) #crosshair::after { content: 'G  EDIT'; position: absolute; left: 18px; top: 14px; font-size: 12px; letter-spacing: 1px; white-space: nowrap; color: #ffe14d; text-shadow: 0 1px 2px #000; }
 
+/* hit confirm: four 4 x 14 px lines; a kill is a red X with an expanding ring */
 #hitmarker { position: absolute; left: 50%; top: 50%; width: 0; height: 0; opacity: 0; }
-#hitmarker i { position: absolute; width: 3px; height: 10px; background: #fff; left: -1.5px; top: -5px; box-shadow: 0 0 2px #000; }
-#hitmarker i:nth-child(1) { transform: rotate(45deg) translateY(-12px); }
-#hitmarker i:nth-child(2) { transform: rotate(135deg) translateY(-12px); }
-#hitmarker i:nth-child(3) { transform: rotate(225deg) translateY(-12px); }
-#hitmarker i:nth-child(4) { transform: rotate(315deg) translateY(-12px); }
-#hitmarker.show { animation: hm 0.25s ease-out; }
+#hitmarker i { position: absolute; width: 4px; height: 14px; background: #fff; left: -2px; top: -7px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 0 3px #000; border-radius: 1px; }
+#hitmarker i:nth-child(1) { transform: rotate(45deg) translateY(-15px); }
+#hitmarker i:nth-child(2) { transform: rotate(135deg) translateY(-15px); }
+#hitmarker i:nth-child(3) { transform: rotate(225deg) translateY(-15px); }
+#hitmarker i:nth-child(4) { transform: rotate(315deg) translateY(-15px); }
+#hitmarker .ring { position: absolute; left: -22px; top: -22px; width: 44px; height: 44px; border-radius: 50%; border: 3px solid #ff3b3b; box-shadow: 0 0 6px rgba(255, 40, 40, 0.8); opacity: 0; }
+#hitmarker.show { animation: hm 0.22s ease-out; }
 #hitmarker.head i { background: #ffd23f; }
-#hitmarker.kill i { background: #ff3b3b; height: 14px; }
-@keyframes hm { 0% { opacity: 1; transform: scale(1.4); } 100% { opacity: 0; transform: scale(1); } }
+#hitmarker.kill i { background: #ff3b3b; height: 18px; top: -9px; }
+#hitmarker.kill.show { animation: hm 0.45s ease-out; }
+#hitmarker.kill.show .ring { animation: hmring 0.45s ease-out; }
+@keyframes hm { 0% { opacity: 1; transform: scale(1.6); } 30% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
+@keyframes hmring { 0% { opacity: 1; transform: scale(0.4); } 100% { opacity: 0; transform: scale(1.5); } }
 
+/* damage numbers (hud.js): totals stack and pop; the size follows the damage (22 + dmg * 0.28, 24-52 px) */
 #dmgnums { position: absolute; inset: 0; overflow: hidden; }
-.dn { position: absolute; left: 0; top: 0; font-family: var(--font-title); font-size: 30px; color: #fff; -webkit-text-stroke: 1.5px rgba(0, 0, 0, 0.75); text-shadow: 0 3px 0 rgba(0, 0, 0, 0.4); will-change: transform, opacity; white-space: nowrap; }
-.dn.shield { color: #6fd0ff; }
-.dn.head { color: #ffd23f; font-size: 38px; }
-.dn.build { color: #d8d8d8; font-size: 22px; }
-.dn.mat { color: #fff; font-size: 22px; }
+.dn { position: absolute; left: 0; top: 0; font-family: var(--font-title); font-size: 30px; line-height: 1; color: #fff; -webkit-text-stroke: 3px #000; paint-order: stroke fill; text-shadow: 0 3px 0 rgba(0, 0, 0, 0.45); will-change: transform, opacity; white-space: nowrap; }
+.dn.shield { color: #59c8ff; }
+.dn.head { color: #ffd23f; }
+.dn.small { font-size: 20px; -webkit-text-stroke: 2px #000; opacity: 0.95; }
+.dn.build { color: #d8d8d8; font-size: 22px; -webkit-text-stroke: 2px #000; }
+.dn.mat { color: #fff; font-size: 22px; -webkit-text-stroke: 2px #000; }
+
+/* enemy shield broken by my shot */
+#shieldbreak { position: absolute; left: calc(50% + 30px); top: calc(50% - 70px); width: 40px; height: 47px; opacity: 0; pointer-events: none; filter: drop-shadow(0 0 6px rgba(70, 180, 255, 0.9)); }
+#shieldbreak svg { width: 100%; height: 100%; display: block; }
+#shieldbreak.show { animation: shbreak 0.9s ease-out forwards; }
+@keyframes shbreak { 0% { opacity: 0; transform: scale(1.8) rotate(-12deg); } 12% { opacity: 1; transform: scale(1) rotate(0); } 70% { opacity: 1; transform: translateY(-4px); } 100% { opacity: 0; transform: translateY(-14px) scale(0.9); } }
+
+/* my elimination: bottom-centre banner with the count and a streak (DOUBLE ELIM!) */
+#elimbanner { position: absolute; left: 50%; top: 64%; transform: translateX(-50%); text-align: center; opacity: 0; pointer-events: none; white-space: nowrap; }
+#elimbanner .eb-main { font-family: var(--font-title); font-size: 30px; letter-spacing: 1px; color: #fff; text-shadow: 0 3px 0 rgba(0, 0, 0, 0.55), 0 0 12px rgba(0, 0, 0, 0.5); }
+#elimbanner .eb-main b { color: #ff5a5a; font-weight: normal; }
+#elimbanner .eb-x { color: #ff5a5a; }
+#elimbanner .eb-count { font-size: 15px; opacity: 0.9; margin-top: 2px; text-shadow: 0 1px 2px #000; }
+#elimbanner .eb-streak { font-family: var(--font-title); font-size: 40px; line-height: 1.05; background: linear-gradient(180deg, #fff, #ffd23f 55%, #ff8a1c); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 3px 0 #6a3a00); display: none; }
+#elimbanner.streak .eb-streak { display: block; }
+#elimbanner.show { animation: ebin 2.6s ease-out forwards; }
+@keyframes ebin { 0% { opacity: 0; transform: translateX(-50%) scale(1.5); } 10% { opacity: 1; transform: translateX(-50%) scale(1); } 80% { opacity: 1; transform: translateX(-50%); } 100% { opacity: 0; transform: translateX(-50%) translateY(10px); } }
+
+/* edit choices (one tap each) under the crosshair */
+#editchips { position: absolute; left: 50%; top: calc(50% + 56px); transform: translateX(-50%); display: none; gap: 8px; }
+#editchips.show { display: flex; }
+#editchips .chip { appearance: none; border: 2px solid rgba(255, 255, 255, 0.85); border-radius: 10px; min-width: 64px; height: 52px; padding: 0 10px; background: rgba(20, 60, 140, 0.82); color: #fff; font-family: var(--font-title); font-size: 17px; letter-spacing: 1px; text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4); display: flex; align-items: center; gap: 6px; cursor: pointer; touch-action: none; }
+#editchips .chip:active { transform: scale(0.94); }
+#editchips .chip.reset { background: rgba(110, 40, 40, 0.85); }
+#editchips kbd { background: #fff; color: #111; border-radius: 3px; padding: 0 5px; font-family: var(--font-hud); font-size: 12px; }
+body.ctx-editing #prompt { display: none; }
 
 #stormtint { position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(150, 60, 255, 0.1), rgba(110, 30, 200, 0.55)); opacity: 0; transition: opacity 0.4s; }
 #hurt { position: absolute; inset: 0; box-shadow: inset 0 0 160px rgba(255, 0, 0, 0.75); opacity: 0; transition: opacity 0.5s; }
@@ -202,14 +241,16 @@ button { font-family: inherit; }
 .pill.storm.shrink { background: rgba(130, 40, 220, 0.75); }
 #poi { font-family: var(--font-title); font-size: 18px; text-shadow: 0 2px 4px #000; opacity: 0.9; }
 
-#killfeed { position: absolute; left: calc(14px + var(--sal)); top: 38%; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+#killfeed { position: absolute; left: calc(14px + var(--sal)); top: 38%; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; font-size: 17px; }
 .kf { background: rgba(0, 0, 0, 0.5); padding: 4px 10px; border-radius: 4px; animation: kfin 0.25s ease-out, fadeout 1s 5s forwards; text-shadow: 0 1px 0 #000; }
 .kf .me { color: var(--yellow); }
+.kf.mine { background: linear-gradient(90deg, rgba(255, 196, 40, 0.92), rgba(255, 150, 20, 0.85)); color: #2a1600; text-shadow: none; }
+.kf.mine .me { color: #000; }
 @keyframes kfin { from { transform: translateX(-30px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 #notice { position: absolute; left: 50%; top: calc(16% + var(--sat)); transform: translateX(-50%); text-align: center; font-family: var(--font-title); font-size: 26px; letter-spacing: 1px; text-shadow: 0 3px 0 rgba(0, 0, 0, 0.5); opacity: 0; transition: opacity 0.3s; white-space: nowrap; }
 #notice.show { opacity: 1; }
-#notice.storm { color: #e2b8ff; }
+#notice.storm { color: #fff; background: rgba(110, 35, 200, 0.85); padding: 4px 16px; border-radius: 6px; text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4); }
 #bigmsg { position: absolute; left: 50%; top: 30%; transform: translate(-50%, -50%); font-family: var(--font-title); font-size: 44px; text-align: center; text-shadow: 0 4px 0 #3a1b8a, 0 8px 18px rgba(0, 0, 0, 0.6); opacity: 0; }
 #bigmsg.show { animation: big 2.2s ease-out forwards; }
 #bigmsg small { display: block; font-size: 22px; color: var(--yellow); }
@@ -256,7 +297,8 @@ body.building #buildbar { display: flex; }
 .bp.sel { border-color: var(--blue); background: rgba(47, 140, 255, 0.45); }
 body.touch .bp kbd, body.touch .slot .k { display: none; }
 
-#prompt { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); font-size: 18px; background: rgba(0, 0, 0, 0.55); padding: 6px 14px; border-radius: 4px; opacity: 0; white-space: nowrap; }
+/* what you can pick up: up and to the right of the crosshair, so it never covers the target */
+#prompt { position: absolute; left: calc(50% + 46px); top: calc(50% - 74px); font-size: 17px; background: rgba(0, 0, 0, 0.55); padding: 6px 14px; border-radius: 4px; opacity: 0; white-space: nowrap; pointer-events: none; }
 #prompt.show { opacity: 1; }
 #prompt kbd { background: #fff; color: #111; padding: 1px 7px; border-radius: 3px; margin-right: 6px; font-family: inherit; }
 #prompt .r1 { color: #6be04a; } #prompt .r2 { color: #4fb0ff; } #prompt .r3 { color: #c96bff; } #prompt .r4 { color: #ffbf47; }
@@ -313,10 +355,17 @@ body.touch #prompt kbd { display: none; }
 #rotate { display: none; position: fixed; inset: 0; z-index: 100; background: #1a0f3d; align-items: center; justify-content: center; font-family: var(--font-title); font-size: 30px; text-align: center; padding: 30px; }
 @media (orientation: portrait) and (max-width: 1100px) { body.touch.ingame #rotate { display: flex; } }
 
-/* ------------------------------------------------------------------ touch controls */
+/* ------------------------------------------------------------------ touch controls (Touch HUD 2.0) */
 /* below the HUD: the HUD root ignores pointers, so touches fall through to these controls
-   except where the HUD has real buttons (hotbar, minimap, panels) */
-#touch { position: fixed; inset: 0; z-index: 9; display: none; touch-action: none; }
+   except where the HUD has real buttons (hotbar, minimap, panels).
+   Every round button is placed by its centre (--x, --y: px from the right / bottom edge at size 1)
+   and its diameter --w. --tb-scale / --tb-alpha come from the settings (Input.applyButtonLook),
+   --lay shrinks the whole layout on phones. Buttons grow from their centres, and the spacing grows
+   with them so bigger buttons never touch. */
+#touch { position: fixed; inset: 0; z-index: 9; display: none; touch-action: none;
+  --tb-scale: 1; --tb-alpha: 1; --lay: 1;
+  --k: calc(var(--lay) * (0.3 + 0.7 * var(--tb-scale)));
+  --s: calc(var(--lay) * var(--tb-scale)); }
 body.touch.ingame #touch { display: block; }
 body.touch #crosshair { --s: 8px; }
 .tz { position: absolute; top: 0; bottom: 0; touch-action: none; }
@@ -325,46 +374,95 @@ body.touch #crosshair { --s: 8px; }
 .joy-base { position: absolute; width: 130px; height: 130px; margin: -65px 0 0 -65px; border-radius: 50%; background: rgba(255, 255, 255, 0.08); border: 2px solid rgba(255, 255, 255, 0.35); display: none; pointer-events: none; left: 140px; top: 70%; }
 .joy-base.on { display: block; }
 .joy-knob { position: absolute; left: 35px; top: 35px; width: 60px; height: 60px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
-.tbtn { position: absolute; width: 74px; height: 74px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); border: 2px solid rgba(255, 255, 255, 0.55); display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; touch-action: none; font-family: var(--font-hud); }
-.tbtn.down { background: rgba(255, 255, 255, 0.4); transform: scale(0.94); }
+.tbtn { --w: 74px; --x: 0px; --y: 0px;
+  position: absolute; width: var(--w); height: var(--w);
+  right: calc(var(--sar) + var(--x) * var(--k) - var(--w) / 2);
+  bottom: calc(var(--sab) + var(--y) * var(--k) - var(--w) / 2);
+  transform: scale(var(--s)); opacity: var(--tb-alpha);
+  border-radius: 50%; background: rgba(0, 0, 0, 0.35); border: 2px solid rgba(255, 255, 255, 0.55);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; touch-action: none; font-family: var(--font-hud); }
+.tbtn.down { background: rgba(255, 255, 255, 0.4); transform: scale(calc(var(--s) * 0.92)); }
 .tbtn .ico { font-size: 28px; line-height: 1; }
-.tbtn small { font-size: 10px; margin-top: 2px; }
-.tb-fire { right: calc(120px + var(--sar)); bottom: calc(150px + var(--sab)); width: 100px; height: 100px; background: rgba(255, 60, 60, 0.3); }
+.tbtn small { font-size: 11px; margin-top: 2px; letter-spacing: 0.5px; text-shadow: 0 1px 1px #000; }
+/* combat cluster: fire with ADS / reload to its left, jump / crouch / build / edit up the right edge */
+.tb-fire { --w: 100px; --x: 170px; --y: 200px; background: rgba(255, 60, 60, 0.3); }
 .tb-fire .ico { font-size: 40px; }
-.tb-fire2 { left: calc(40px + var(--sal)); top: 52%; width: 72px; height: 72px; background: rgba(255, 60, 60, 0.25); }
-.tb-jump { right: calc(26px + var(--sar)); bottom: calc(110px + var(--sab)); }
-.tb-crouch { right: calc(26px + var(--sar)); bottom: calc(196px + var(--sab)); width: 62px; height: 62px; }
-.tb-ads { right: calc(240px + var(--sar)); bottom: calc(190px + var(--sab)); width: 66px; height: 66px; }
-.tb-reload { right: calc(240px + var(--sar)); bottom: calc(112px + var(--sab)); width: 60px; height: 60px; }
-.tb-build { right: calc(26px + var(--sar)); bottom: calc(280px + var(--sab)); width: 62px; height: 62px; background: rgba(47, 140, 255, 0.35); }
-.tb-wall { right: calc(118px + var(--sar)); bottom: calc(270px + var(--sab)); }
-.tb-floor { right: calc(204px + var(--sar)); bottom: calc(270px + var(--sab)); }
-.tb-ramp { right: calc(290px + var(--sar)); bottom: calc(270px + var(--sab)); }
-.tb-mat { right: calc(290px + var(--sar)); bottom: calc(185px + var(--sab)); width: 62px; height: 62px; }
-.tbtn.bonly { display: none; background: rgba(47, 140, 255, 0.3); }
+.tb-fire small { font-family: var(--font-title); font-size: 15px; letter-spacing: 1px; }
+.tb-fire2 { --w: 72px; right: auto; bottom: auto; left: calc(40px + var(--sal)); top: 52%; background: rgba(255, 60, 60, 0.25); }
+.tb-jump { --x: 63px; --y: 147px; }
+.tb-jump .jl { display: none; }
+.tb-crouch { --w: 62px; --x: 57px; --y: 232px; }
+.tb-build { --w: 62px; --x: 57px; --y: 316px; background: rgba(47, 140, 255, 0.35); }
+.tb-edit { --w: 62px; --x: 57px; --y: 400px; background: rgba(255, 196, 40, 0.45); display: none; }
+.tb-ads { --w: 66px; --x: 275px; --y: 226px; }
+.tb-reload { --w: 60px; --x: 272px; --y: 142px; }
+/* build mode: the pieces in a thumb arc round fire (radius 130) — Ramp up top, Wall, Floor, Cone round to the left */
+.tbtn.bonly { --w: 64px; display: none; background: rgba(47, 140, 255, 0.3); }
+.tb-ramp { --x: 175px; --y: 330px; }
+.tb-wall { --x: 243px; --y: 308px; }
+.tb-floor { --x: 289px; --y: 253px; }
+.tb-cone { --x: 299px; --y: 182px; }
+.tb-mat { --w: 56px; --x: 270px; --y: 116px; }
 body.building .tbtn.bonly { display: flex; }
 body.building .tb-ads, body.building .tb-reload { display: none; }
 body.building .tb-build { background: rgba(47, 140, 255, 0.8); }
-.tb-emote { right: calc(26px + var(--sar)); top: calc(260px + var(--sat)); width: 52px; height: 52px; background: rgba(0, 0, 0, 0.25); }
+/* what you hold changes the buttons */
+body.ctx-melee .tb-ads, body.ctx-melee .tb-reload, body.ctx-heal .tb-ads, body.ctx-heal .tb-reload { display: none; }
+body.ctx-heal .tb-fire { background: rgba(60, 200, 90, 0.35); }
+body.ctx-build .tb-fire { background: rgba(47, 140, 255, 0.45); }
+body.ctx-full .tb-reload { opacity: calc(var(--tb-alpha) * 0.35); }
+body.ctx-canedit .tb-edit, body.ctx-editing .tb-edit { display: flex; }
+/* modes without building (mode engine / mode catalogue body classes) */
+body.nobuild .tb-build, body.nobuild .tbtn.bonly, body.nobuild .tb-edit, body.nobuild #buildbar,
+body.mode-nobuild .tb-build, body.mode-nobuild .tbtn.bonly, body.mode-nobuild .tb-edit, body.mode-nobuild #buildbar { display: none !important; }
+body.ctx-editing .tb-edit { background: rgba(255, 196, 40, 0.9); color: #2a1a00; }
+/* emote: left of the minimap */
+.tb-emote { --w: 52px; right: calc(var(--sar) + 10px + var(--mm) + 10px); bottom: auto; top: calc(var(--sat) + 10px); transform: scale(var(--tb-scale)); transform-origin: top right; background: rgba(0, 0, 0, 0.25); }
 .tb-emote .ico { font-size: 22px; }
-.tb-interact { right: 50%; bottom: 32%; width: auto; height: 56px; border-radius: 28px; padding: 0 22px; transform: translateX(50%); background: rgba(255, 210, 63, 0.85); color: #2a1a00; display: none; font-size: 18px; }
+/* pick up: a pill above ADS in the item's rarity colour, with the item's name */
+.tb-interact { --w: 56px; width: auto; min-width: 120px; max-width: 300px; border-radius: 28px; padding: 0 20px; right: calc(var(--sar) + 220px * var(--k)); bottom: calc(var(--sab) + 270px * var(--k)); transform: scale(var(--s)); transform-origin: bottom right;
+  background: rgba(255, 210, 63, 0.9); color: #2a1a00; display: none; line-height: 1.05; }
+.tb-interact .lbl { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+.tb-interact .nm { font-family: var(--font-title); font-weight: normal; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.tb-interact:not(.named) .lbl { font-family: var(--font-title); font-size: 18px; text-transform: none; }
 .tb-interact.show { display: flex; }
-.tb-interact.down { transform: translateX(50%) scale(0.95); }
+.tb-interact.down { transform: scale(calc(var(--s) * 0.95)); }
+.tb-interact.r0 { background: rgba(180, 184, 191, 0.95); }
+.tb-interact.r1 { background: rgba(90, 209, 58, 0.95); }
+.tb-interact.r2 { background: rgba(62, 164, 255, 0.95); color: #04163a; }
+.tb-interact.r3 { background: rgba(189, 82, 255, 0.95); color: #fff; }
+.tb-interact.r4, .tb-interact.r5 { background: rgba(255, 178, 46, 0.95); }
+body.building .tb-interact { bottom: calc(var(--sab) + 352px * var(--k)); }
+/* HUD on touch: hotbar + ammo bottom centre, mats a row under the stats, no centre build bar */
 body.touch #hotbar { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(10px + var(--sab)); }
 body.touch .slot { width: 58px; height: 58px; }
 body.touch #ammo { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(80px + var(--sab)); }
-body.touch #mats { bottom: auto; top: calc(250px + var(--sat)); }
+body.touch #minimap { width: var(--mm); height: var(--mm); }
 body.touch #bars { bottom: calc(14px + var(--sab)); width: min(250px, 26vw); }
-body.touch #buildbar { bottom: calc(150px + var(--sab)); }
-body.touch #minimap { width: 140px; height: 140px; }
-body.touch #prompt { top: 55%; }
-body.touch.ingame.inbus .tb-jump { width: 110px; height: 110px; right: calc(120px + var(--sar)); bottom: calc(150px + var(--sab)); background: rgba(255, 210, 63, 0.6); }
-body.touch.ingame.inbus .tbtn:not(.tb-jump) { display: none; }
+/* the kill feed sits above the left fire button (4 lines at most) */
+body.touch #killfeed { top: 28%; }
+body.touch #killfeed .kf:nth-last-child(n+5) { display: none; }
+/* on touch the pick-up button names the item, so the text prompt would only repeat it */
+body.touch #prompt { display: none; }
+/* editing: the choices replace aiming, building and looting */
+body.ctx-editing .tb-interact, body.ctx-editing .tb-ads, body.ctx-editing .tb-reload, body.ctx-editing .tbtn.bonly { display: none; }
+body.touch #mats { bottom: auto; top: calc(var(--sat) + 10px + var(--mm) + var(--gap) + var(--pill) + var(--gap)); right: calc(10px + var(--sar)); flex-direction: row; gap: 4px; }
+body.touch .mat { min-width: 0; padding: 2px 8px 2px 4px; font-size: 15px; gap: 6px; }
+body.touch .mat i { width: 16px; height: 16px; }
+body.touch #poi { position: absolute; right: 0; top: calc(100% + var(--gap) + 28px); white-space: nowrap; }
+body.touch #buildbar { display: none !important; }
+/* the bus: only a big, labelled JUMP; skydiving: no combat buttons and no hotbar */
+body.ctx-bus #hotbar, body.ctx-bus #ammo, body.ctx-sky #hotbar, body.ctx-sky #ammo { display: none; }
+body.touch.ingame.ctx-bus .tbtn:not(.tb-jump), body.touch.ingame.inbus .tbtn:not(.tb-jump) { display: none; }
+body.touch.ingame.ctx-bus .tb-jump, body.touch.ingame.inbus .tb-jump { --w: 116px; --x: 170px; --y: 200px; background: rgba(255, 210, 63, 0.75); color: #2a1a00; border-color: #fff; }
+body.touch.ingame.ctx-bus .tb-jump .ico, body.touch.ingame.inbus .tb-jump .ico { font-size: 36px; }
+body.touch.ingame.ctx-bus .tb-jump .jl, body.touch.ingame.inbus .tb-jump .jl { display: block; font-family: var(--font-title); font-size: 22px; letter-spacing: 1px; text-shadow: none; }
+body.touch.ingame.ctx-sky .tbtn { display: none; }
 body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
 
-@media (max-height: 640px) {
-  .tbtn { transform: scale(0.85); }
-  .tb-fire { bottom: calc(118px + var(--sab)); right: calc(104px + var(--sar)); }
+/* small iPads in landscape (1024 x 768, 1133 x 744) and big phones */
+@media (max-height: 780px) {
+  #touch { --lay: 0.92; }
 }
 
 /* ------------------------------------------------------------------ short screens (phones in landscape) */
@@ -391,4 +489,37 @@ body.touch.ingame.dead .tbtn, body.touch.ingame.dead .tz { display: none; }
   #lobbypanel { top: calc(60px + var(--sat)); padding: 8px 10px; }
   .lp-players { max-height: 18vh; }
   .es-place { font-size: 56px; } .es-title { font-size: 36px; }
+  /* phones: 100 px minimap, smaller HUD, buttons stacked below the top-right block */
+  body.touch { --mm: 100px; --pill: 22px; --gap: 4px; }
+  body.touch .pill { font-size: 12px; padding: 2px 7px; }
+  body.touch .mat { font-size: 12px; padding: 1px 6px 1px 3px; }
+  body.touch .mat i { width: 12px; height: 12px; }
+  body.touch #poi { display: none; } /* entering a place still shows its name */
+  body.touch .slot { width: 48px; height: 48px; }
+  body.touch #ammo { bottom: calc(60px + var(--sab)); }
+  /* little room: bigger buttons (the size setting) grow at most 15% here */
+  #touch { --lay: 0.72; --k: calc(var(--lay) * (0.3 + 0.7 * min(var(--tb-scale), 1.15))); --s: calc(var(--lay) * min(var(--tb-scale), 1.15)); }
+  .tb-fire { --x: 174px; --y: 153px; }
+  .tb-jump { --x: 62px; --y: 83px; }
+  .tb-crouch { --x: 56px; --y: 174px; }
+  .tb-build { --x: 56px; --y: 250px; }
+  .tb-edit { --x: 354px; --y: 268px; }
+  .tb-ads { --x: 285px; --y: 210px; }
+  .tb-reload { --x: 278px; --y: 125px; }
+  /* the arc round fire (radius 122, 34 degrees apart), starting low enough to stay under the mats */
+  .tb-ramp { --x: 206px; --y: 271px; }
+  .tb-wall { --x: 266px; --y: 232px; }
+  .tb-floor { --x: 295px; --y: 167px; }
+  .tb-cone { --x: 282px; --y: 96px; }
+  .tb-mat { --x: 231px; --y: 45px; }
+  .tb-fire2 { --w: 60px; top: 52%; }
+  body.touch #killfeed { font-size: 13px; gap: 3px; }
+  body.touch #killfeed .kf:nth-last-child(n+4) { display: none; }
+  .tb-interact { right: calc(var(--sar) + 300px * var(--k)); bottom: calc(var(--sab) + 320px * var(--k)); }
+  body.building .tb-interact { bottom: calc(var(--sab) + 330px * var(--k)); right: calc(var(--sar) + 340px * var(--k)); }
+  body.touch.ingame.ctx-bus .tb-jump, body.touch.ingame.inbus .tb-jump { --x: 174px; --y: 153px; }
+  #editchips { top: calc(50% + 26px); gap: 6px; }
+  #editchips .chip { height: 40px; min-width: 0; padding: 0 8px; font-size: 13px; }
+  #elimbanner { top: 60%; }
+  #elimbanner .eb-main { font-size: 22px; } #elimbanner .eb-streak { font-size: 28px; }
 }
