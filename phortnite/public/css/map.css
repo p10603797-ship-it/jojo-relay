@@ -1,1 +1,51 @@
 /* Minimap, full map and place names (js/ui/mapview.js, js/ui/mapclient.js). */
+
+/* the full map: pinch / wheel to zoom, drag to pan, tap to drop a marker */
+#fullmap canvas { touch-action: none; cursor: crosshair; }
+#fullmap .fm-x {
+  position: absolute; top: max(14px, env(safe-area-inset-top)); right: max(14px, env(safe-area-inset-right));
+  width: 56px; height: 56px; border-radius: 50%; border: 3px solid #fff; background: rgba(20, 16, 50, 0.8);
+  color: #fff; font: 700 26px/1 system-ui, sans-serif; cursor: pointer; pointer-events: auto; z-index: 2;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+#fullmap .fm-zoom {
+  position: absolute; right: max(14px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 10px; pointer-events: auto; z-index: 2;
+}
+#fullmap .fm-zoom button {
+  width: 56px; height: 56px; border-radius: 12px; border: 3px solid #fff; background: rgba(20, 16, 50, 0.8);
+  color: #fff; font: 700 30px/1 system-ui, sans-serif; cursor: pointer; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+#fullmap .fm-x:active, #fullmap .fm-zoom button:active { transform: scale(0.94); background: rgba(60, 50, 140, 0.9); }
+#fullmap .fm-close { font-size: 15px; color: #e8ecff; text-shadow: 0 1px 3px #000; }
+
+/* the minimap grows a little while you choose where to land */
+body.inbus #minimap { box-shadow: 0 0 0 3px rgba(255, 210, 63, 0.75), 0 4px 12px rgba(0, 0, 0, 0.5); }
+
+@media (max-height: 460px) {
+  #fullmap .fm-x, #fullmap .fm-zoom button { width: 46px; height: 46px; font-size: 22px; }
+}
+
+/* ?bench (js/bench.js): everything but the 3D view and the bench card is hidden */
+body.benching > *:not(#game):not(.bench) { visibility: hidden !important; }
+.bench {
+  position: fixed; left: 50%; top: max(16px, env(safe-area-inset-top)); transform: translateX(-50%); z-index: 100;
+  min-width: min(420px, 92vw); max-width: 94vw; padding: 14px 18px; border-radius: 14px;
+  background: rgba(16, 12, 44, 0.86); color: #fff; font: 15px/1.35 system-ui, sans-serif; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.bench .bench-title { font: 28px/1 "Luckiest Guy", "Russo One", sans-serif; letter-spacing: 1px; color: #ffd23f; }
+.bench .bench-sub { margin: 6px 0 8px; color: #dfe4ff; }
+.bench .bench-bar { height: 10px; border-radius: 6px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+.bench .bench-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4fd2ff, #ffd23f); }
+.bench.done { top: 50%; transform: translate(-50%, -50%); max-height: calc(100vh - 24px); overflow: auto; }
+.bench table { border-collapse: collapse; width: 100%; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.bench th, .bench td { padding: 5px 8px; text-align: right; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.bench th:first-child, .bench td:first-child { text-align: left; white-space: nowrap; }
+.bench th { color: #aab3e8; font-weight: 600; font-size: 13px; }
+.bench .bench-gpu { margin-top: 6px; font-size: 12px; color: #9aa3d0; }
+.bench .bench-btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+.bench .bench-btns button {
+  min-width: 120px; min-height: 56px; border: 0; border-radius: 12px; font: 22px/1 "Luckiest Guy", "Russo One", sans-serif;
+  color: #1a0f3d; background: #ffd23f; cursor: pointer;
+}
+.bench .bench-btns button[data-a="again"] { background: #4fd2ff; }

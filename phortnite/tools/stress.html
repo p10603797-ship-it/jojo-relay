@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phortnite stress map</title>
+<!--
+  A synthetic 1.6 km island for the map engine: today's 640 m island tiled 2.5 x 2.5 (about 4k trees,
+  15k objects, 19k potential colliders), rendered by the real World with 24 wandering "bots" that the
+  collider streaming follows. Fly with WASD / arrows + drag (Q / E down / up, shift = fast).
+  Used by tools/perf-world.mjs --stress (which serves it with the libraries); window.__stress has the
+  renderer, world, camera and a fake game whose bots the colliders stream around.
+  URL options: ?quality=low|medium|high  ?bots=24
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 13px/1.35 system-ui, sans-serif; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #stats { position: fixed; left: 8px; top: 8px; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.6); color: #fff; white-space: pre; pointer-events: none; }
+</style>
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+      "rapier": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs"
+    }
+  }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="stats">loading…</div>
+<script type="module">
+import * as THREE from 'three';
+import { Physics } from '/js/physics.js';
+import { buildTextures } from '/js/gfx/textures.js';
+import { applyGrade } from '/js/gfx/grade.js';
+import { World } from '/js/world/world.js';
+import { generateWorld } from '/shared/worldgen.js';
+
+const PRESETS = {
+  low: { maxDpr: 1, shadows: false, shadowSize: 0, grass: 0, drawDist: 380, particles: 0.5, lights: false, aa: false },
+  medium: { maxDpr: 1.35, shadows: true, shadowSize: 1024, grass: 64, drawDist: 520, particles: 0.8, lights: true, aa: true },
+  high: { maxDpr: 1.75, shadows: true, shadowSize: 2048, grass: 96, drawDist: 720, particles: 1, lights: true, aa: true },
+};
+const params = new URLSearchParams(location.search);
+const qName = PRESETS[params.get('quality')] ? params.get('quality') : 'medium';
+const q = { name: qName, ...PRESETS[qName] };
+const NBOTS = Math.max(0, Math.min(64, +(params.get('bots') ?? 24)));
+const statsEl = document.getElementById('stats');
+
+/** Today's island tiled 2.5 x 2.5 over a 1600 m map (copies at multiples of the island's size). */
+function makeStress(src) {
+  const S0 = src.size, size = 1600, cell = src.cell, res = Math.round(size / cell), N = res + 1, half = size / 2;
+  const wrap = (v) => ((((v + S0 / 2) % S0) + S0) % S0) - S0 / 2;
+  const heights = new Float32Array(N * N);
+  for (let iz = 0; iz < N; iz++) for (let ix = 0; ix < N; ix++) heights[iz * N + ix] = src.heightAt(wrap(-half + ix * cell), wrap(-half + iz * cell));
+  function heightAt(x, z) {
+    const fx = (x + half) / cell, fz = (z + half) / cell;
+    let ix = Math.floor(fx), iz = Math.floor(fz);
+    ix = Math.max(0, Math.min(res - 1, ix)); iz = Math.max(0, Math.min(res - 1, iz));
+    const u = Math.max(0, Math.min(1, fx - ix)), v = Math.max(0, Math.min(1, fz - iz));
+    const i = iz * N + ix;
+    const h00 = heights[i], h10 = heights[i + 1], h01 = heights[i + N], h11 = heights[i + N + 1];
+    if (u + v <= 1) return h00 + (h10 - h00) * u + (h01 - h00) * v;
+    return h11 + (h01 - h11) * (1 - u) + (h10 - h11) * (1 - v);
+  }
+  const inside = (x, z) => x > -half + 1 && x < half - 1 && z > -half + 1 && z < half - 1;
+  const offs = [];
+  for (const kx of [-1, 0, 1]) for (const kz of [-1, 0, 1]) offs.push([kx * S0, kz * S0]);
+  const objects = [], houses = [], chests = [], lootSpots = [], barrels = [], pois = [], spawns = [];
+  for (const [ox, oz] of offs) {
+    const houseMap = new Map();
+    src.houses.forEach((h, i) => {
+      if (!inside(h.x + ox, h.z + oz)) return;
+      houseMap.set(i, houses.length);
+      houses.push({ ...h, id: houses.length, x: h.x + ox, z: h.z + oz });
+    });
+    for (const o of src.objects) {
+      if (!inside(o.x + ox, o.z + oz)) continue;
+      if (o.kind === 'part' && !houseMap.has(o.house)) continue;
+      const c = { ...o, id: objects.length, x: o.x + ox, z: o.z + oz };
+      if (o.kind === 'part') c.house = houseMap.get(o.house);
+      if (o.pts) { c.pts = o.pts.slice(); for (let k = 0; k < c.pts.length; k += 3) { c.pts[k] += ox; c.pts[k + 2] += oz; } }
+      objects.push(c);
+    }
+    for (const c of src.chests) if (inside(c.x + ox, c.z + oz)) chests.push({ ...c, x: c.x + ox, z: c.z + oz });
+    for (const l of src.lootSpots) if (inside(l.x + ox, l.z + oz)) lootSpots.push({ ...l, x: l.x + ox, z: l.z + oz });
+    for (const b of src.barrels) if (inside(b.x + ox, b.z + oz)) barrels.push({ ...b, x: b.x + ox, z: b.z + oz });
+    for (const p of src.pois) if (inside(p.x + ox, p.z + oz)) pois.push({ ...p, x: p.x + ox, z: p.z + oz, name: ox || oz ? `${p.name} ${pois.length}` : p.name });
+  }
+  for (const s of src.spawns) spawns.push({ ...s });
+  const regions = pois.map((p, i) => ({ id: i, name: p.name, x: p.x, z: p.z, r: p.r || 48, biome: 'meadow', kind: 'town', tier: i % 5 === 0 ? 'hot' : 'normal', named: true }));
+  // a few launch pads in each town so the traversal code has something to draw
+  const pads = regions.map((r, i) => ({ id: i, kind: ['launch', 'geyser', 'mushroom'][i % 3], x: r.x + 30, z: r.z, y: heightAt(r.x + 30, r.z), region: i, power: 1 }));
+  return {
+    seed: src.seed, version: 1, size, res, cell, half, N, heights, heightAt, islandRadius: 760,
+    biome: null, surface: null, biomeAt: (x, z) => (heightAt(x, z) < 3 ? 'beach' : 'meadow'), surfaceKeyAt: () => null,
+    objects, houses, chests, lootSpots, barrels, pois, regions, spawns, spawnPoints: [], mountain: { x: src.mountain.x, z: src.mountain.z },
+    roads: [], rivers: [], lakes: [], pads, lava: [], checksum: 0,
+    objectsNear(x, z, r, fn) { for (const o of objects) if ((o.x - x) ** 2 + (o.z - z) ** 2 <= r * r && fn(o)) return true; return false; },
+    solidNear() { return false; },
+  };
+}
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: q.aa, powerPreference: 'high-performance', stencil: false });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, q.maxDpr));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = q.shadows;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+applyGrade(renderer, q);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(80, innerWidth / innerHeight, 0.1, q.drawDist + 400);
+const physics = await Physics.create();
+statsEl.textContent = 'painting textures…';
+const T = await buildTextures(renderer, () => {}, q.name === 'low');
+statsEl.textContent = 'tiling the island…';
+await new Promise((r) => setTimeout(r, 0));
+let t0 = performance.now();
+const data = makeStress(generateWorld());
+const tGen = performance.now() - t0;
+t0 = performance.now();
+const world = new World({ scene, physics, T, data, quality: q, renderer });
+const tWorld = performance.now() - t0;
+
+// the wandering bots the colliders stream around
+const bots = new Map();
+for (let i = 0; i < NBOTS; i++) {
+  const a = (i / Math.max(1, NBOTS)) * Math.PI * 2, r = 120 + (i % 6) * 90;
+  bots.set(i + 1, { id: i + 1, alive: true, inBus: false, pos: new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r), dir: a + Math.PI / 2 });
+}
+const game = { bots, me: null, remotes: new Map(), ballistics: { list: [] } };
+
+camera.position.set(-300, 120, -300);
+camera.lookAt(0, 0, 0);
+const keys = new Set();
+addEventListener('keydown', (e) => keys.add(e.code));
+addEventListener('keyup', (e) => keys.delete(e.code));
+let drag = null, yaw = Math.atan2(300, 300) + Math.PI, pitch = -0.25;
+canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; });
+addEventListener('pointerup', () => { drag = null; });
+addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  yaw -= (e.clientX - drag.x) * 0.004; pitch = Math.max(-1.5, Math.min(1.2, pitch - (e.clientY - drag.y) * 0.004));
+  drag = { x: e.clientX, y: e.clientY };
+});
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+const focus = new THREE.Vector3();
+const app = {
+  ready: true, THREE, renderer, scene, camera, physics, world, T, q, game, data, timings: { generate: tGen, world: tWorld, ...world.timings },
+  applyFar(force) { const far = world.farFor(q, camera); if (force || Math.abs(far - camera.far) > 0.5) { camera.far = far; camera.updateProjectionMatrix(); } },
+  last: performance.now(), fpsT: 0, fpsN: 0, fps: 0, statT: 0,
+  frame(now) {
+    requestAnimationFrame((t) => app.frame(t));
+    const dt = Math.min(0.05, (now - app.last) / 1000);
+    app.last = now;
+    // fly
+    const fast = keys.has('ShiftLeft') ? 120 : 30;
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    const mv = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+    const st = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+    camera.position.x += (fx * mv - fz * st) * fast * dt;
+    camera.position.z += (fz * mv + fx * st) * fast * dt;
+    camera.position.y += ((keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0)) * fast * dt;
+    camera.position.y = Math.max(camera.position.y, data.heightAt(camera.position.x, camera.position.z) + 1.7);
+    camera.rotation.set(pitch, yaw, 0, 'YXZ');
+    // bots wander
+    for (const b of bots.values()) {
+      b.dir += (Math.sin(now * 0.0003 + b.id) * 0.4) * dt;
+      b.pos.x = Math.max(-780, Math.min(780, b.pos.x + Math.cos(b.dir) * 6 * dt));
+      b.pos.z = Math.max(-780, Math.min(780, b.pos.z + Math.sin(b.dir) * 6 * dt));
+      b.pos.y = data.heightAt(b.pos.x, b.pos.z);
+    }
+    focus.set(camera.position.x, data.heightAt(camera.position.x, camera.position.z), camera.position.z);
+    world.update(dt, camera, focus, game);
+    app.applyFar();
+    physics.step(dt || 1 / 60);
+    renderer.render(scene, camera);
+    app.fpsN++; app.fpsT += dt;
+    if (app.fpsT > 0.5) { app.fps = Math.round(app.fpsN / app.fpsT); app.fpsN = 0; app.fpsT = 0; }
+    app.statT -= dt;
+    if (app.statT <= 0) {
+      app.statT = 0.25;
+      const s = world.stats();
+      statsEl.textContent = `${app.fps} fps · ${renderer.info.render.calls} calls · ${(renderer.info.render.triangles / 1000).toFixed(0)}k tris\n`
+        + `colliders ${s.colliders} (chunks ${s.stream.active}/${s.stream.chunks}) · ${data.objects.length} objects\n`
+        + `trees near ${s.veg.near} mid ${s.veg.mid} far ${s.veg.far} (shadow ${s.veg.shadow}) · terrain ${(s.terrainTris / 1000).toFixed(0)}k\n`
+        + `world.update ${s.updateMs} ms · fog ${s.fogFar} m · ${q.name} · ${NBOTS} bots\n`
+        + `build: generate ${tGen.toFixed(0)} ms, world ${tWorld.toFixed(0)} ms`;
+    }
+  },
+};
+window.__stress = app;
+requestAnimationFrame((t) => app.frame(t));
+</script>
+</body>
+</html>

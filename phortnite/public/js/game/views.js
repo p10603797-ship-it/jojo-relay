@@ -1,103 +1,224 @@
 // Visual managers used by the game session: floor loot, storm wall, battle bus.
 import * as THREE from 'three';
-import { RARITY, WEAPONS, HEALS } from '../../shared/constants.js';
+import { RARITY, WEAPONS, HEALS, MAP } from '../../shared/constants.js';
 import { itemModel, itemMaterial } from '../combat/weaponModels.js';
 import { busGeometry } from '../world/models.js';
 
 const VIEW_DIST = 75;
+const SHADOW_DIST = 20;
+const GRID = 16;
+const SHARED = new WeakMap(); // scene -> the loot meshes (kept across game sessions)
+const _m = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+const _e = new THREE.Euler();
+const _p = new THREE.Vector3();
+const _s = new THREE.Vector3();
 
+/**
+ * Floor loot: one InstancedMesh per item model (kind + rarity) and one beam mesh per rarity, for
+ * the items within 75 m (only those within 20 m cast shadows). A 16 m grid answers nearest() and
+ * forNear() without walking every item. The API (items, set, add, remove, clear, nearest, update)
+ * is the old one.
+ */
 export class LootView {
   constructor(scene) {
     this.scene = scene;
     this.items = new Map();
+    this.grid = new Map();     // cell key -> Set of items
     this.time = 0;
-    const beamGeo = new THREE.CylinderGeometry(0.05, 0.32, 2.6, 10, 1, true);
-    beamGeo.translate(0, 1.3, 0);
-    this.beamGeo = beamGeo;
-    this.beamMats = RARITY.map((r) => new THREE.MeshBasicMaterial({
-      color: new THREE.Color(r.color), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    }));
+    // the meshes outlive a game session: the next LootView on the same scene reuses them
+    let sh = SHARED.get(scene);
+    if (!sh) {
+      const beamGeo = new THREE.CylinderGeometry(0.05, 0.32, 2.6, 10, 1, true);
+      beamGeo.translate(0, 1.3, 0);
+      const beamMats = RARITY.map((r) => new THREE.MeshBasicMaterial({
+        color: new THREE.Color(r.color), transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      }));
+      sh = { beamGeo, beamMats, models: new Map(), beams: null };
+      SHARED.set(scene, sh);
+      sh.beams = beamMats.map((m) => this.makeMesh(beamGeo, m, 16, false));
+    }
+    this.beamGeo = sh.beamGeo;
+    this.beamMats = sh.beamMats;
+    this.models = sh.models;   // model key -> { mesh, cap, n, shadow }
+    this.beams = sh.beams;
+    this.beamN = new Int32Array(RARITY.length);
+    this.shown = [];           // items within view distance, the ones within 20 m first
     this.tick = 0;
   }
 
+  makeMesh(geo, mat, cap, shadow) {
+    const mesh = new THREE.InstancedMesh(geo, mat, cap);
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    mesh.castShadow = shadow;
+    mesh.receiveShadow = false;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.scene.add(mesh);
+    return mesh;
+  }
+
+  cellKey(x, z) { return Math.floor(x / GRID) * 100003 + Math.floor(z / GRID); }
+
   clear() {
-    for (const it of this.items.values()) this.hide(it);
     this.items.clear();
+    this.grid.clear();
+    this.shown.length = 0;
+    for (const g of this.models.values()) { g.mesh.count = 0; g.mesh.visible = false; }
+    for (const b of this.beams) { b.count = 0; b.visible = false; }
   }
 
   set(list) {
     this.clear();
     for (const l of list) this.add(l);
+    this.tick = 0;
   }
 
   add(l) {
     if (this.items.has(l.id)) return;
-    this.items.set(l.id, { id: l.id, item: l.item, x: l.x, y: l.y, z: l.z, mesh: null, beam: null, phase: Math.random() * 6, shown: false });
+    const isW = !!WEAPONS[l.item.k];
+    const rar = isW ? l.item.r | 0 : HEALS[l.item.k] ? HEALS[l.item.k].rarity : -1;
+    const it = { id: l.id, item: l.item, x: l.x, y: l.y, z: l.z, phase: Math.random() * 6, key: `${l.item.k}|${l.item.r | 0}`, scale: isW ? 1.25 : 1.6, tilt: isW ? 0.25 : 0, beam: rar, cell: this.cellKey(l.x, l.z) };
+    this.items.set(l.id, it);
+    let set = this.grid.get(it.cell);
+    if (!set) this.grid.set(it.cell, (set = new Set()));
+    set.add(it);
+    this.tick = 0;
   }
 
   remove(id) {
     const it = this.items.get(id);
     if (!it) return null;
-    this.hide(it);
     this.items.delete(id);
+    const set = this.grid.get(it.cell);
+    if (set) set.delete(it);
+    const i = this.shown.indexOf(it);
+    if (i >= 0) this.shown.splice(i, 1);
     return it;
   }
 
-  show(it) {
-    if (!it.mesh) {
-      const m = itemModel(it.item.k, it.item.r | 0);
-      it.mesh = new THREE.Mesh(m.geo, itemMaterial());
-      it.mesh.castShadow = true;
-      const isW = !!WEAPONS[it.item.k];
-      const scale = isW ? 1.25 : 1.6;
-      it.mesh.scale.setScalar(scale);
-      if (isW || HEALS[it.item.k]) {
-        const r = isW ? it.item.r | 0 : HEALS[it.item.k].rarity;
-        it.beam = new THREE.Mesh(this.beamGeo, this.beamMats[r]);
-        it.beam.position.set(it.x, it.y, it.z);
+  /** Call fn(item) for every item within r metres (horizontally) of (x, z). */
+  forNear(x, z, r, fn) {
+    const c0 = Math.floor((x - r) / GRID), c1 = Math.floor((x + r) / GRID);
+    const d0 = Math.floor((z - r) / GRID), d1 = Math.floor((z + r) / GRID);
+    for (let cx = c0; cx <= c1; cx++) {
+      for (let cz = d0; cz <= d1; cz++) {
+        const set = this.grid.get(cx * 100003 + cz);
+        if (!set) continue;
+        for (const it of set) {
+          const dx = it.x - x, dz = it.z - z;
+          if (dx * dx + dz * dz <= r * r) fn(it);
+        }
       }
     }
-    this.scene.add(it.mesh);
-    if (it.beam) this.scene.add(it.beam);
-    it.shown = true;
-  }
-
-  hide(it) {
-    if (!it.shown) return;
-    this.scene.remove(it.mesh);
-    if (it.beam) this.scene.remove(it.beam);
-    it.shown = false;
   }
 
   nearest(pos, maxDist, filter) {
     let best = null, bd = maxDist * maxDist;
-    for (const it of this.items.values()) {
-      const dx = it.x - pos.x, dy = it.y - pos.y, dz = it.z - pos.z;
-      if (dy > 1.8 || dy < -1.8) continue;
-      const d = dx * dx + dz * dz + dy * dy * 0.5;
-      if (d < bd && (!filter || filter(it))) { bd = d; best = it; }
+    const c0 = Math.floor((pos.x - maxDist) / GRID), c1 = Math.floor((pos.x + maxDist) / GRID);
+    const d0 = Math.floor((pos.z - maxDist) / GRID), d1 = Math.floor((pos.z + maxDist) / GRID);
+    for (let cx = c0; cx <= c1; cx++) {
+      for (let cz = d0; cz <= d1; cz++) {
+        const set = this.grid.get(cx * 100003 + cz);
+        if (!set) continue;
+        for (const it of set) {
+          const dx = it.x - pos.x, dy = it.y - pos.y, dz = it.z - pos.z;
+          if (dy > 1.8 || dy < -1.8) continue;
+          const d = dx * dx + dz * dz + dy * dy * 0.5;
+          if (d < bd && (!filter || filter(it))) { bd = d; best = it; }
+        }
+      }
     }
     return best;
+  }
+
+  group(key, it) {
+    let g = this.models.get(key);
+    if (!g) {
+      const m = itemModel(it.item.k, it.item.r | 0);
+      g = { mesh: this.makeMesh(m.geo, itemMaterial(), 8, true), cap: 8, n: 0, shadow: 0 };
+      const gg = g;
+      g.mesh.onBeforeShadow = () => { gg.mesh.count = gg.shadow; };
+      g.mesh.onAfterShadow = () => { gg.mesh.count = gg.n; };
+      this.models.set(key, g);
+    }
+    if (g.n >= g.cap) {
+      // grow: a new mesh with twice the room
+      const old = g.mesh;
+      g.cap *= 2;
+      g.mesh = this.makeMesh(old.geometry, old.material, g.cap, true);
+      g.mesh.instanceMatrix.array.set(old.instanceMatrix.array);
+      const gg = g;
+      g.mesh.onBeforeShadow = () => { gg.mesh.count = gg.shadow; };
+      g.mesh.onAfterShadow = () => { gg.mesh.count = gg.n; };
+      this.scene.remove(old);
+      old.dispose();
+    }
+    return g;
   }
 
   update(dt, camPos) {
     this.time += dt;
     this.tick -= dt;
-    const check = this.tick <= 0;
-    if (check) this.tick = 0.4;
-    for (const it of this.items.values()) {
-      if (check) {
+    if (this.tick <= 0) {
+      // who is in view: everything within 75 m, nearest (shadow casters) first
+      this.tick = 0.4;
+      const shown = this.shown;
+      shown.length = 0;
+      const near = [];
+      this.forNear(camPos.x, camPos.z, VIEW_DIST, (it) => {
         const dx = it.x - camPos.x, dz = it.z - camPos.z;
-        const near = dx * dx + dz * dz < VIEW_DIST * VIEW_DIST;
-        if (near && !it.shown) this.show(it);
-        else if (!near && it.shown) this.hide(it);
-      }
-      if (!it.shown) continue;
-      const t = this.time + it.phase;
-      it.mesh.position.set(it.x, it.y + 0.42 + Math.sin(t * 2.2) * 0.07, it.z);
-      it.mesh.rotation.set(0, t * 1.1, WEAPONS[it.item.k] ? 0.25 : 0);
-      if (it.beam) it.beam.material.opacity = 0.28 + Math.sin(this.time * 3) * 0.06;
+        it.near = dx * dx + dz * dz < SHADOW_DIST * SHADOW_DIST;
+        (it.near ? near : shown).push(it);
+      });
+      if (near.length) shown.unshift(...near);
     }
+    for (const g of this.models.values()) { g.n = 0; g.shadow = 0; }
+    this.beamN.fill(0);
+    const pulse = 0.28 + Math.sin(this.time * 3) * 0.06;
+    for (const m of this.beamMats) m.opacity = pulse;
+    for (let i = 0; i < this.shown.length; i++) {
+      const it = this.shown[i];
+      const g = this.group(it.key, it);
+      const t = this.time + it.phase;
+      _q.setFromEuler(_e.set(0, t * 1.1, it.tilt));
+      _m.compose(_p.set(it.x, it.y + 0.42 + Math.sin(t * 2.2) * 0.07, it.z), _q, _s.setScalar(it.scale));
+      g.mesh.setMatrixAt(g.n++, _m);
+      if (it.near) g.shadow = g.n;
+      if (it.beam >= 0) {
+        const r = Math.min(it.beam, this.beams.length - 1);
+        let b = this.beams[r];
+        if (this.beamN[r] >= b.instanceMatrix.count) {
+          const nb = this.makeMesh(this.beamGeo, this.beamMats[r], b.instanceMatrix.count * 2, false);
+          nb.instanceMatrix.array.set(b.instanceMatrix.array);
+          this.scene.remove(b);
+          b.dispose();
+          this.beams[r] = b = nb;
+        }
+        _m.makeTranslation(it.x, it.y, it.z);
+        b.setMatrixAt(this.beamN[r]++, _m);
+      }
+    }
+    for (const g of this.models.values()) {
+      g.mesh.count = g.n;
+      g.mesh.visible = g.n > 0;
+      if (g.n) g.mesh.instanceMatrix.needsUpdate = true;
+    }
+    for (let r = 0; r < this.beams.length; r++) {
+      const b = this.beams[r];
+      b.count = this.beamN[r];
+      b.visible = b.count > 0;
+      if (b.count) b.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  dispose() {
+    SHARED.delete(this.scene);
+    for (const g of this.models.values()) { this.scene.remove(g.mesh); g.mesh.dispose(); }
+    for (const b of this.beams) { this.scene.remove(b); b.dispose(); }
+    this.beamGeo.dispose();
+    for (const m of this.beamMats) m.dispose();
+    this.models.clear();
   }
 }
 
@@ -105,7 +226,8 @@ export class StormView {
   constructor(scene, noiseTex) {
     this.state = null;
     this.vis = { cx: 0, cz: 0, r: 330 };
-    const geo = new THREE.CylinderGeometry(1, 1, 1, 96, 1, true);
+    // a smooth wall on the big island: more sides when the map (and so the circle) is large
+    const geo = new THREE.CylinderGeometry(1, 1, 1, MAP.size > 700 ? 192 : 96, 1, true);
     geo.translate(0, 0.5, 0);
     this.mat = new THREE.ShaderMaterial({
       uniforms: { uTime: { value: 0 }, uNoise: { value: noiseTex } },
@@ -190,6 +312,7 @@ export class BusView {
     this.path = null;
     this.pos = new THREE.Vector3();
     this.target = new THREE.Vector3();
+    this._pred = new THREE.Vector3();
     this.t = 0;
   }
 
@@ -215,7 +338,7 @@ export class BusView {
   correct(arr) {
     if (!this.path) return;
     this.target.set(arr[0], arr[1], arr[2]);
-    const p = this.predicted(new THREE.Vector3());
+    const p = this.predicted(this._pred);
     // shift our clock if we drifted more than a few metres
     const err = p.distanceTo(this.target);
     if (err > 6) {

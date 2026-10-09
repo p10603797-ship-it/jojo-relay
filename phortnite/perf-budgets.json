@@ -1,0 +1,182 @@
+{
+  "_doc": "iPad budgets for tools/perf-world.mjs, checked against the worst measured viewpoint. calls and tris are for one frame including the shadow pass; physicsMs and worldUpdateMs are medians on the desktop proxy; textureMB is an estimate of GPU texture memory.",
+  "low": {
+    "calls": 220,
+    "tris": 900000,
+    "worldUpdateMs": 1.5,
+    "physicsMs": 1.2,
+    "colliders": 6000,
+    "heapMB": 200,
+    "textureMB": 40
+  },
+  "medium": {
+    "calls": 220,
+    "tris": 900000,
+    "worldUpdateMs": 1.5,
+    "physicsMs": 1.2,
+    "colliders": 6000,
+    "heapMB": 200,
+    "textureMB": 80
+  },
+  "high": {
+    "calls": 260,
+    "tris": 1200000,
+    "worldUpdateMs": 1.5,
+    "physicsMs": 1.2,
+    "colliders": 6000,
+    "heapMB": 250,
+    "textureMB": 120
+  },
+  "today": {
+    "_doc": "today's 640 m island at Medium: the town view must drop to these, and the bus view must be 30% cheaper than the baseline below",
+    "town": {
+      "calls": 70,
+      "tris": 300000
+    },
+    "baselineMedium": {
+      "bus": {
+        "calls": 179,
+        "tris": 658816,
+        "colliders": 3116,
+        "physMs": 1.4
+      },
+      "overhead": {
+        "calls": 191,
+        "tris": 682296,
+        "colliders": 3116,
+        "physMs": 1.5
+      },
+      "city": {
+        "calls": 117,
+        "tris": 387994,
+        "colliders": 3116,
+        "physMs": 0.7
+      },
+      "forest": {
+        "calls": 122,
+        "tris": 543850,
+        "colliders": 3116,
+        "physMs": 0.8
+      },
+      "peak": {
+        "calls": 145,
+        "tris": 631530,
+        "colliders": 3116,
+        "physMs": 1
+      },
+      "beach": {
+        "calls": 182,
+        "tris": 557496,
+        "colliders": 3116,
+        "physMs": 0.7
+      }
+    },
+    "baselineLow": {
+      "bus": {
+        "calls": 137,
+        "tris": 400288,
+        "colliders": 3116,
+        "physMs": 1.7
+      },
+      "overhead": {
+        "calls": 140,
+        "tris": 392408,
+        "colliders": 3116,
+        "physMs": 1.3
+      },
+      "city": {
+        "calls": 75,
+        "tris": 209666,
+        "colliders": 3116,
+        "physMs": 0.7
+      },
+      "forest": {
+        "calls": 60,
+        "tris": 225342,
+        "colliders": 3116,
+        "physMs": 1.2
+      },
+      "peak": {
+        "calls": 100,
+        "tris": 355612,
+        "colliders": 3116,
+        "physMs": 1.1
+      },
+      "beach": {
+        "calls": 149,
+        "tris": 406600,
+        "colliders": 3116,
+        "physMs": 0.7
+      }
+    },
+    "_baselineNote": "measured on the pre-map-engine code (contracts merge dc3543b), 1024x640, SwiftShader"
+  },
+  "boot": {
+    "lowToLobbyMs": 4000
+  },
+  "measured": {
+    "_doc": "worst viewpoint per run after map-engine (1024x640, SwiftShader; ms are only comparable on one machine). today = the 640 m island, big = map-worldgen 26855e0 (1.6 km), stress = tools/stress.html, fight = big map at Medium, 23 bots, 60 s after they landed",
+    "todayMedium": {
+      "calls": 75,
+      "tris": 371053,
+      "colliders": 189,
+      "physMs": 0.2,
+      "updMs": 0,
+      "heapMB": 86.5,
+      "texMB": 69.1,
+      "city": {
+        "calls": 53,
+        "tris": 199951
+      },
+      "bus": {
+        "calls": 73,
+        "tris": 316963
+      }
+    },
+    "todayLow": {
+      "calls": 55,
+      "tris": 221581,
+      "colliders": 189,
+      "physMs": 0.2,
+      "updMs": 0.1,
+      "heapMB": 74,
+      "texMB": 23.8
+    },
+    "bigMedium": {
+      "calls": 102,
+      "tris": 579794,
+      "colliders": 465,
+      "physMs": 0.3,
+      "updMs": 0.1,
+      "heapMB": 143,
+      "texMB": 71.6
+    },
+    "bigLow": {
+      "calls": 77,
+      "tris": 321427,
+      "colliders": 465,
+      "physMs": 0.3,
+      "updMs": 0.1,
+      "heapMB": 138.1,
+      "texMB": 26.3
+    },
+    "stressMedium": {
+      "calls": 66,
+      "tris": 763206,
+      "colliders": 1257,
+      "physMs": 1.1,
+      "updMs": 0.1,
+      "heapMB": 120.4,
+      "texMB": 70.1
+    },
+    "fightMedium": {
+      "calls": 91,
+      "tris": 565413,
+      "colliders": 904,
+      "physMs": 0.8,
+      "updMs": 0.2,
+      "heapMB": 152,
+      "texMB": 77.2
+    }
+  }
+}
