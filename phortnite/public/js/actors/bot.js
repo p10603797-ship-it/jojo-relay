@@ -32,7 +32,7 @@ import { BuildFight } from '../ai/buildfight.js';
 import { EDIT_PRESETS, EDIT_FULL } from '../../shared/buildgrid.js';
 import {
   modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, hillOf, inArea,
-  seekerWaits, hider, hideFound,
+  seekerWaits, hider, hideFound, forgetActors,
 } from '../ai/goals.js';
 import { wantFar, enterFar, exitFar, farUpdate } from '../ai/farsim.js';
 
@@ -177,7 +177,15 @@ function stepNav(bot) {
   if (nav.ready) return nav;
   const g = bot.game;
   if (_navGame !== g || _navFrame !== g.time) { _navGame = g; _navFrame = g.time; nav.build(4); }
+  if (nav.ready) _navGame = null;
   return nav;
+}
+
+/** Called when a Game ends: module caches must not keep it (and its actors, room, canvases) alive. */
+export function forgetGame(g) {
+  if (_listG === g) { _listG = null; _listT = -1; _list.length = 0; }
+  if (_navGame === g) _navGame = null;
+  forgetActors();
 }
 
 /** How far (m, sideways) a bot can get from the bus: skydive (no diving) then glide, with slack. */

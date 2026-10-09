@@ -10,7 +10,7 @@ import { rollInitialLoot } from '../../shared/loot.js';
 import { GAME_PLUGINS } from './plugins.js';
 import { seriesRows } from './modeClient.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
-import { Bot } from '../actors/bot.js';
+import { Bot, forgetGame } from '../actors/bot.js';
 import { RemotePlayer } from '../actors/remote.js';
 import { forwardFromAngles } from '../actors/combatant.js';
 import { Ballistics, raySphere, rayCapsule } from '../combat/ballistics.js';
@@ -2029,6 +2029,7 @@ export class Game {
     for (const r of this.remotes.values()) r.dispose();
     this.bots.clear();
     this.remotes.clear();
+    forgetGame(this);
     this.loot.clear();
     this.resetWorld();
     // GPU buffers and shaders this Game made for itself (a party switch makes a new Game; the

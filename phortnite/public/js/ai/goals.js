@@ -118,6 +118,8 @@ export function targetBonus(bot, a) {
 }
 
 const _list = [];
+/** Drop the scratch list's actors (a finished Game must not stay reachable through it). */
+export function forgetActors() { _list.length = 0; }
 /** Living actors on the other side (as this bot sees teams), nearest first is not guaranteed. */
 function enemies(bot) {
   _list.length = 0;
