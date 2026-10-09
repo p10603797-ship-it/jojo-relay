@@ -119,6 +119,7 @@ function startServer() {
 function pageSetup(cfg) {
   const app = window.__phortnite, g = app.game;
   app.renderer.render = () => {}; // CPU-only simulation
+  import(new URL('shared/constants.js', location.href).href).then((c) => { M.consts = c; }).catch(() => {});
   const M = (window.__M = {
     cfg, t0: -1, busT: -1, matchT: -1, elims: [], shots: 0, nearShots: 0, nearShotgun: 0, nearSec: 0, nearSgSec: 0, hits: 0, hitsBy: {}, shotsBy: {},
     pieces: 0, piecesFar: 0, piecesBy: {}, heals: {}, chests: 0, picks: 0, land: {}, landT: {}, samples: 0, stuckSamples: 0,
@@ -188,7 +189,26 @@ function pageSetup(cfg) {
   }
   let busT = 0;
   const oStart = g.bus.start.bind(g.bus);
-  g.bus.start = (bus) => { busT = g.time - (bus.el || 0); M.busT = g.time; return oStart(bus); };
+  g.bus.start = (bus) => {
+    busT = g.time - (bus.el || 0); M.busT = g.time;
+    const r = oStart(bus);
+    // the places within gliding reach of the bus line (the reach the bots use: skydive + glide)
+    const p = g.bus.path;
+    if (p && M.consts) {
+      const { BUS, DROP } = M.consts;
+      const reach = ((Math.max(0, BUS.height - 4 - DROP.glideHeight) / DROP.skydiveFall) * DROP.skydiveSpeed + (DROP.glideHeight / DROP.glideFall) * DROP.glideSpeed) * 0.95;
+      const dx = p.bx - p.ax, dz = p.bz - p.az, L = Math.hypot(dx, dz) || 1, ux = dx / L, uz = dz / L;
+      M.busLine = [Math.round(p.ax), Math.round(p.az), Math.round(p.bx), Math.round(p.bz)];
+      M.reachable = 0;
+      for (const rg of g.world.data.regions || []) {
+        if (rg.named === false) continue;
+        const rx = rg.x - p.ax, rz = rg.z - p.az, along = rx * ux + rz * uz;
+        const lat = Math.max(0, Math.abs(rx * uz - rz * ux) - (rg.r || 40) * 0.7);
+        if (along >= -reach * 0.3 && along <= L * BUS.forceDrop + reach * 0.3 && lat <= reach) M.reachable++;
+      }
+    }
+    return r;
+  };
   const oUpd2 = g.update;
   g.update = (dt) => { if (g.bus.path) g.bus.t0 = performance.now() - (g.time - busT) * 1000; return oUpd2(dt); };
   // counters
@@ -323,6 +343,7 @@ function pageSetup(cfg) {
       survivorsHealed: heals120.filter((x) => x > 0).length,
       alive60: M.alive60, alive60Pct: M.alive60 ? +(100 * M.alive60.alive / M.alive60.of).toFixed(1) : null,
       regions: [...new Set(Object.values(M.land))].filter((r) => r !== '(open)').length, landings: M.land,
+      regionsInReach: M.reachable, busLine: M.busLine,
       chests: M.chests, picks: M.picks, hits: M.hits, farHits: M.farHits, hitRate: +(M.hits / Math.max(1, M.shots)).toFixed(3),
       elims: M.elims.length, elimTimes: M.elims.map((e) => e.t), elimList: M.elims, byCause: M.elims.reduce((o, e) => { o[e.c || 'shot'] = (o[e.c || 'shot'] || 0) + 1; return o; }, {}),
       farElims: M.elims.filter((e) => e.far).length,
