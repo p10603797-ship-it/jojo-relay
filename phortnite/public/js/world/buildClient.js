@@ -32,7 +32,7 @@ export class BuildClient {
     this.game = game;
     this.target = null; // {k, x, y, z}: your (or a teammate's) wall / floor under the crosshair
     this.editing = null; // {k, t, x, z}: the piece whose edit choices are open
-    this.editT = -1;
+    this.editTs = new Map(); // actor id -> time of its last edit (you and the bots you run: one each)
     this.streak = 0;
     this.lastElimT = -99;
     this.heartT = 0;
@@ -83,7 +83,7 @@ export class BuildClient {
 
   onPhase(phase) {
     if (phase !== 'match' && phase !== 'bus') this.closeEdit();
-    if (phase === 'bus' || phase === 'lobby') { this.streak = 0; this.lastElimT = -99; }
+    if (phase === 'bus' || phase === 'lobby') { this.streak = 0; this.lastElimT = -99; this.editTs.clear(); }
   }
 
   onMyDeath() { this.closeEdit(); }
@@ -96,7 +96,9 @@ export class BuildClient {
   /** Your (or a teammate's) wall or floor under the crosshair within reach, or null. */
   findTarget() {
     const g = this.game, me = g.me;
-    if (!me || !me.alive || me.inBus || !me.canAct() || g.rules?.build === 'off') return null;
+    // Zero Build has no edits, except in the lobby warm-up (where everyone builds: game.js
+    // tryPlaceBuild and the room's edits plugin allow it there too)
+    if (!me || !me.alive || me.inBus || !me.canAct() || (g.rules?.build === 'off' && g.phase !== 'lobby')) return null;
     const cam = g.camera;
     _q.copy(cam.quaternion);
     // camera forward = (0, 0, -1) rotated by its quaternion
@@ -136,7 +138,7 @@ export class BuildClient {
     const p = g.builds.pieces.get(ed.k);
     const choice = EDIT_CHOICES[ed.t] && EDIT_CHOICES[ed.t][i];
     if (!p || !choice || !g.me || !g.me.alive) { this.closeEdit(); return; }
-    if (this.time - this.editT < EDIT_GAP) return;
+    if (this.time - this.lastEdit(g.me) < EDIT_GAP) return; // your own last edit (not a bot's)
     let e = choice[0] === 'hole' ? floorHoleFor(p, ed.x, ed.z) : EDIT_PRESETS[p.t][choice[0]];
     // the same edit again puts the piece back (tap DOOR twice: door shut)
     if (editOf(p) === e) e = EDIT_FULL[p.t];
@@ -152,10 +154,18 @@ export class BuildClient {
     const g = this.game;
     const p = g.builds.pieces.get(k);
     if (!p || !a || editOf(p) === e) return false;
-    this.editT = this.time;
+    // the room takes one edit per 0.15 s from each actor: never send it one it would refuse
+    if (this.time - this.lastEdit(a) < EDIT_GAP) return false;
+    this.editTs.set(a.id, this.time);
     g.builds.setEdit(k, e);
     g.send({ t: 'be', id: a.id, k, e });
     return true;
+  }
+
+  /** When actor a last edited (-Infinity: never). */
+  lastEdit(a) {
+    const t = a ? this.editTs.get(a.id) : undefined;
+    return t === undefined ? -Infinity : t;
   }
 
   filterInput(s) {
