@@ -21,6 +21,10 @@ const PLAIN = 255;     // layer value: no texture (vertex colour only)
 const GLOW = 128;      // layer flag: emissive
 /** Props that wear a building look (the rest are plain vertex colours). */
 const PROP_LOOK = { container: 'corrugated', crate: 'planks', fence: 'planks', bench: 'planks', stall: 'planks', sign: 'panel', dumpster: 'metalwall' };
+// A chunk drawn only as HLOD boxes for this long (ms) gives its GPU buffers back; three.js uploads
+// them again from the arrays kept here when the chunk is near again. Without this, every chunk
+// the camera ever came near stays on the GPU for the rest of the session (the whole island).
+const RELEASE_MS = 20000;
 
 /** The colour a part is painted (vertex colour, multiplied with its look's texture). */
 export function partColor(o, house) {
@@ -49,6 +53,8 @@ class Chunk {
     this.inds = [0, 0];
     this.meshes = [null, null];
     this.near = true;
+    this.farAt = 0;       // when it went far (performance.now())
+    this.released = false; // its GPU buffers were given back (see RELEASE_MS)
     this.houses = [];     // houses whose centre is in this chunk (their HLOD proxies)
   }
 }
@@ -471,6 +477,7 @@ if (lL >= 0.0) {
   update(camera) {
     const cp = camera.position, R = this.near, HY = 20;
     const h = this.data.half;
+    const now = performance.now();
     for (let i = 0; i < this.list.length; i++) {
       const c = this.list[i];
       const x0 = -h + c.cx * BATCH_CHUNK, z0 = -h + c.cz * BATCH_CHUNK;
@@ -479,8 +486,13 @@ if (lL >= 0.0) {
       const dy = bb ? Math.max(bb.min.y - cp.y, 0, cp.y - bb.max.y) : 0;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const near = c.near ? d < R + HY : d < R - HY;
-      if (near === c.near) continue;
+      if (near === c.near) {
+        if (!near && !c.released && now - c.farAt > RELEASE_MS) this.release(c);
+        continue;
+      }
       c.near = near;
+      if (near) c.released = false;
+      else c.farAt = now;
       if (c.meshes[0]) c.meshes[0].visible = near;
       if (c.meshes[1]) c.meshes[1].visible = near;
       for (const hId of c.houses) this.showProxy(hId, !near);
@@ -489,6 +501,12 @@ if (lL >= 0.0) {
       this.hlodDirty = false;
       this.hlod.geometry.attributes.position.needsUpdate = true;
     }
+  }
+
+  /** Free a far chunk's GPU buffers (vertex data stays here; drawing it again uploads it again). */
+  release(c) {
+    c.released = true;
+    for (const m of c.meshes) if (m) m.geometry.dispose();
   }
 
   // ------------------------------------------------------------------ destruction
