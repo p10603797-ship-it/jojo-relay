@@ -192,7 +192,28 @@ export function modeGoal(bot, out) {
       return 'follow';
     }
   }
+  // respawn deathmatches (Team Rumble, FFA arenas): the fight is the point, so head roughly for
+  // the nearest enemy when they are a long way off (on the 1.6 km island roaming bots rarely met:
+  // 0 eliminations in Team Rumble's first 160 s)
+  if (deathmatch(g)) {
+    const t = nearest(bot, enemies(bot));
+    if (t) {
+      const dx = t.pos.x - p.x, dz = t.pos.z - p.z;
+      if (dx * dx + dz * dz > 70 * 70) {
+        const a = (bot.id * 2.39996) % (Math.PI * 2);
+        out.x = t.pos.x + Math.cos(a) * 18; out.z = t.pos.z + Math.sin(a) * 18;
+        out.y = g.world.data.heightAt(out.x, out.z);
+        return 'hunt';
+      }
+    }
+  }
   return '';
+}
+
+/** A respawn mode won by eliminations (or the most of them when time runs out). */
+export function deathmatch(game) {
+  const r = game.rules;
+  return !!r && r.respawn > 0 && r.pvp !== false && (r.win === 'elims' || r.win === 'teamelims' || r.win === 'time');
 }
 
 /** The nearest human teammate within 25 m (60 m to catch up with), or null. */

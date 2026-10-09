@@ -1020,7 +1020,8 @@ export class Room {
   // ------------------------------------------------------------------ respawns
   /**
    * Where p comes back: a spawn spot inside the storm, as far from living enemies as possible
-   * (anything 80 m away or more counts the same, so respawns vary).
+   * (anything 80 m away or more counts the same, so respawns vary), but not out of reach of the
+   * fight: more than 250 m from every enemy counts like 60 m (the 1.6 km island).
    */
   respawnSpot(p) {
     const C = this.spawnCands;
@@ -1032,13 +1033,13 @@ export class Room {
         const dx = c.x - st.cx, dz = c.z - st.cz, d = Math.sqrt(dx * dx + dz * dz);
         if (d > st.r - 8) score -= 1e6 + d;
       }
-      let md = 6400;
+      let md = Infinity;
       for (const q of this.players.values()) {
         if (!q.alive || !q.inMatch || q.team === p.team) continue;
         const dx = q.x - c.x, dz = q.z - c.z, d = dx * dx + dz * dz;
         if (d < md) md = d;
       }
-      score += md;
+      score += md === Infinity ? 6400 : md > 62500 ? 3600 : Math.min(md, 6400);
       if (score > bs) { bs = score; best = c; }
     }
     if (best && (!st || bs > -1e5)) return best;

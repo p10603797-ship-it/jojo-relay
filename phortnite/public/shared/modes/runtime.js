@@ -140,6 +140,9 @@ export function assignTeams(humans, bots, rules) {
 const SPAWN_MARGIN = 5;
 const MEMBER_RING = 3.5; // m: teammates stand around their team's spot (all within 2 x this)
 const FAR_ENOUGH = 160;  // m: teams this far apart are spread enough (beyond it, spots are picked at random)
+// m: a team spot further than this from every other team is a long trip to the fight (the 1.6 km
+// island: Team Rumble / FFA arenas on the whole island started 600 m+ apart and nobody met)
+const TOO_FAR = 2.2 * FAR_ENOUGH;
 
 /** Open land a player can stand on: above the sea, not too steep, not inside anything. */
 export function standable(world, x, z, destroyed = null) {
@@ -210,7 +213,9 @@ export function pickSpawns(world, area, players, rng = Math.random, cands = null
       let best = -1, bd = -1;
       for (let i = 0; i < C.length; i++) {
         if (used[i] && C.length > teams.length) continue;
-        const d = Math.min(minD[i], FAR_ENOUGH * FAR_ENOUGH) + rng() * 0.01; // far enough: a random one
+        // far enough: a random one; too far: about as good as a spot 80 m away
+        const d0 = minD[i];
+        const d = (d0 > TOO_FAR * TOO_FAR ? 6400 : Math.min(d0, FAR_ENOUGH * FAR_ENOUGH)) + rng() * 0.01;
         if (d > bd) { bd = d; best = i; }
       }
       pick = best;
