@@ -159,6 +159,14 @@ function nearest(bot, list) {
  */
 export function modeGoal(bot, out) {
   const g = bot.game, p = bot.pos;
+  // a pickaxe-only bot (Pickaxe Party, gun game's last rung) runs down the nearest enemy
+  if (!isHunter(bot) && meleeOnly(bot)) {
+    const t = nearest(bot, enemies(bot));
+    if (t && (t.pos.x - p.x) ** 2 + (t.pos.z - p.z) ** 2 < 150 * 150) {
+      out.x = t.pos.x; out.y = t.pos.y; out.z = t.pos.z;
+      return 'hunt';
+    }
+  }
   switch (modeKey(g)) {
     case 'koth': {
       const h = hillOf(g);

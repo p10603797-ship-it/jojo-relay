@@ -924,7 +924,7 @@ export class Bot extends Combatant {
     const gun = this.hasGun();
     const loot = wantsLoot(this);
     // the infected run down survivors before anything else
-    if (isHunter(this) && modeGoal(this, _g) === 'hunt') {
+    if ((isHunter(this) || meleeOnly(this)) && modeGoal(this, _g) === 'hunt') {
       b.destKind = 'goal'; b.goalKind = 'hunt'; b.dest.set(_g.x, _g.y, _g.z); b.planT = 0.5;
       return;
     }
