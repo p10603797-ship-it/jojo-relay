@@ -7,12 +7,25 @@
 // missing from GAMES (see modeAvailable).
 //
 import { ruleField } from './rules.js';
+import { MAP } from '../world/scale.js';
 
 // Categories: 'br' Battle Royale, 'team' Team Up, 'party' Party Games, 'mutators' Crazy Mutators,
 // 'builders' Builders, 'practice' Practice, 'places' Places.
 
+/**
+ * Where the respawn arenas play: on the 1.6 km island the whole island is a long run between
+ * fights (Team Rumble to 50 took ~15 minutes there, 12.5 in the middle), so they play in its
+ * middle (0.35 x the island radius: 224 m) and to lower targets, aiming at 6-9 minute matches.
+ * Measured in solo with 15-19 bots and an idle human: Team Rumble reached 20 at 5-9.4 min (7 runs,
+ * median 7.5; 30 took 7-10), Squads 20 at 7-8, Duos 15 at 6, Free-for-All Frenzy 15 at 7.75, Rocket
+ * Rumble 10 at 7.2, Sniper Showdown 10 at 7.9. A 10 minute clock is the backstop.
+ */
+const ARENA_AREA = MAP.size > 700 ? 'center' : 'full';
 /** Team Rumble style: two big teams, sky drops, respawn in 5 s with your loot, first team to N. */
-const RUMBLE = { teams: 'two', spawn: 'sky', respawn: 5, lives: 0, respawnKeep: true, win: 'teamelims', storm: 'slow', rarity: 'boosted', bots: 15 };
+const RUMBLE = {
+  teams: 'two', spawn: 'sky', respawn: 5, lives: 0, respawnKeep: true, win: 'teamelims', storm: 'slow', rarity: 'boosted', bots: 15,
+  area: ARENA_AREA, timeLimit: 600,
+};
 /** Respawn arena: ground spawns, back in 3 s, unlimited lives. */
 const ARENA = { spawn: 'ground', respawn: 3, lives: 0 };
 /** Build fights: start on the ground with a loadout and 500 of each material in a moving zone. */
@@ -84,33 +97,33 @@ export const CATALOG = [
   // ------------------------------------------------------------------ Team Up
   {
     id: 'team-rumble', name: 'Team Rumble', emoji: '⚔️', color: '#ff4d4d', cat: 'team', players: '1-16', requires: 'teamelims',
-    tags: ['2 Teams', 'Respawn', 'First to 50'],
-    desc: 'Two big teams, respawn in 5 seconds and keep your loot. First team to 50 eliminations wins!',
-    rules: { ...RUMBLE, target: 50 },
+    tags: ['2 Teams', 'Respawn', 'First to 20'],
+    desc: 'Two big teams, respawn in 5 seconds and keep your loot. First team to 20 eliminations wins!',
+    rules: { ...RUMBLE, target: 20 },
   },
   {
     id: 'zb-rumble', name: 'Zero Build Rumble', emoji: '🤜', color: '#e53935', cat: 'team', players: '1-16', requires: 'teamelims',
     tags: ['2 Teams', 'No Build', 'Respawn'],
     desc: 'Team Rumble without building. Run, hide behind cover and shoot!',
-    rules: { ...RUMBLE, target: 50, build: 'off' },
+    rules: { ...RUMBLE, target: 20, build: 'off' },
   },
   {
     id: 'duos-rumble', name: 'Duos Rumble', emoji: '👊', color: '#ff7043', cat: 'team', players: '1-16', requires: 'teamelims',
-    tags: ['Duos', 'Respawn', 'First to 30'],
-    desc: 'Lots of little teams of two. First pair to 30 eliminations wins.',
-    rules: { ...RUMBLE, teams: 2, target: 30 },
+    tags: ['Duos', 'Respawn', 'First to 15'],
+    desc: 'Lots of little teams of two. First pair to 15 eliminations wins.',
+    rules: { ...RUMBLE, teams: 2, target: 15 },
   },
   {
     id: 'squads-rumble', name: 'Squads Rumble', emoji: '🦺', color: '#5c6bc0', cat: 'team', players: '1-16', requires: 'teamelims',
-    tags: ['Squads', 'Respawn', 'First to 50'],
-    desc: 'Four teams of four with respawns. First squad to 50 wins!',
-    rules: { ...RUMBLE, teams: 4, target: 50 },
+    tags: ['Squads', 'Respawn', 'First to 20'],
+    desc: 'Four teams of four with respawns. First squad to 20 wins!',
+    rules: { ...RUMBLE, teams: 4, target: 20 },
   },
   {
     id: 'ffa-frenzy', name: 'Free-for-All Frenzy', emoji: '🔥', color: '#ff6f00', cat: 'team', players: '1-16', requires: 'elims',
     tags: ['Solo', 'Respawn', 'First to 15'],
     desc: 'Everyone against everyone, respawn in 3 seconds. First to 15 eliminations wins!',
-    rules: { ...ARENA, win: 'elims', target: 15, timeLimit: 600, loadout: 'pool' },
+    rules: { ...ARENA, win: 'elims', target: 15, timeLimit: 600, loadout: 'pool', storm: 'slow', area: ARENA_AREA },
   },
   {
     id: 'trios-showdown', name: 'Trios Showdown', emoji: '⏱️', color: '#26a69a', cat: 'team', players: '1-16', requires: 'time',
@@ -163,14 +176,14 @@ export const CATALOG = [
   {
     id: 'rocket-rumble', name: 'Rocket Rumble', emoji: '🚀', color: '#9ccc3c', cat: 'party', players: '1-16', requires: 'elims',
     tags: ['Rockets only', 'Infinite Ammo', 'Respawn'],
-    desc: 'Rocket launchers with infinite ammo for everyone. First to 15 eliminations wins!',
-    rules: { loot: 'rockets', ammo: 'infinite', ...ARENA, win: 'elims', target: 15, loadout: 'pool', storm: 'slow' },
+    desc: 'Rocket launchers with infinite ammo for everyone. First to 10 eliminations wins!',
+    rules: { loot: 'rockets', ammo: 'infinite', ...ARENA, win: 'elims', target: 10, loadout: 'pool', storm: 'slow', timeLimit: 600, area: ARENA_AREA },
   },
   {
     id: 'sniper-showdown', name: 'Sniper Showdown', emoji: '🔭', color: '#4fc3f7', cat: 'party', players: '1-16', requires: 'elims',
     tags: ['Snipers only', 'Respawn', 'First to 10'],
     desc: 'Snipers with infinite ammo and respawns. First to 10 eliminations wins.',
-    rules: { loot: 'snipers', ammo: 'infinite', ...ARENA, win: 'elims', target: 10, loadout: 'pool', storm: 'none', timeLimit: 600 },
+    rules: { loot: 'snipers', ammo: 'infinite', ...ARENA, win: 'elims', target: 10, loadout: 'pool', storm: 'none', timeLimit: 600, area: ARENA_AREA },
   },
   {
     id: 'shotgun-shuffle', name: 'Shotgun Shuffle', emoji: '💥', color: '#ff5c8a', cat: 'party', players: '1-16', tags: ['Shotguns only', 'Fast Storm'],
@@ -287,7 +300,7 @@ export const CATALOG = [
     id: 'target-practice', name: 'Target Practice', emoji: '🎳', color: '#66bb6a', cat: 'practice', players: '1-16', requires: 'elims',
     tags: ['Easy Bots', 'Respawn', 'Infinite Ammo'],
     desc: 'Practise your aim on easy bots. You come back after 3 seconds; 30 eliminations wins.',
-    rules: { botSkill: 'easy', ...ARENA, win: 'elims', target: 30, storm: 'none', timeLimit: 600, loadout: 'pool', ammo: 'infinite' },
+    rules: { botSkill: 'easy', ...ARENA, win: 'elims', target: 30, storm: 'none', timeLimit: 600, loadout: 'pool', ammo: 'infinite', area: ARENA_AREA },
   },
   {
     id: 'build-practice', name: 'Build Practice', emoji: '🧰', color: '#42a5f5', cat: 'practice', players: '1-16', tags: ['No Damage', 'Infinite Build'],

@@ -356,6 +356,22 @@ test('infection and hide & seek always have a clock (time limit 0 means 5 minute
   assert.equal(normalizeRules({ win: 'koth', timeLimit: 0 }).timeLimit, 0);
 });
 
+// ------------------------------------------------------------------ 4. arena pacing on the big island
+import { MAP } from '../public/shared/constants.js';
+import { MODES } from '../public/shared/modes/index.js';
+
+test('respawn arenas on the 1.6 km island play in its middle, with a clock as the backstop', () => {
+  const arenas = MODES.filter((m) => m.rules.respawn > 0 && m.rules.pvp !== false && (m.rules.win === 'elims' || m.rules.win === 'teamelims'));
+  assert.ok(arenas.length >= 8, arenas.map((m) => m.id).join());
+  for (const m of arenas) {
+    if (MAP.size > 700) assert.notEqual(m.rules.area, 'full', `${m.id}: not the whole island`);
+    assert.ok(m.rules.timeLimit > 0 && m.rules.timeLimit <= 600, `${m.id}: a 10 minute clock at most`);
+  }
+  const tr = MODES.find((m) => m.id === 'team-rumble');
+  assert.equal(tr.rules.target, 20);
+  assert.ok(tr.tags.includes('First to 20') && /to 20 /.test(tr.desc), 'what the tile says matches the rules');
+});
+
 // ------------------------------------------------------------------ 8. the legacy mode handler is gone
 test("the party plugin installs no 'mode' handler: the Room's own picks modes", () => {
   const H = makeRoom();
