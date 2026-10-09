@@ -538,3 +538,16 @@ body.ingame.dead #hotbar, body.ingame.dead #ammo, body.ingame.dead #bars { displ
   #elimbanner .eb-main { font-size: 22px; } #elimbanner .eb-streak { font-size: 28px; }
   body.ctx-editing #progress { top: calc(50% + 96px); }
 }
+
+/* the smallest phones in landscape (667 x 375, iPhone SE / 8): a smaller hotbar a little left of
+   centre, narrower bars and the button layout pulled into the corner, so the hotbar clears the
+   bars and the build arc, and the arc clears the mats and the edit chips (tools/layout-sweep.mjs) */
+@media (max-height: 460px) and (max-width: 700px) {
+  #touch { --lay: 0.66; }
+  body.touch #hotbar { gap: 4px; left: calc(50% - 24px); }
+  body.touch .slot { width: 40px; height: 40px; font-size: 9px; }
+  body.touch #ammo { left: calc(50% - 24px); bottom: calc(52px + var(--sab)); }
+  body.touch #bars { width: 150px; }
+  #editchips { top: calc(50% + 34px); gap: 4px; }
+  #editchips .chip { font-size: 12px; padding: 0 6px; }
+}

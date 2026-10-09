@@ -377,6 +377,11 @@ body.touch #modehud > .mh-line.on { display: block; width: auto; max-width: 100%
   body.touch .mh-bar { width: min(320px, calc(100% - 64px)); }
   body.touch #hud:has(.mh-mates:not(.hidden) .mh-more) #killfeed { top: calc(160px + var(--sat)); }
 }
+@media (max-height: 460px) and (max-width: 700px) {
+  /* narrower, so it clears the teammates panel; under the strip even when it takes three rows */
+  body.touch #notice { font-size: 14px; }
+  body.touch.mode-score #notice { top: calc(100px + var(--sat)); }
+}
 
 /* portrait iPads / phones: the creator's 8 tabs wrap onto two rows (a scrolled strip cut BOTS off) */
 @media (orientation: portrait) {
