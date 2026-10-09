@@ -290,6 +290,7 @@ export class Room {
     p.respawnAt = 0;
     this.players.delete(p.id);
     this.runtime.list = this.runtime.list.filter((q) => q !== p);
+    if (p.watch) { p.watch = 0; this.tellWatch(p); }
     this.broadcast({ t: 'note', msg: `${p.name} left` });
   }
 
@@ -359,6 +360,8 @@ export class Room {
     if (!c) return;
     this.conns.delete(connId);
     const p = this.players.get(c.pid);
+    // its page is gone: it watches nobody now (held for a rejoin or not)
+    if (p && p.watch) { p.watch = 0; this.tellWatch(p); }
     // a room plugin may keep the player instead (e.g. held for a rejoin)
     if (this.plugAnswer('onLeave', this, c, p) === true) return;
     if (p) this.removePlayer(p);
@@ -402,7 +405,13 @@ export class Room {
     this.reassignBots(next.pid);
   }
 
-  reassignBots(to = this.leader) {
+  /**
+   * Hand every bot to player `to` ({t:'bots', own}). Mid-match the new owner also gets each live
+   * bot's current mode loadout ('lo', after 'bots' on the same channel): a bot taken over keeps its
+   * gun game rung or kit instead of starting again with a pickaxe (resend false: the start message
+   * already carries the loadouts).
+   */
+  reassignBots(to = this.leader, resend = true) {
     const owner = this.players.get(to);
     if (!owner) return;
     const own = [];
@@ -410,7 +419,13 @@ export class Room {
       if (p.bot) { p.owner = owner.id; own.push(p.id); }
     }
     const conn = this.connOf(owner);
-    if (conn) this.send(conn, { t: 'bots', own });
+    if (!conn) return;
+    this.send(conn, { t: 'bots', own });
+    if (resend && (this.phase === 'match' || this.phase === 'bus' || this.phase === 'round')) {
+      for (const p of this.players.values()) if (p.bot && p.alive && p.lo) this.send(conn, { t: 'lo', id: p.id, lo: p.lo });
+      // and who watches which bot
+      for (const p of this.players.values()) if (!p.bot && p.watch) this.send(conn, { t: 'watch', from: p.id, id: p.watch });
+    }
   }
 
   welcome(id) {
@@ -531,7 +546,7 @@ export class Room {
       round: this.round ? { n: 1, series: {} } : null,
     });
     this.sendRoles(all);
-    this.reassignBots();
+    this.reassignBots(this.leader, false);
     this.plug('onStart', this);
     this.log('match start', { room: this.code, players: this.players.size, mode: this.settings.modeId });
   }
@@ -539,6 +554,7 @@ export class Room {
   /** Match-start state of a player taking part. */
   resetForMatch(p) {
     const R = this.rules;
+    p.watch = 0;
     p.alive = true;
     p.spectator = false;
     p.inMatch = true;
@@ -1007,6 +1023,15 @@ export class Room {
     this.sendRoles(all);
   }
 
+  /** Tell the bots' device whom p is watching (p.watch, 0 = nobody). */
+  tellWatch(p) {
+    let owner = 0;
+    for (const q of this.players.values()) if (q.bot) { owner = q.owner; break; }
+    const op = owner ? this.players.get(owner) : null;
+    const conn = op ? this.connOf(op) : null;
+    if (conn) this.send(conn, { t: 'watch', from: p.id, id: p.watch | 0 });
+  }
+
   /** The roles a game's set-up gave out, sent after the start (clients clear roles on start). */
   sendRoles(list) {
     for (const p of list) if (p.role) this.broadcast({ t: 'role', id: p.id, role: p.role });
@@ -1096,6 +1121,7 @@ export class Room {
     p.a = how === 'sky' ? ANIM.SKYDIVE : ANIM.IDLE;
     const lo = p.keepLoot ? null : this.runtime.respawnLoadout(p, () => makeLoadout(R, Math.random));
     p.keepLoot = false;
+    if (p.watch) { p.watch = 0; this.tellWatch(p); }
     this.broadcast({ t: 'respawn', id: p.id, x: r2(p.x), y: r2(p.y), z: r2(p.z), how, lo, hp: Math.ceil(p.hp), sh: Math.ceil(p.sh) });
     this.runtime.call('onRespawn', p);
   }
@@ -1670,6 +1696,21 @@ const HANDLERS = {
     // already open (the client missed it): tell just this device, without new loot
     if (this.chestsOpened.has(ci)) { this.send(c.conn, { t: 'chest', c: ci }); return; }
     this.openChest(ci);
+  },
+
+  /**
+   * {t:'watch', id}: who this (eliminated) player spectates, 0 = nobody. The device running the bots
+   * hears about watched bots ({t:'watch', from, id}) and keeps them in its full simulation.
+   */
+  watch(c, m) {
+    const p = this.players.get(c.pid);
+    if (!p || p.bot) return;
+    let id = num(m.id) | 0;
+    const t = id ? this.players.get(id) : null;
+    if (!t || !t.bot) id = 0;
+    if ((p.watch | 0) === id) return;
+    p.watch = id;
+    this.tellWatch(p);
   },
 
   emote(c, m) {

@@ -253,8 +253,9 @@ export class MapClient {
     const mv = a.mover;
     const mode = mv.mode;
     if (mode === 'bus' || mode === 'dead') return;
-    // after a launch: open the glider once well clear of the ground (soft landing, no fall damage)
-    if (mv.launched && mode === 'air' && mv.vel.y < -1) {
+    // after a launch: open the glider once well clear of the ground (soft landing, no fall damage);
+    // a bounce mushroom never opens it (PAD_KICK.mushroom.glide)
+    if (mv.launched && mv.launchGlide !== false && mode === 'air' && mv.vel.y < -1) {
       const h = this.game.physics.raycast(a.pos.x, a.pos.y + 0.2, a.pos.z, 0, -1, 0, 60, RAY_STATIC);
       if (!h || h.dist > 5) mv.mode = 'glide';
     }
@@ -272,8 +273,8 @@ export class MapClient {
       const sp = Math.hypot(mv.vel.x, mv.vel.z);
       if (sp > 0.5) { fx = mv.vel.x / sp; fz = mv.vel.z / sp; }
     }
-    if (mv.launch) mv.launch(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power);
-    else { mv.vel.set(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power); mv.mode = 'air'; mv.launched = true; }
+    if (mv.launch) mv.launch(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power, kick.glide !== false);
+    else { mv.vel.set(fx * kick.fwd * power, kick.up * power, fz * kick.fwd * power); mv.mode = 'air'; mv.launched = true; mv.launchGlide = kick.glide !== false; }
     const g = this.game;
     if (g.fx && g.fx.dust) g.fx.dust(p.x, p.y + 0.3, p.z, 1.6, p.kind === 'geyser' ? [0.92, 0.96, 1] : [0.8, 0.85, 1]);
     if (g.sfx && g.sfx.whoosh) g.sfx.whoosh(a === g.me);

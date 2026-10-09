@@ -16,7 +16,7 @@ import { RemotePlayer } from '../actors/remote.js';
 import { forwardFromAngles } from '../actors/combatant.js';
 import { Ballistics, raySphere, rayCapsule } from '../combat/ballistics.js';
 import { LootView, StormView, BusView } from './views.js';
-import { RAY_SOLID } from '../physics.js';
+import { RAY_SOLID, RAY_SHOT } from '../physics.js';
 import { lootLabel } from '../ui/hud.js';
 
 // warm-up loadout: each spawn picks one gun of each pair so every gun gets tried out ([rarity, guns...])
@@ -136,6 +136,8 @@ export class Game {
     this.startLo = null;
     this.myPlace = 0;            // where I placed when eliminated (no respawn)
     this.match = 0;              // the room's match number (a rejoin tells the room which match this page is in)
+    this.watchers = new Map();   // remote player id -> the bot of mine they spectate (farsim keeps it near)
+    this.watchSent = 0;          // the spectate target last told to the room
     this.unsub = net.onMessage((m) => this.onMessage(m));
     this.disposed = false;
     // game plugins (js/game/plugins.js), last so they can use everything above
@@ -317,6 +319,8 @@ export class Game {
 
   on_start(m) {
     this.phase = m.bus ? 'bus' : 'match';
+    this.watchers.clear();
+    this.watchSent = 0;
     this.match = m.match | 0;
     this.leader = m.leader;
     this.settingsState = m.settings;
@@ -453,6 +457,17 @@ export class Game {
     }
   }
 
+  /** A bot taken over from another device: the gun its snapshot showed it holding ('ar:3'), in hand. */
+  giveHeld(bot, held) {
+    if (typeof held !== 'string') return;
+    const [k, r] = held.split(':');
+    if (!Object.prototype.hasOwnProperty.call(WEAPONS, k) || WEAPONS[k].melee) return;
+    for (let i = 1; i <= 5; i++) { const s = bot.inv.slots[i]; if (s && s.k === k) { bot.select(i); return; } }
+    if (typeof bot.addItem !== 'function') return;
+    bot.addItem({ k, r: Math.max(0, Math.min(4, parseInt(r, 10) || 0)), m: WEAPONS[k].mag });
+    for (let i = 1; i <= 5; i++) { const s = bot.inv.slots[i]; if (s && s.k === k) { bot.select(i); break; } }
+  }
+
   /** Put an actor at a spawn [x, y, z, how] ('sky': skydiving; 'ground': standing). */
   placeAtSpawn(a, sp) {
     const x = sp ? sp[0] : 0, z = sp ? sp[2] : 0;
@@ -506,7 +521,13 @@ export class Game {
       const last = r && r.latest();
       if (r) { r.dispose(); this.remotes.delete(id); }
       const sp = !last && this.startSpawns && this.startSpawns[id];
-      if (this.phase !== 'lobby' && !last && this.startLo) this.giveLoadout(bot, this.startLo.get(id) || null);
+      if (this.phase !== 'lobby' && this.startLo) {
+        // taken over mid-match (the old owner went quiet or left): at least the mode's start kit
+        // and mats (the room sends the bot's current mode loadout right after: 'lo'), plus the gun
+        // it was seen holding
+        this.giveLoadout(bot, this.startLo.get(id) || null);
+        if (last) this.giveHeld(bot, last.w);
+      }
       if (sp && this.phase === 'match') {
         // a sky / ground start: straight to its spot
         this.placeAtSpawn(bot, sp);
@@ -543,6 +564,7 @@ export class Game {
 
   on_lobby(m) {
     this.phase = 'lobby';
+    this.watchers.clear();
     this.leader = m.leader;
     this.settingsState = m.settings;
     this.rules = rulesFromSettings(m.settings);
@@ -1497,6 +1519,13 @@ export class Game {
       if (th > minD && th < best) { best = th; target = t.far ? 0 : t.id; feet = t.body[1] - t.body[6]; }
       if (tb > minD && tb < best) { best = tb; target = t.far ? 0 : t.id; feet = t.body[1] - t.body[6]; }
     }
+    // colliders are only streamed near players: an enemy 180-250 m away inside a house far from
+    // everyone is not 'in the open' (the bullets, which stream their path, would hit the wall)
+    if (target) {
+      this.physics.ensureAlong(o.x, o.z, o.x + f.x * best, o.z + f.z * best);
+      const h2 = this.physics.raycast(o.x + f.x * minD, o.y + f.y * minD, o.z + f.z * minD, f.x, f.y, f.z, best - minD, RAY_SOLID);
+      if (h2) { best = h2.dist + minD; target = 0; }
+    }
     const a = this.aim;
     a.target = target;
     a.targetFeet = feet;
@@ -1742,6 +1771,7 @@ export class Game {
     // path in a few straight pieces so we never fire into cover the camera can see over
     const n = drop > 0.02 ? 4 : 1;
     const end = Math.max(0, 1 - 0.1 / len); // enemies aren't solid, so stop just short of the aim point
+    this.physics.ensureAlong(o.x, o.z, aim.tx, aim.tz); // (the whole path's colliders, like a bullet's)
     let px = o.x, py = o.y, pz = o.z;
     for (let i = 1; i <= n; i++) {
       const f = (end * i) / n;
@@ -1899,7 +1929,10 @@ export class Game {
     const o = this.camera.position;
     const dx = x - o.x, dy = y - o.y, dz = z - o.z;
     const l = Math.hypot(dx, dy, dz);
-    return l < 0.5 || !this.physics.raycast(o.x, o.y, o.z, dx / l, dy / l, dz / l, l - 0.4, RAY_SOLID);
+    if (l < 0.5) return true;
+    this.physics.ensureAlong(o.x, o.z, x, z); // (colliders far from everyone are not streamed in yet)
+    // leaves hide you too, except right up close
+    return !this.physics.raycast(o.x, o.y, o.z, dx / l, dy / l, dz / l, l - 0.4, l < 3 ? RAY_SOLID : RAY_SHOT);
   }
 
   cycleSpectate() {
@@ -1959,11 +1992,31 @@ export class Game {
     this.sendT = 1 / SEND_HZ;
     const me = this.me;
     if (me.alive && !me.inBus) this.send({ t: 'u', s: me.stateArray() });
+    this.syncWatch();
     if (this.bots.size) {
       const b = [];
       for (const bot of this.bots.values()) if (bot.alive && !bot.inBus) b.push([bot.id, ...bot.stateArray()]);
       if (b.length) this.send({ t: 'ub', b });
     }
+  }
+
+  /**
+   * Who I am watching while out of the match ({t:'watch', id}, 0 = nobody): the device running
+   * the bots keeps a watched bot (and the fight around it) in the full simulation (farsim.js).
+   */
+  syncWatch() {
+    const live = this.phase === 'match' || this.phase === 'bus';
+    const id = live && this.me && !this.me.alive ? this.spectateId | 0 : 0;
+    if (id === this.watchSent) return;
+    this.watchSent = id;
+    this.send({ t: 'watch', id });
+  }
+
+  /** Someone on another device watches one of my bots ({t:'watch', from, id}; id 0: stopped). */
+  on_watch(m) {
+    const from = m.from | 0, id = m.id | 0;
+    if (!from) return;
+    if (id) this.watchers.set(from, id); else this.watchers.delete(from);
   }
 
   updateHud(dt) {

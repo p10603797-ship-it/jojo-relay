@@ -93,14 +93,18 @@ export class Traversal {
     }
   }
 
-  /** The pad under a point (feet position), or null. */
+  /**
+   * The pad under a point (feet position), or null. Pads have no collider: a mushroom fires for feet
+   * anywhere from the ground under its cap (walking in) up to just above the cap (jumping on).
+   */
   padAt(x, y, z, r = 1.6) {
     for (const p of this.pads) {
       const dx = p.x - x, dz = p.z - z;
-      const R = p.kind === 'mushroom' ? 1.9 : r;
+      const mush = p.kind === 'mushroom';
+      const R = mush ? 1.6 : r;
       if (dx * dx + dz * dz > R * R) continue;
       const dy = y - (p.y + p.top);
-      if (dy > -0.9 && dy < 1.6) return p;
+      if (dy > (mush ? -(p.top + 0.5) : -0.9) && dy < 1.6) return p;
     }
     return null;
   }

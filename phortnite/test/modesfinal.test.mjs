@@ -261,3 +261,13 @@ test('creator: goal presets never pile up (every goal -> goal change = that goal
   assert.equal(elims.area, 'center');
   assert.ok(elims.timeLimit > 0);
 });
+
+import { rollBotSkill } from '../public/shared/modes/runtime.js';
+
+test('modes: "mixed" bots are a third easy, a third normal, a third hard (no overlap with easy)', () => {
+  const rnd = mulberry32(3);
+  for (let i = 0; i < 3000; i++) {
+    const s = Math.round(rollBotSkill('mixed', rnd, i) * 100) / 100;
+    assert.equal(s <= 0.45, i % 3 === 0, `bot ${i}: ${s}`);
+  }
+});

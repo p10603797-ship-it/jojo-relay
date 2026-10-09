@@ -307,7 +307,14 @@ export function pickSpawns(world, area, players, rng = Math.random, cands = null
 /** A bot's skill (0..1) for rules.botSkill; i spreads 'mixed' evenly. 'normal' is today's mix. */
 export function rollBotSkill(level, rnd = Math.random, i = 0) {
   const r = (a, b) => a + rnd() * (b - a);
-  if (level === 'mixed') level = ['easy', 'normal', 'hard'][i % 3];
+  if (level === 'mixed') {
+    // thirds that don't overlap: the bots' brains treat a 'mixed' skill <= 0.45 as easy, so the
+    // normal third stays above it (else half the bots got easy brains)
+    const k = i % 3;
+    if (k === 0) return r(0.15, 0.45);
+    if (k === 2) return r(0.6, 0.95);
+    return r(0.46, 0.75);
+  }
   if (level === 'easy') return r(0.15, 0.45);
   if (level === 'hard') return r(0.6, 0.95);
   const x = rnd();

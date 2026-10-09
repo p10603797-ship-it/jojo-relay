@@ -3,7 +3,7 @@
 // brain's pure parts (js/ai/goals.js, farsim.js, buildfight.js) with small fakes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode } from '../public/js/ai/nav.js';
+import { Nav, PathFollower, F_WATER, F_BLOCK, F_HOUSE, F_CLIFF, F_STEEP, F_DOWN, STUCK_S, wpNode, PAD } from '../public/js/ai/nav.js';
 import { generateWorld } from '../public/shared/worldgen.js';
 import * as goals from '../public/js/ai/goals.js';
 import { wantFar, farUpdate, FAR_IN, FAR_OUT } from '../public/js/ai/farsim.js';
@@ -69,7 +69,8 @@ const TODAY = generateWorld();
 function routeCells(nav, pts) {
   const out = [];
   for (let k = 4; k < pts.length; k += 4) {
-    if (nav.isPad(wpNode(pts[k - 1]), wpNode(pts[k + 3]))) continue;
+    // (a pad link's throw: from the pad's own spot, PAD, to where it lands)
+    if (pts[k - 1] === PAD || nav.isPad(wpNode(pts[k - 1]), wpNode(pts[k + 3]))) continue;
     const ax = pts[k - 4], az = pts[k - 2], bx = pts[k], bz = pts[k + 2];
     const L = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(L / 2));
     for (let j = 0; j <= n; j++) {
@@ -527,4 +528,46 @@ test('bots: build fights place a piece every 0.1-0.3 s, box up with a roof, and 
   // a slow, easy bot builds more slowly; and nobody builds when the rules say no
   g.rules.build = 'off';
   assert.equal(B.start('wall', 0), false);
+});
+
+test('nav: pad routes walk onto the pad itself; mushrooms are not pad links; a pad that fails is off for a while only', () => {
+  const nav = built(TODAY).nav;
+  const pads = (TODAY.pads || []).filter((p) => p.kind === 'mushroom');
+  for (const p of pads) {
+    const u = nav.nodeAt(p.x, p.z, 2);
+    if (u >= 0) for (const e of nav.extra.get(u) || []) assert.ok(e.length > 3, 'only real pads have links');
+  }
+  let padRoutes = 0;
+  for (const [u, list] of nav.extra) {
+    for (const [v, , px, pz] of list.slice(0, 2)) {
+      const pts = nav.nodePts(Int32Array.of(u, v));
+      const k = pts.indexOf(PAD, 3);
+      assert.ok(k > 0 && (k & 3) === 3, 'a PAD waypoint before the throw');
+      assert.deepEqual([pts[k - 3], pts[k - 1]], [px, pz], 'on the pad');
+      assert.ok(TODAY.pads.some((p) => Math.hypot(p.x - px, p.z - pz) < 0.01 && p.kind !== 'mushroom'));
+      padRoutes++;
+    }
+  }
+  assert.ok(padRoutes > 0);
+  nav.padsOff();
+  assert.equal(nav.padsOn, false);
+  nav.padsOffUntil = 0; // (the time-out is over)
+  nav.path(0, 1, null, 0);
+  assert.equal(nav.padsOn, true, 'pads come back');
+});
+
+test('nav: the storm flow field follows real (one-way aware) links: every flow path reaches the circle', () => {
+  const nav = built(TODAY).nav;
+  const circles = [[4, -477, 85], [-141, -347, 40], [-157, -436, 85], [0, 0, 120], [300, 200, 60]];
+  for (const [cx, cz, r] of circles) {
+    const f = nav.flowTo(cx, cz, r);
+    let n = 0, short = 0;
+    for (let s = 0; s < nav.nn; s += 7) {
+      if (nav.rep[s] < 0 || !(f.dist[s] < Infinity) || f.dist[s] === 0) continue;
+      n++;
+      const p = nav.flowPath(f, s, 2000);
+      if (f.dist[p[p.length - 1]] !== 0) short++;
+    }
+    assert.equal(short, 0, `circle (${cx}, ${cz}) r ${r}: ${short} of ${n} flow paths stop short`);
+  }
 });

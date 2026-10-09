@@ -47,7 +47,7 @@ export function generateWorld(seed = MAP.seed, opts = {}) {
   stampLake(G, L.lake);
   stampRiver(G, L.river);
   const plans = regions.map((g) => planPlace(G, g, rPlan, regions));
-  plans.forEach((p) => { for (const pr of p.props) if (pr.type === 'pond') stampPond(G, pr.x, pr.z, pr.r); });
+  plans.forEach((p, pi) => { for (const pr of p.props) if (pr.type === 'pond') stampPond(G, pr.x, pr.z, pr.r, regions[pi].y); });
   classifyCoast(G);
   lap('places');
 
@@ -203,11 +203,11 @@ export function generateWorld(seed = MAP.seed, opts = {}) {
   const objectsNear = makeObjectsNear(objects);
   const chunks = makeChunkIndex(objects, size);
   lap('indexes');
-  const { chests, lootSpots } = finalizeLoot(G, W, regions, solidNear, mulberry32(seed ^ 0x100f));
+  const { chests, lootSpots } = finalizeLoot(G, W, regions, solidNear, mulberry32(seed ^ 0x100f), objectsNear);
 
   for (const g of regions) { g.y = G.heightAt(g.x, g.z); delete g.axis; }
   const pois = regions.map((g) => ({ name: g.name, x: g.x, z: g.z, y: g.y, r: g.r, type: g.kind }));
-  const spawnPoints = makeSpawnPoints(G, regions, solidNear, mulberry32(seed ^ 0x5b0a));
+  const spawnPoints = makeSpawnPoints(G, regions, solidNear, mulberry32(seed ^ 0x5b0a), pads, objectsNear);
   // warm-up spots: open ground around the most central place
   const center = regions.slice().sort((a, b) => (a.x * a.x + a.z * a.z) - (b.x * b.x + b.z * b.z))[0];
   const spawns = [];
@@ -379,7 +379,7 @@ function loneHouses(G, roads, regions, placed, tryPlot, rng, target) {
 }
 
 /** Validate loot / chest candidates (on land, nothing solid at y + 0.5) and top up outdoors. */
-function finalizeLoot(G, W, regions, solidNear, rng) {
+function finalizeLoot(G, W, regions, solidNear, rng, objectsNear = null) {
   const lootSpots = [], chests = [];
   const ok = (p) => G.heightAt(p.x, p.z) > 0.3 && p.y > G.heightAt(p.x, p.z) - 0.3 && !solidNear(p.x, p.y + 0.5, p.z) && p.y > 0.4;
   const near = (list, p, r) => list.some((q) => (q.x - p.x) * (q.x - p.x) + (q.z - p.z) * (q.z - p.z) + (q.y - p.y) * (q.y - p.y) < r * r);
@@ -399,7 +399,8 @@ function finalizeLoot(G, W, regions, solidNear, rng) {
     }
     return t;
   };
-  const free = (x, y, z) => !solidNear(x, y + 0.5, z, null, 0.6) && !solidNear(x, y + 1.4, z, null, 0.4);
+  // (solidNear skips trees: a chest or a loot spot also keeps clear of trunks)
+  const free = (x, y, z) => !solidNear(x, y + 0.5, z, null, 0.6) && !solidNear(x, y + 1.4, z, null, 0.4) && !trunkNear(objectsNear, x, z, 0.9);
   // ground loot around every place (more in hot places), then across the island
   for (const g of regions) {
     const n = g.tier === 'hot' ? 6 : g.tier === 'normal' ? 4 : 2;
@@ -426,14 +427,34 @@ function finalizeLoot(G, W, regions, solidNear, rng) {
   return { chests, lootSpots };
 }
 
-/** Open ground on rings around every place (at least 8 per named place) plus a scatter across the island. */
-function makeSpawnPoints(G, regions, solidNear, rng) {
+/** Tree trunk radius (m at scale 1) per species: spawn spots keep clear of them (solidNear skips trees). */
+const TRUNK_R = { pine: 0.34, snowpine: 0.34, oak: 0.34, birch: 0.24, palm: 0.28, cactus: 0.45, jungle: 0.5, swamp: 0.42, dead: 0.3 };
+
+/** Is a tree trunk within its radius + pad m of (x, z)? */
+function trunkNear(objectsNear, x, z, pad) {
+  if (!objectsNear) return false;
+  let hit = false;
+  objectsNear(x, z, 3, (o) => {
+    if (o.kind !== 'tree' || !Object.prototype.hasOwnProperty.call(TRUNK_R, o.species)) return false;
+    const r = TRUNK_R[o.species] * (o.s || 1) + pad;
+    if ((o.x - x) * (o.x - x) + (o.z - z) * (o.z - z) < r * r) { hit = true; return true; }
+    return false;
+  });
+  return hit;
+}
+
+/**
+ * Open ground on rings around every place (at least 8 per named place) plus a scatter across the
+ * island: never on a pad (a ground start would throw you 60 m up) or inside a tree trunk.
+ */
+function makeSpawnPoints(G, regions, solidNear, rng, pads = [], objectsNear = null) {
   const out = [];
   const good = (x, z) => {
     const y = G.heightAt(x, z);
     if (y < 1.5 || G.slope(x, z) > 2.4) return -1;
     if (solidNear(x, y + 0.9, z, null, 0.6) || solidNear(x, y + 0.3, z, null, 0.6)) return -1;
-    return y;
+    for (const p of pads) if ((p.x - x) * (p.x - x) + (p.z - z) * (p.z - z) < 9) return -1;
+    return trunkNear(objectsNear, x, z, 0.5 + 0.37) ? -1 : y; // (a player's capsule is 0.37 m)
   };
   for (const g of regions) {
     let n = 0;

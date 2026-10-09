@@ -9,7 +9,7 @@ import { BIOMES, SURFACES, SPECIES, SPECIES_TYPE, LOOKS, LOOK_ALIASES, PADS, TIE
 import { ARCHETYPES } from '../public/shared/world/buildings.js';
 import { PROP_TYPES, DECOR_TYPES } from '../public/shared/world/props.js';
 
-const CHECKSUM = 371926729;   // pinned: the island everyone plays on (update deliberately with the map)
+const CHECKSUM = 369006696;   // pinned: the island everyone plays on (update deliberately with the map)
 
 const worlds = new Map();
 const world = (size = MAP.size) => {

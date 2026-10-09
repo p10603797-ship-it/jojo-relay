@@ -44,9 +44,11 @@ const DZ = [0, 1, 1, 1, 0, -1, -1, -1];
 const DIR = [5, 6, 7, 4, -1, 0, 3, 2, 1]; // DIR[(dz + 1) * 3 + dx + 1] = d
 /**
  * Waypoint codes: >= 0 a graph node; <= VIA a corner on the way into node VIA - code; ROOM a door
- * or room point (no graph node); STAIR a point of a flight of stairs (walked exactly).
+ * or room point (no graph node); STAIR a point of a flight of stairs (walked exactly); PAD the
+ * launch pad itself, just before a pad link (walked exactly, so the pad throws you).
  */
-export const ROOM = -1, STAIR = -2, VIA = -10;
+export const ROOM = -1, STAIR = -2, PAD = -3, VIA = -10;
+export const PADS_OFF_S = 60; // a pad that didn't throw anyone: pads are left out of routes this long
 /** Graph node of a waypoint code (-1: not a graph point). */
 export const wpNode = (code) => (code >= 0 ? code : code <= VIA ? VIA - code : -1);
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -116,7 +118,8 @@ export class Nav {
     this.comp = new Int32Array(this.nn).fill(-1);  // connected component
     this.extra = new Map();                        // node -> [[to, cost], ...] (launch pads)
     this.vias = new Map();                         // u * 8 + d -> fine cells to walk via (links round a corner)
-    this.padsOn = true;                            // launch pads throw you (cleared if one doesn't)
+    this.padsOn = true;                            // launch pads throw you (off for PADS_OFF_S if one doesn't)
+    this.padsOffUntil = 0;
     this.ready = false;
     this.stage = 0;
     this.row = 0;
@@ -446,7 +449,8 @@ export class Nav {
   pads() {
     const d = this.data;
     for (const p of d.pads || []) {
-      if (!p) continue;
+      // (a bounce mushroom throws you a few metres: walking is as good)
+      if (!p || p.kind === 'mushroom') continue;
       // (a pad up on a roof is no use to someone walking the ground graph)
       const py = p.y ?? d.heightAt(p.x, p.z);
       if (p.roof || py > d.heightAt(p.x, p.z) + 2.5) continue;
@@ -462,7 +466,7 @@ export class Nav {
           const vi = this.rep[v];
           if (this.flags[vi] & F_WATER) continue;
           if (d.heightAt(this.nodeX[v], this.nodeZ[v]) > py + 25) continue;
-          list.push([v, r * 0.5 + 8]);
+          list.push([v, r * 0.5 + 8, p.x, p.z]); // (the pad's own spot: the route walks onto it)
         }
       }
       if (list.length) this.extra.set(u, (this.extra.get(u) || []).concat(list));
@@ -655,8 +659,27 @@ export class Nav {
    * A* from node s to node g. blocked: optional Map(edge key u * nn + v -> until) of links this
    * bot gave up on (t = now, s). Returns an Int32Array of nodes (s ... g), or null.
    */
+  /**
+   * Pads back on once their time-out is over (routes cached without them are planned again). On
+   * the page's clock: bots' own clocks differ, and the Nav outlives a match.
+   */
+  padsCheck() {
+    if (this.padsOn || now() < this.padsOffUntil) return;
+    this.padsOn = true;
+    this.cache.clear();
+    if (this.creach) this.creach.clear();
+  }
+
+  /** A pad did not throw a walker: leave pads out of routes for PADS_OFF_S (not for the session). */
+  padsOff() {
+    this.padsOn = false;
+    this.padsOffUntil = now() + PADS_OFF_S * 1000;
+    this.cache.clear();
+  }
+
   path(s, g, blocked = null, t = 0) {
     if (s < 0 || g < 0) return null;
+    this.padsCheck();
     if (s === g) return Int32Array.of(s);
     if (!this.canReach(s, g)) return null;
     const useCache = !blocked || !blocked.size;
@@ -778,13 +801,21 @@ export class Nav {
       const n = this.nodeAt(cx, cz, 8);
       if (n >= 0) { dist[n] = 0; heap.push(n, 0); }
     }
+    // outward from the circle over the REVERSE links: dist[v] is the cost of walking v -> u -> ...
+    // into the circle (a one-way link, a slope you can only slide down, counts in its own direction)
+    const done = this.fdone && this.fdone.length === nn ? this.fdone.fill(0) : (this.fdone = new Uint8Array(nn));
     while (heap.size) {
       const u = heap.pop();
+      if (done[u]) continue; // (a stale heap entry)
+      done[u] = 1;
       const du = dist[u];
+      const ux = u % cnx, uz = (u / cnx) | 0;
       for (let d = 0; d < 8; d++) {
-        const c = ec[u * 8 + d];
+        const vx = ux + DX[d], vz = uz + DZ[d];
+        if (vx < 0 || vz < 0 || vx >= cnx || vz >= cnx) continue;
+        const v = vz * cnx + vx;
+        const c = ec[v * 8 + ((d + 4) & 7)]; // the link v -> u
         if (!(c < Infinity)) continue;
-        const v = u + DZ[d] * cnx + DX[d];
         const nd = du + c;
         if (nd < dist[v]) { dist[v] = nd; heap.push(v, nd); }
       }
@@ -899,17 +930,32 @@ export class Nav {
     return out;
   }
 
-  /** Waypoints [x, y, z, code, ...] along a node path (with the corners of links that bend). */
+  /**
+   * Waypoints [x, y, z, code, ...] along a node path (with the corners of links that bend, and the
+   * pad's own spot before a launch pad link: the pad node is only the block's most walkable cell).
+   */
   nodePts(nodes, out = []) {
     for (let k = 0; k < nodes.length; k++) {
       const n = nodes[k];
       if (k > 0) {
-        const via = this.viaOf(nodes[k - 1], n);
-        if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, VIA - n);
+        const pad = this.padOf(nodes[k - 1], n);
+        if (pad) out.push(pad[0], NaN, pad[1], PAD);
+        else {
+          const via = this.viaOf(nodes[k - 1], n);
+          if (via) for (const i of via) out.push(this.x0 + ((i % this.nx) + 0.5) * C, NaN, this.x0 + (((i / this.nx) | 0) + 0.5) * C, VIA - n);
+        }
       }
       out.push(this.nodeX[n], NaN, this.nodeZ[n], n);
     }
     return out;
+  }
+
+  /** The pad [x, z] of a launch pad link u -> v, or null for a walk. */
+  padOf(u, v) {
+    const ex = this.extra.get(u);
+    if (!ex) return null;
+    for (const e of ex) if (e[0] === v && e.length > 3) return [e[2], e[3]];
+    return null;
   }
 
   lineWalkShort(ax, az, bx, bz) { return Math.hypot(bx - ax, bz - az) < 40 && this.lineWalk(ax, az, bx, bz); }
@@ -1050,7 +1096,7 @@ export class PathFollower {
   get precise() {
     if (!this.pts || this.i >= this.pts.length >> 2) return false;
     const c = this.pts[this.i * 4 + 3];
-    return c === STAIR || (c === ROOM && this.i < (this.pts.length >> 2) - 1);
+    return c === STAIR || c === PAD || (c === ROOM && this.i < (this.pts.length >> 2) - 1);
   }
 
   step(px, py, pz, t, dt) {
@@ -1078,7 +1124,7 @@ export class PathFollower {
       const wx = P[j] - px, wz = P[j + 2] - pz, wy = P[j + 1];
       const d2 = wx * wx + wz * wz;
       const code = P[j + 3];
-      const near = code >= 0 ? 2.6 : code <= VIA ? 1.6 : code === STAIR ? 0.7 : 1.4;
+      const near = code >= 0 ? 2.6 : code <= VIA ? 1.6 : code === STAIR ? 0.7 : code === PAD ? 0.9 : 1.4;
       if (d2 < near * near && (!(wy === wy) || Math.abs(wy - py) < (code === STAIR ? 1.2 : 2.4))) { this.next(); continue; }
       break;
     }
@@ -1096,7 +1142,13 @@ export class PathFollower {
     }
     const j = this.i * 4;
     this.tx = P[j]; this.ty = P[j + 1] === P[j + 1] ? P[j + 1] : py; this.tz = P[j + 2];
-    if (this.i > 0 && P[j + 3] >= 0) this.pad = nav.isPad(wpNode(P[j - 1]), P[j + 3]);
+    // on a pad link (walking onto the pad, or thrown toward its far end): no sprinting
+    if (P[j + 3] === PAD) this.pad = true;
+    else if (this.i > 0 && P[j + 3] >= 0) {
+      let u = -1;
+      for (let k = this.i - 1; k >= 0 && u < 0; k--) u = wpNode(P[k * 4 + 3]);
+      this.pad = u >= 0 && nav.isPad(u, P[j + 3]);
+    }
     this.progress(Math.hypot(this.tx - px, this.tz - pz), t, dt, px, pz);
     return 1;
   }
@@ -1116,13 +1168,15 @@ export class PathFollower {
     this.stuckT = t; this.stuckX = px; this.stuckZ = pz;
     let v = -1, u = -1;
     if (P && this.i < P.length >> 2) {
-      v = wpNode(P[this.i * 4 + 3]);
+      // stuck on the way onto a pad: the link to blame is the pad's (to the node after it)
+      const k0 = P[this.i * 4 + 3] === PAD && this.i + 1 < P.length >> 2 ? this.i + 1 : this.i;
+      v = wpNode(P[k0 * 4 + 3]);
       for (let k = this.i - 1; k >= 0 && u < 0; k--) { const w = wpNode(P[k * 4 + 3]); if (w >= 0 && w !== v) u = w; }
     }
     if (v >= 0 && u >= 0) {
       this.blocked.set(u * nn + v, t + BLOCK_S);
       this.blocked.set(v * nn + u, t + BLOCK_S);
-      if (nav.isPad(u, v)) nav.padsOn = false; // stood on a pad and nothing threw us
+      if (nav.isPad(u, v)) nav.padsOff(); // stood on a pad and nothing threw us: pads off for a while
     }
     // stuck here again (or with no link to blame): stay off the node we can't reach
     if (again || u < 0) {

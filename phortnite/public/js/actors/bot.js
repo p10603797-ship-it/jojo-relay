@@ -26,15 +26,15 @@
 import * as THREE from 'three';
 import { WEAPONS, HEALS, FLAG, MAT_KEYS, PLAYER, BUS, DROP } from '../../shared/constants.js';
 import { Combatant, forwardFromAngles } from './combatant.js';
-import { RAY_STATIC, RAY_SOLID } from '../physics.js';
+import { RAY_STATIC, RAY_SOLID, RAY_SHOT } from '../physics.js';
 import { navFor, PathFollower } from '../ai/nav.js';
 import { BuildFight } from '../ai/buildfight.js';
 import { EDIT_PRESETS, EDIT_FULL } from '../../shared/buildgrid.js';
 import {
   modeKey, passive, buildRule, wantsLoot, isHunter, modeGoal, targetBonus, roamPoint, lavaClose, hillOf, inArea,
-  seekerWaits, hider, hideFound, forgetActors,
+  seekerWaits, hider, hideFound, forgetActors, meleeOnly,
 } from '../ai/goals.js';
-import { wantFar, enterFar, exitFar, farUpdate } from '../ai/farsim.js';
+import { wantFar, enterFar, exitFar, farUpdate, forgetFar } from '../ai/farsim.js';
 
 const _v = new THREE.Vector3(), _d = new THREE.Vector3(), _e = new THREE.Vector3(), _s = new THREE.Vector3();
 const _g = { x: 0, y: 0, z: 0 };
@@ -186,6 +186,7 @@ export function forgetGame(g) {
   if (_listG === g) { _listG = null; _listT = -1; _list.length = 0; }
   if (_navGame === g) _navGame = null;
   forgetActors();
+  forgetFar(g);
 }
 
 /** How far (m, sideways) a bot can get from the bus: skydive (no diving) then glide, with slack. */
@@ -314,10 +315,13 @@ export class Bot extends Combatant {
 
   bestWeaponFor(dist) {
     const b = this.brain;
+    // headshots only: a blast does nothing to players
+    const ho = !!(this.game.rules && this.game.rules.headOnly) && this.game.phase !== 'lobby';
     let best = -1, bestScore = -1e9;
     for (let i = 1; i <= 5; i++) {
       const s = this.inv.slots[i];
       if (!s || !has(WEAPONS, s.k) || WEAPONS[s.k].melee) continue;
+      if (ho && WEAPONS[s.k].splash) continue;
       const r = weaponRange(s.k);
       let score = (s.r | 0) * 0.3;
       if (dist >= r[0] && dist <= r[2]) score += 3 - Math.abs(dist - r[1]) / Math.max(8, r[2]);
@@ -544,7 +548,9 @@ export class Bot extends Combatant {
     const dx = tx - ox, dy = ty - oy, dz = tz - oz;
     const len = Math.hypot(dx, dy, dz);
     if (len < 0.3) return true;
-    return !this.game.physics.raycast(ox, oy, oz, dx / len, dy / len, dz / len, len - 0.25, RAY_SOLID);
+    // leaves hide you (a hider in a bush), except right up close (~3 m), where you can make
+    // someone out through a bush
+    return !this.game.physics.raycast(ox, oy, oz, dx / len, dy / len, dz / len, len - 0.25, len < 3 ? RAY_SOLID : RAY_SHOT);
   }
 
   /**
@@ -760,7 +766,11 @@ export class Bot extends Combatant {
     const need = over / 6.5 + 4; // s of running to get in, with some slack
     if (st.shrinking) return need > st.secs * 0.7 ? 2 : 1;
     // early rotators leave as soon as the circle shows, late ones wait for the last moment
-    return st.secs < need + 5 + 70 * this.brain.persona.rotate * this.brain.rotK ? 1 : 0;
+    const u = st.secs < need + 5 + 70 * this.brain.persona.rotate * this.brain.rotK ? 1 : 0;
+    // once on the way, keep going until well inside (no flip-flopping between the storm and loot
+    // every second right at the threshold)
+    if (u === 0 && this.brain.urgent >= 1) return 1;
+    return u;
   }
 
   decide() {
@@ -788,7 +798,9 @@ export class Bot extends Combatant {
     const t = b.target, r = b.trec;
     const gun = this.hasGun();
     const healS = this.healSlot();
-    const hunter = isHunter(this);
+    // the infected, seekers and anyone whose only weapon is the pickaxe (Pickaxe Party, Gun Game's
+    // last rung): run them down
+    const hunter = isHunter(this) || meleeOnly(this);
     let mode = 'travel';
     if (b.mode === 'box' && (this.build.busy || now - b.modeT < 0.5)) mode = 'box';
     else if (t && (r.vis || now - r.seenT < 0.5)) {
@@ -937,7 +949,8 @@ export class Bot extends Combatant {
       const radius = urg === 2 ? 5 : urg ? 12 : !gun ? 50 : 15 + 25 * P.loot;
       const it = this.bestLoot(radius, now - b.killT < 25);
       if (it) {
-        if (b.lootRef !== it) b.lootT = now;
+        // (the give-up timer restarts for a different item only, not when lootRef was cleared for a think)
+        if (b.lootId !== it.id) { b.lootT = now; b.lootId = it.id; }
         b.destKind = 'loot'; b.lootRef = it; b.dest.set(it.x, it.y, it.z);
         return;
       }
@@ -1008,8 +1021,9 @@ export class Bot extends Combatant {
         if (!kill || (it.x - b.killX) ** 2 + (it.z - b.killZ) ** 2 > 36) continue;
         if (in2 !== Infinity && (it.x - st.cx) ** 2 + (it.z - st.cz) ** 2 > in2) continue;
       }
-      // upstairs / downstairs is fine when we can route there (through the door, up the stairs)
-      if ((dy > 1.8 || dy < -1.8) && !(this.nav.ready && this.nav.roomAt(it.x, it.z))) continue;
+      // upstairs / downstairs is fine when we can route there (through the door, up the stairs);
+      // a far bot slides along the ground and only picks up what is within 6 m of its height
+      if ((dy > 1.8 || dy < -1.8) && (this.far || !(this.nav.ready && this.nav.roomAt(it.x, it.z)))) continue;
       if (this.pendingPick.has(it.id) || b.badLoot.has(it.id)) continue;
       if (lim2 !== Infinity && (it.x - sx) ** 2 + (it.z - sz) ** 2 > lim2) continue;
       if (!inArea(this.game, it.x, it.z)) continue;
@@ -1617,16 +1631,23 @@ export class Bot extends Combatant {
       vx = v.x; vy = v.y; vz = v.z;
     } else { px = r.x; py = r.y; pz = r.z; }
     const crouch = !!t.crouching;
+    const R = this.game.rules || {};
+    // headshots only: every weapon at the head's centre (a shotgun spread aimed there still lands
+    // pellets on it; body hits and blasts do nothing); the target's model scale (the Juggernaut)
+    const ho = !!R.headOnly && this.game.phase !== 'lobby';
+    const ts = (t.char && t.char.bodyScale) || 1;
     let hy = crouch ? 0.8 : 1.1;
-    if (w.splash) hy = 0.25; // rockets at the feet
-    else if (b.headAim && (w.pellets || 1) === 1) hy = crouch ? 1.2 : 1.6;
+    if (ho) hy = ((crouch ? 1.27 : 1.7) + (R.bigHead ? 0.15 : 0)) * ts;
+    else if (w.splash) hy = 0.25; // rockets at the feet
+    else if (b.headAim && (w.pellets || 1) === 1) hy = (crouch ? 1.2 : 1.6) * ts;
     let dx = px - s.x, dy = py + hy - s.y, dz = pz - s.z;
     const d = Math.hypot(dx, dy, dz);
     // lead and drop, both imperfect
     if (w.speed) {
       const tt = d / w.speed;
       dx += vx * tt * b.leadK; dz += vz * tt * b.leadK; dy += vy * tt * b.leadK * 0.3;
-      if (w.grav) dy += 0.5 * 9.81 * w.grav * tt * tt * b.dropK;
+      // (the bullet falls with the mode's gravity: Moon, One Shot, Heavy)
+      if (w.grav) dy += 0.5 * 9.81 * w.grav * this.game.gravK() * tt * tt * b.dropK;
     }
     const hd = Math.hypot(dx, dz);
     const yawD = Math.atan2(-dx, -dz);

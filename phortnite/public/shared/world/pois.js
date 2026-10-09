@@ -429,9 +429,17 @@ export function planPlace(G, g, rng, regions) {
   return plan;
 }
 
-/** Smoothly lower a bowl (the oasis pond) to y below 0. */
-export function stampPond(G, x, z, r) {
+/** Highest place (ground) a wet pond is carved in: higher up, its walls would be a pit nobody climbs out of. */
+export const POND_WET_MAX = 2.5;
+
+/**
+ * The oasis pond. A place near the sea (base <= POND_WET_MAX): a bowl lowered smoothly to y below 0
+ * (water). A place up on a plateau (Phunny Palms sits at ~20 m): a shallow dry sand basin 1.2 m
+ * deep, about 10 degrees at its edge, instead of a 21 m shaft with 70 degree walls.
+ */
+export function stampPond(G, x, z, r, base = 0) {
   const { N, cell, half, heights } = G;
+  const wet = !(base > POND_WET_MAX);
   const R2 = r * 1.8;
   for (let iz = Math.max(0, Math.floor((z - R2 + half) / cell)); iz <= Math.min(N - 1, Math.ceil((z + R2 + half) / cell)); iz++) {
     for (let ix = Math.max(0, Math.floor((x - R2 + half) / cell)); ix <= Math.min(N - 1, Math.ceil((x + R2 + half) / cell)); ix++) {
@@ -439,9 +447,11 @@ export function stampPond(G, x, z, r) {
       const d = Math.sqrt((px - x) * (px - x) + (pz - z) * (pz - z)) / r;
       if (d >= 1.8) continue;
       const i = iz * N + ix;
-      const t = d < 1 ? -1.8 + d * 1.2 : heights[i] + (-0.6 - heights[i]) * smoothstep(1.8, 1, d);
+      let t;
+      if (wet) t = d < 1 ? -1.8 + d * 1.2 : heights[i] + (-0.6 - heights[i]) * smoothstep(1.8, 1, d);
+      else t = d < 1 ? base - 1.2 : heights[i] + (base - 1.2 - heights[i]) * smoothstep(1.8, 1, d);
       if (t < heights[i]) heights[i] = t;
-      if (d < 1.2) G.inland[i] = 1;
+      if (wet && d < 1.2) G.inland[i] = 1;
     }
   }
 }

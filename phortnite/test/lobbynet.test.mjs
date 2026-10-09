@@ -284,3 +284,44 @@ test('lobby-net: welcome / resumed show the room\'s countdown, or clear a stale 
   assert.deepEqual(q.cds, [null]);
   assert.deepEqual(H.errors, []);
 });
+
+test('lobby-net: bots handed to another device mid-match come with their current mode loadout', () => {
+  const H = makeRoom({ settings: modeSettings('gun-game'), drop: ['s'] });
+  const a = H.join('Ann', RES), b = H.join('Ben', RES);
+  H.send(a, { t: 'start' });
+  H.advance(500);
+  const bots = H.bots();
+  assert.ok(bots.length > 0 && bots.every((p) => p.owner === a.pid));
+  // a bot moved up a rung: its loadout is the next gun
+  const bot = bots[0];
+  H.room.runtime.state.lv[bot.id] = 3;
+  H.room.runtime.giveLoadout(bot, { slots: [{ k: 'tactical', r: 4 }], ammo: {}, mats: {}, kit: true });
+  H.clear(b);
+  // Ann's page goes quiet (app switch): after 5 s Ben's page gets the bots
+  for (let i = 0; i < 140; i++) { H.send(b, { t: 'u', s: [0, 30, 0, 0, 0, 0, 0, 0, 0, 'pickaxe', 0] }); H.advance(50); }
+  const own = H.msgs(b, 'bots').pop();
+  assert.ok(own && own.own.length === bots.length, 'Ben owns the bots');
+  const los = H.msgs(b, 'lo');
+  const iBots = H.msgs(b).findIndex((m) => m.t === 'bots');
+  const first = H.msgs(b).findIndex((m) => m.t === 'lo');
+  assert.ok(first > iBots, "'lo' after 'bots'");
+  for (const p of bots.filter((x) => x.alive)) assert.ok(los.some((m) => m.id === p.id && JSON.stringify(m.lo) === JSON.stringify(p.lo)), `bot ${p.id}`);
+  assert.equal(los.find((m) => m.id === bot.id).lo.slots[0].k, 'tactical');
+  assert.deepEqual(H.errors, []);
+});
+
+test('lobby-net: an eliminated friend watching a bot: the bots\' device hears it (and when it stops)', () => {
+  const H = makeRoom({ drop: ['s'] });
+  const a = H.join('Ann', RES), b = H.join('Ben', RES);
+  H.send(a, { t: 'start', bots: 3, mats: 0 });
+  H.advance(300);
+  const bot = H.bots()[0];
+  H.send(b, { t: 'watch', id: bot.id });
+  assert.deepEqual(H.last(a, 'watch'), { t: 'watch', from: b.pid, id: bot.id });
+  H.send(b, { t: 'watch', id: a.pid }); // a human: nothing for the bots' device to do
+  assert.deepEqual(H.last(a, 'watch'), { t: 'watch', from: b.pid, id: 0 });
+  H.send(b, { t: 'watch', id: bot.id });
+  H.leave(b); // (no rejoin support: gone for good)
+  assert.deepEqual(H.last(a, 'watch'), { t: 'watch', from: b.pid, id: 0 });
+  assert.deepEqual(H.errors, []);
+});

@@ -234,7 +234,7 @@ export class Combatant {
     });
     // the safe drop stays ~7.5 m in heavy gravity (and a plain jump never hurts, super jump included)
     const safe = PLAYER.fallSafe * Math.sqrt(Math.max(1, m.mods.gravity || 1));
-    if (ev.landed > safe && this.mode === 'ground' && this.game.rules?.fallDamage !== false) {
+    if (ev.landed > safe && !ev.padLand && this.mode === 'ground' && this.game.rules?.fallDamage !== false) {
       const dmg = (ev.landed - safe) * PLAYER.fallDmgPerMs;
       this.game.reportFall(this, dmg);
     }

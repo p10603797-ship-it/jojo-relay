@@ -47,6 +47,19 @@ export function isHunter(bot) {
 }
 
 /**
+ * A bot whose weapon is the pickaxe and who should go and use it: the hunters, the last rung of
+ * Gun Game (and its kit-less moments), and Pickaxe Party (the loot pool has no guns). Without this
+ * such bots wander off to 'find a gun' that does not exist and never fight.
+ */
+export function meleeOnly(bot) {
+  if (isHunter(bot)) return true;
+  const g = bot.game, r = g.rules;
+  if (!r || passive(g) || g.phase === 'lobby' || bot.hasGun()) return false;
+  if (modeKey(g) === 'hideseek') return false; // hiders hide
+  return modeKey(g) === 'gungame' || r.loot === 'pickaxe';
+}
+
+/**
  * Hide & Seek: seconds left of the hiders' head start (ms.g.hs), 0 once the seekers are out (or in
  * any other mode). Before the room's first mode state arrives it counts as on.
  */
@@ -107,13 +120,14 @@ export function targetBonus(bot, a) {
   switch (modeKey(g)) {
     case 'juggernaut': return a.id === juggId(g) ? 45 : 0;
     case 'infection': case 'hideseek': return isHunter(bot) ? 25 : 0;
+    case 'gungame': return meleeOnly(bot) ? 25 : 0;
     case 'koth': {
       const h = hillOf(g);
       if (!h) return 0;
       const dx = a.pos.x - h.x, dz = a.pos.z - h.z;
       return dx * dx + dz * dz < (h.r + 4) * (h.r + 4) ? 25 : 0;
     }
-    default: return 0;
+    default: return meleeOnly(bot) ? 25 : 0; // (Pickaxe Party: commit to a target)
   }
 }
 
@@ -461,7 +475,7 @@ function pickSearch(bot) {
 /** A respawn mode won by eliminations (or the most of them when time runs out). */
 export function deathmatch(game) {
   const r = game.rules;
-  return !!r && r.respawn > 0 && r.pvp !== false && (r.win === 'elims' || r.win === 'teamelims' || r.win === 'time');
+  return !!r && r.respawn > 0 && r.pvp !== false && (r.win === 'elims' || r.win === 'teamelims' || r.win === 'time' || r.win === 'gungame');
 }
 
 /** The nearest human teammate within 25 m (60 m to catch up with), or null. */
