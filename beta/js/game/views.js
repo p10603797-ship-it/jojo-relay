@@ -289,6 +289,13 @@ export class StormView {
     return Math.hypot(x - this.vis.cx, z - this.vis.cz) - this.vis.r;
   }
 
+  /** The Game is going away: the wall's GPU buffers and shader go with it (the noise texture is shared). */
+  dispose() {
+    if (this.mesh.parent) this.mesh.parent.remove(this.mesh);
+    this.mesh.geometry.dispose();
+    this.mat.dispose();
+  }
+
   update(dt) {
     this.mat.uniforms.uTime.value += dt;
     const s = this.state;
@@ -326,6 +333,13 @@ export class BusView {
   }
 
   stop() { this.path = null; this.mesh.visible = false; }
+
+  /** The Game is going away: every BusView builds its own bus geometry and material. */
+  dispose() {
+    if (this.mesh.parent) this.mesh.parent.remove(this.mesh);
+    this.mesh.geometry.dispose();
+    this.mesh.material.dispose();
+  }
 
   /** Position predicted from the path (server snapshots only correct drift). */
   predicted(out) {

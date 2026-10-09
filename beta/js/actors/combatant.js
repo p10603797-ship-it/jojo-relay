@@ -9,6 +9,8 @@ import { Character } from './character.js';
 import { GROUP } from '../physics.js';
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3();
+const BUILD_EVERY = 0.11; // s between turbo-build tries while a build button (or fire) is held
+const BUILD_GAP = 0.05;   // s: the soonest a held build tries again when the aim moved onto a new slot
 
 export function forwardFromAngles(yaw, pitch, out) {
   const cp = Math.cos(pitch);
@@ -296,7 +298,7 @@ export class Combatant {
     // may dip one frame below zero: held fire then keeps the gun's exact cadence instead of
     // rounding every shot up to a whole frame (11/s would really be 10/s at 60 fps)
     this.cool = Math.max(-dt, this.cool - dt);
-    this.buildCool = Math.max(0, this.buildCool - dt);
+    this.buildCool = Math.max(-dt, this.buildCool - dt); // (may dip below zero, like cool: see act's build)
     const cur = this.current();
     const w = cur ? WEAPONS[cur.k] : null;
     if (w && !w.melee) this.bloom = Math.max(0, this.bloom - dt * (w.bloomMax ? w.bloomMax * 2.2 : 0.1));
@@ -308,10 +310,19 @@ export class Combatant {
       this.ads = false;
       this.flags |= FLAG.BUILD;
       // a tap (fire, or a touch piece button with Build immediately) places at once; holding either
-      // turbo-builds every 0.11 s into whatever slot the view now points at
-      if (ctl.firePressed || ctl.buildFire || ((ctl.fire || ctl.buildHold) && this.buildCool <= 0)) {
+      // turbo-builds every 0.11 s into whatever slot the view now points at. Held, the time past
+      // each 0.11 s carries over to the next try (as held fire does), so 30 or 20 fps still tries
+      // every 0.11 s on average, not every 4th or 3rd frame; and a new slot the aim sweeps onto
+      // (the local player's ghost) is tried at once (0.05 s after the last try at the soonest), so
+      // a fast turn while running doesn't skip it.
+      const tap = ctl.firePressed || ctl.buildFire;
+      const held = ctl.fire || ctl.buildHold;
+      const gh = held && this.game.me === this && this.game.builds ? this.game.builds.ghost : null;
+      const swept = !!gh && gh.supported && gh.k !== this.buildKey && this.buildCool <= BUILD_EVERY - BUILD_GAP;
+      if (tap || (held && (this.buildCool <= 0 || swept))) {
+        this.buildKey = gh ? gh.k : null;
         this.game.tryPlaceBuild(this);
-        this.buildCool = 0.11;
+        this.buildCool = tap || swept ? BUILD_EVERY : this.buildCool + BUILD_EVERY;
       }
       return;
     }

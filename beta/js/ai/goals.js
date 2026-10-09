@@ -3,6 +3,10 @@
 // shared/modes/rules.js and the party games in shared/modes/games/).
 //   battle royale: roam inside the area / storm and loot, as always
 //   koth: hold the hill            infection: zombies chase the nearest survivor, survivors group up
+//   hide & seek: seekers wait out the head start (eyes closed), then search like people: after
+//     hiders they have seen or heard (the bot's own perception, Bot.perceive / hear), otherwise
+//     through the likely hiding places (houses, bushes); hiders pick a hiding place of their own
+//     (a house, a bush) away from the seekers and the other hiders, and stay put, crouched
 //   juggernaut: hunt the Juggernaut  gun game: no looting (the ladder gives the guns)
 //   floor is lava: climb away from the lava (or build up)    pvp off (Playground): wander, harvest, build
 //   team modes: tag along with the nearest human teammate when there's nothing else to do
@@ -41,6 +45,23 @@ export function isHunter(bot) {
   const k = modeKey(g);
   return (k === 'infection' || k === 'hideseek') && typeof g.teamOf === 'function' && g.teamOf(bot.id) === 2;
 }
+
+/**
+ * Hide & Seek: seconds left of the hiders' head start (ms.g.hs), 0 once the seekers are out (or in
+ * any other mode). Before the room's first mode state arrives it counts as on.
+ */
+export function headStart(game) {
+  if (modeKey(game) !== 'hideseek' || game.phase === 'lobby') return 0;
+  const g = gstate(game);
+  if (!g || typeof g.hs !== 'number') return 1;
+  return g.hs > 0 ? g.hs : 0;
+}
+
+/** A seeker during the head start: eyes closed, standing still (the human seeker is blindfolded too). */
+export const seekerWaits = (bot) => isHunter(bot) && headStart(bot.game) > 0;
+
+/** A Hide & Seek hider. */
+export const hider = (bot) => modeKey(bot.game) === 'hideseek' && !isHunter(bot);
 
 /** The play area {x, z, r} (null: the whole island). */
 export const areaOf = (game) => game.area || null;
@@ -97,6 +118,8 @@ export function targetBonus(bot, a) {
 }
 
 const _list = [];
+/** Drop the scratch list's actors (a finished Game must not stay reachable through it). */
+export function forgetActors() { _list.length = 0; }
 /** Living actors on the other side (as this bot sees teams), nearest first is not guaranteed. */
 function enemies(bot) {
   _list.length = 0;
@@ -132,7 +155,18 @@ export function modeGoal(bot, out) {
       out.y = g.world.data.heightAt(out.x, out.z);
       return 'hill';
     }
-    case 'infection': case 'hideseek': {
+    case 'hideseek':
+      if (isHunter(bot)) {
+        // eyes closed while they hide: stay right here (and remember where we counted)
+        if (headStart(g) > 0) {
+          out.x = p.x; out.y = p.y; out.z = p.z;
+          bot.brain.countX = p.x; bot.brain.countZ = p.z;
+          return 'wait';
+        }
+        return seekGoal(bot, out);
+      }
+      return hideGoal(bot, out);
+    case 'infection': {
       if (isHunter(bot)) {
         // the infected know roughly where the nearest survivor is
         const t = nearest(bot, enemies(bot));
@@ -208,6 +242,220 @@ export function modeGoal(bot, out) {
     }
   }
   return '';
+}
+
+// ------------------------------------------------------------------ hide & seek
+const _spots = new WeakMap(); // world data -> Map(area key -> hiding places)
+const _searched = new WeakMap(); // game -> Map(hiding place -> time a seeker of this device looked there)
+const SPOT_GAP = 4;           // m: hiding places closer than this count as one
+const ROOM_GAP = 9;           // m: in one building, on one floor (one look round the room does)
+const SEARCHED_S = 90;        // s before a seeker looks in the same place again
+const FOUND_R = 4;            // m: at a last-seen spot with nobody in sight, they've moved on
+
+/**
+ * Places worth hiding in (and so worth searching) inside the play area: house floors (the indoor
+ * loot spots of buildings with doors) and bushes. [{x, y, z, bush}] (bush: its scale, 0 indoors),
+ * worked out once per world and area.
+ */
+export function hidingSpots(game, nav = null) {
+  const data = game.world.data;
+  const a = game.area || { x: 0, z: 0, r: data.islandRadius || (data.size || 640) * 0.42 };
+  let m = _spots.get(data);
+  if (!m) _spots.set(data, (m = new Map()));
+  // (worked out again once the nav graph is ready: it knows which buildings can be walked into)
+  const key = `${a.x}|${a.z}|${a.r}|${nav && nav.ready ? 1 : 0}`;
+  let list = m.get(key);
+  if (list) return list;
+  const raw = [];
+  for (const s of data.lootSpots || []) {
+    if (s.ground || !inArea(game, s.x, s.z, 3)) continue;
+    const room = nav && nav.ready ? nav.roomAt(s.x, s.z) : null;
+    if (nav && nav.ready && !room) continue; // a building we can walk into
+    raw.push({ x: s.x, y: s.y, z: s.z, bush: 0, room });
+  }
+  if (typeof data.objectsNear === 'function') {
+    data.objectsNear(a.x, a.z, a.r, (o) => {
+      if (o.kind === 'tree' && o.species === 'bush' && inArea(game, o.x, o.z, 3) && data.heightAt(o.x, o.z) > 1.2) raw.push({ x: o.x, y: o.y, z: o.z, bush: o.s || 1 });
+      return false;
+    });
+  }
+  list = [];
+  const same = (q, s) => {
+    const d2 = (q.x - s.x) ** 2 + (q.z - s.z) ** 2;
+    if (q.room && q.room === s.room && Math.abs(q.y - s.y) < 2) return d2 < ROOM_GAP * ROOM_GAP;
+    return d2 + (q.y - s.y) ** 2 < SPOT_GAP * SPOT_GAP;
+  };
+  for (const s of raw) if (!list.some((q) => same(q, s))) list.push(s);
+  for (const s of list) delete s.room;
+  if (m.size > 8) m.clear();
+  m.set(key, list);
+  return list;
+}
+
+/** Where the seekers are as far as hider `bot` knows: all of them during the head start (everyone
+ * saw where they stood), afterwards the ones it has spotted. Calls fn(x, z). */
+function knownSeekers(bot, fn) {
+  const g = bot.game;
+  if (headStart(g) > 0) {
+    const each = (a) => { if (a && a !== bot && a.alive && bot.isEnemy(a)) fn(a.pos.x, a.pos.z); };
+    if (g.me) each(g.me);
+    for (const b of g.bots.values()) each(b);
+    for (const r of g.remotes.values()) each(r);
+    return;
+  }
+  for (const r of bot.brain.recs.values()) if (r.spotted && bot.time - r.seenT < bot.brain.memory) fn(r.x, r.z);
+}
+
+/** A hider's hiding place (kept for the rest of this life unless a seeker finds it). */
+function hideGoal(bot, out) {
+  const b = bot.brain;
+  if (!b.hideSpot) b.hideSpot = pickHide(bot);
+  const h = b.hideSpot;
+  if (!h) return '';
+  out.x = h.x; out.y = h.y; out.z = h.z;
+  return 'hide';
+}
+
+/**
+ * Choose where to hide: a house or a bush in reach (about what a head start's run covers), well
+ * away from the seekers, not where another hider already is, and not one a seeker found us in.
+ */
+function pickHide(bot) {
+  const g = bot.game, b = bot.brain, p = bot.pos;
+  const spots = hidingSpots(g, bot.nav);
+  if (!spots.length) return null;
+  let sx = 0, sz = 0, n = 0;
+  const seen = [];
+  knownSeekers(bot, (x, z) => { sx += x; sz += z; n++; seen.push(x, z); });
+  // where the other hiders went (spread out, don't pile into one house)
+  const taken = [];
+  const other = (a) => { const h = a !== bot && a.brain && a.brain.hideSpot; if (h) taken.push(h); };
+  for (const a of g.bots.values()) other(a);
+  let best = null, bs = Infinity;
+  for (const s of spots) {
+    if (b.badHide && b.badHide.has(s)) continue;
+    const d = Math.hypot(s.x - p.x, s.z - p.z);
+    if (d > 200) continue;
+    let score = d * 0.6 + Math.random() * 45;
+    for (let i = 0; i < seen.length; i += 2) {
+      const ds = Math.hypot(s.x - seen[i], s.z - seen[i + 1]);
+      if (ds < 70) score += (70 - ds) * 3;
+    }
+    for (const h of taken) if (Math.abs(h.x - s.x) < 10 && Math.abs(h.z - s.z) < 10) score += 60;
+    if (score < bs) { bs = score; best = s; }
+  }
+  if (!best) return null;
+  if (!best.bush) return { x: best.x, y: best.y, z: best.z, ref: best };
+  // a bush: crouch on its far side from the seekers
+  let ax = best.x - (n ? sx / n : p.x), az = best.z - (n ? sz / n : p.z);
+  const l = Math.hypot(ax, az) || 1;
+  ax /= l; az /= l;
+  const off = 0.9 + 0.7 * best.bush;
+  const o = { x: best.x + ax * off, z: best.z + az * off };
+  const nav = bot.nav;
+  if (nav && nav.ready) { const q = nav.nearestOpen(o.x, o.z, 3, o); if (!q) return { x: best.x, y: best.y, z: best.z, ref: best }; }
+  return { x: o.x, y: g.world.data.heightAt(o.x, o.z), z: o.z, ref: best };
+}
+
+/** A hider spotted by a seeker close by: that place is no good any more (a new one after running). */
+export function hideFound(bot) {
+  const b = bot.brain;
+  if (!b.hideSpot) return;
+  if (b.hideSpot.ref) (b.badHide || (b.badHide = new Set())).add(b.hideSpot.ref);
+  b.hideSpot = null;
+  b.goalT = 0; // (a new goal as soon as we stop running, not back to the old place)
+}
+
+/**
+ * A seeker after the head start: after someone it has seen (the last place it saw them) or heard,
+ * else on to the next likely hiding place nobody searched lately, looking around at each.
+ */
+function seekGoal(bot, out) {
+  const b = bot.brain, p = bot.pos, now = bot.time;
+  let best = null, bs = Infinity;
+  for (const r of b.recs.values()) {
+    const a = r.actor;
+    if (!a || !a.alive || !bot.isEnemy(a)) continue;
+    let x, z, y, age;
+    if (r.spotted && now - r.seenT < b.memory) { x = r.x; y = r.y; z = r.z; age = now - r.seenT; }
+    else if (now - r.heardT < 6) { x = r.hx; y = r.hy; z = r.hz; age = now - r.heardT + 3; }
+    else continue;
+    const d = Math.hypot(x - p.x, z - p.z);
+    // got there and nobody in sight: they have moved on
+    if (d < FOUND_R && !r.vis && age > 1) { r.spotted = false; r.heardT = -99; continue; }
+    const sc = d + age * 4;
+    if (sc < bs) { bs = sc; best = r; out.x = x; out.y = y; out.z = z; }
+  }
+  if (best) return 'hunt';
+  // a sound with no face (steps round a corner): go and look
+  if (now - b.noiseT < 5 && Math.hypot(b.noiseX - p.x, b.noiseZ - p.z) > FOUND_R) {
+    out.x = b.noiseX; out.y = b.noiseY; out.z = b.noiseZ;
+    return 'hunt';
+  }
+  // searching: look around a moment at each place, then the next
+  const cur = b.seekSpot, pt = b.seekPt;
+  if (cur && pt && now < b.seekUntil) {
+    const d = Math.hypot(pt.x - p.x, pt.z - p.z);
+    if (d < (cur.bush ? 2 : FOUND_R) && Math.abs(pt.y - p.y) < 3) {
+      if (!b.seekLook) b.seekLook = now + 1 + Math.random() * 2;
+      if (now < b.seekLook) { out.x = p.x; out.y = p.y; out.z = p.z; return 'search'; }
+    } else { out.x = pt.x; out.y = pt.y; out.z = pt.z; return 'search'; }
+  }
+  if (cur) searchedOf(bot).set(cur, now);
+  const next = pickSearch(bot);
+  b.seekSpot = next; b.seekLook = 0; b.seekUntil = now + 30;
+  if (!next) { b.seekPt = null; return ''; }
+  // a bush is searched from behind: round to its far side (where someone would crouch)
+  const q = b.seekPt || (b.seekPt = { x: 0, y: 0, z: 0 });
+  q.x = next.x; q.y = next.y; q.z = next.z;
+  if (next.bush) {
+    let ax = next.x - p.x, az = next.z - p.z;
+    const l = Math.hypot(ax, az) || 1;
+    ax /= l; az /= l;
+    const off = 1 + 0.7 * next.bush;
+    q.x = next.x + ax * off; q.z = next.z + az * off;
+    const nav = bot.nav;
+    if (nav && nav.ready && !nav.nearestOpen(q.x, q.z, 3, q)) { q.x = next.x; q.z = next.z; }
+    q.y = bot.game.world.data.heightAt(q.x, q.z);
+  }
+  out.x = q.x; out.y = q.y; out.z = q.z;
+  return 'search';
+}
+
+/**
+ * Places the seekers this device runs have looked in lately (shared, like kids calling out 'not
+ * in the barn!'), and when. Also brain.searched.
+ */
+function searchedOf(bot) {
+  const g = bot.game;
+  let m = _searched.get(g);
+  if (!m) _searched.set(g, (m = new Map()));
+  bot.brain.searched = m;
+  return m;
+}
+
+/**
+ * The next place to look: near, not searched lately, away from where the other seekers look, and
+ * not right where we counted (they ran off from there while our eyes were shut).
+ */
+function pickSearch(bot) {
+  const g = bot.game, b = bot.brain, p = bot.pos, now = bot.time;
+  const cx = Number.isFinite(b.countX) ? b.countX : null, cz = b.countZ;
+  const spots = hidingSpots(g, bot.nav);
+  const done = searchedOf(bot);
+  const others = [];
+  for (const a of g.bots.values()) if (a !== bot && a.brain && a.brain.seekSpot) others.push(a.brain.seekSpot);
+  let best = null, bs = Infinity;
+  for (const s of spots) {
+    const t = done.get(s);
+    if (t !== undefined && Math.abs(now - t) < SEARCHED_S) continue;
+    let score = Math.hypot(s.x - p.x, s.z - p.z) + Math.random() * 40;
+    for (const o of others) if (Math.abs(o.x - s.x) < 25 && Math.abs(o.z - s.z) < 25) score += 50;
+    if (cx !== null) { const dc = Math.hypot(s.x - cx, s.z - cz); if (dc < 60) score += (60 - dc) * 2; }
+    if (score < bs) { bs = score; best = s; }
+  }
+  if (done.size > 600) done.clear();
+  return best;
 }
 
 /** A respawn mode won by eliminations (or the most of them when time runs out). */

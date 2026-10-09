@@ -8,8 +8,9 @@ import {
 import { rulesFromSettings, normalizeRules } from '../../shared/modes/rules.js';
 import { rollInitialLoot } from '../../shared/loot.js';
 import { GAME_PLUGINS } from './plugins.js';
+import { seriesRows } from './modeClient.js';
 import { LocalPlayer } from '../actors/localPlayer.js';
-import { Bot } from '../actors/bot.js';
+import { Bot, forgetGame } from '../actors/bot.js';
 import { RemotePlayer } from '../actors/remote.js';
 import { forwardFromAngles } from '../actors/combatant.js';
 import { Ballistics, raySphere, rayCapsule } from '../combat/ballistics.js';
@@ -747,6 +748,11 @@ export class Game {
   teamOut() {
     const st = this.standing();
     if (st.mine) return; // someone is still standing
+    if (this.inSeries()) {
+      // best of N: no placing; the round card comes next (after the last round, the end card)
+      if (this.lastElim && this.lastElim.how) this.lastElim = { ...this.lastElim, sub: `${this.lastElim.how} · Round ${(this.series && this.series.n) || 1} of ${this.rules.rounds}` };
+      return;
+    }
     this.myPlace = st.teams + 1;
     this.lastElim = {
       ...this.lastElim, place: this.myPlace,
@@ -769,6 +775,8 @@ export class Game {
     this.specYaw = this.me.yaw;
     const how = m.c === 'storm' ? 'The storm got you' : m.c === 'fall' ? 'You fell too far' : m.c === 'lava' ? 'You melted in the lava'
       : killer ? `Eliminated by ${this.nameOf(m.k)}` : 'Eliminated';
+    // best of N: no placing and no PLAY AGAIN (it would end the series), the series score instead
+    const series = this.inSeries() ? this.series || { n: 1, series: {} } : null;
     if (respawning) {
       // endscreen ignores {respawn: true} once mode-catalog's overlay counts down (modeState.rs)
       this.lastElim = { respawn: true, title: 'ELIMINATED', sub: `${how} · Respawning in ${Math.ceil(m.rs)}…`, spectate: false, leave: true };
@@ -777,7 +785,15 @@ export class Game {
       this.myPlace = 0;
       this.lastElim = {
         title: 'ELIMINATED', sub: `${how} · Your team fights on – spectating ${this.nameOf(mate.id)}`,
-        again: this.solo, spectate: true, leave: true,
+        again: this.solo && !series, spectate: true, leave: true,
+      };
+      if (series) Object.assign(this.lastElim, { series: seriesRows(this, series), how });
+    } else if (series) {
+      // out of this round: the round card (who took it, the score, the next round) follows
+      this.myPlace = 0;
+      this.lastElim = {
+        title: 'ELIMINATED', sub: `${how} · Round ${series.n} of ${this.rules.rounds}`,
+        series: seriesRows(this, series), best: this.rules.rounds, spectate: true, leave: true, how,
       };
     } else {
       // free for all: your place among the players; teams: your team's place among the teams
@@ -912,6 +928,8 @@ export class Game {
   on_win(m) {
     this.phase = 'ended';
     const myTeam = this.teamOf(this.myId);
+    // best of N: every end card shows the final series score
+    const fin = m.round ? { series: seriesRows(this, m.round), best: this.rules.rounds } : { series: undefined };
     const meWon = !!m.id && (m.id === this.myId || (!!m.team && m.team === myTeam));
     this.input.exitLock();
     document.body.classList.remove('dead');
@@ -923,20 +941,21 @@ export class Game {
       this.hud.elim({
         place, title: 'MATCH OVER',
         sub: `${place ? `${this.teams.has(myTeam) ? 'Your team' : 'You'} placed #${place} – ` : ''}${left} player${left === 1 ? '' : 's'} left · ${this.kills} elimination${this.kills === 1 ? '' : 's'}`,
-        again: this.solo, leave: true,
+        again: this.solo, leave: true, ...fin,
       });
     } else if (!meWon && this.me && !this.me.alive && this.lastElim && !this.lastElim.respawn) {
       // keep showing how we went out; just add who won
-      this.hud.elim({ ...this.lastElim, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
+      // (PLAY AGAIN again: a best-of-N series held it back until now)
+      this.hud.elim({ ...this.lastElim, ...fin, again: this.solo, spectate: false, sub: `${this.lastElim.sub} — ${m.name ? `${m.name} wins!` : 'match over'}` });
     } else if (meWon) {
       this.sfx.ui('victory');
       if (this.me.alive) this.me.dancing = true;
       const team = m.name && m.name !== this.nameOf(this.myId) ? `${m.name} wins! ` : '';
-      this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${team}${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true });
+      this.hud.elim({ win: true, place: 1, title: 'PHICTORY ROYALE!', sub: `${team}${this.kills} elimination${this.kills === 1 ? '' : 's'} — back to the island in a few seconds`, again: this.solo, leave: true, ...fin });
     } else if (this.me && this.me.alive) {
-      this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : 'Nobody survived', again: this.solo, leave: true });
+      this.hud.elim({ title: m.early ? 'MATCH OVER' : 'GG!', sub: m.name ? `${m.name} wins!` : 'Nobody survived', again: this.solo, leave: true, ...fin });
     } else {
-      this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: 'Returning to the island…', again: this.solo, leave: true });
+      this.hud.elim({ title: m.name ? `${m.name.toUpperCase()} WINS` : 'MATCH OVER', sub: 'Returning to the island…', again: this.solo, leave: true, ...fin });
     }
     this.plug('onPhase', this.phase, m);
   }
@@ -1010,9 +1029,15 @@ export class Game {
    */
   on_round(m) {
     if (!m.start) {
-      const who = m.name ? `${esc(m.name)} wins round ${m.n}!` : `Round ${m.n} is a draw`;
-      const won = m.team && m.team === this.teamOf(this.myId);
-      this.hud.big(`${won ? 'ROUND WON!' : `ROUND ${m.n}`}<small>${who}</small>`);
+      // the round card replaces whatever card is up (a death card, spectating): the round's
+      // result, the series score and the countdown to the next round, for the living and the dead
+      const won = !!m.team && m.team === this.teamOf(this.myId);
+      const series = { n: m.n, series: m.series || {} };
+      this.hud.elim({
+        round: true, win: won, title: won ? `ROUND ${m.n} WON!` : m.team ? `ROUND ${m.n} LOST` : `ROUND ${m.n}: DRAW`,
+        sub: m.name ? `${m.name} wins round ${m.n}!` : `Nobody won round ${m.n}`,
+        series: seriesRows(this, series), best: this.rules.rounds, next: Number.isFinite(m.ends) ? m.ends : 4, leave: true,
+      });
       if (won) this.sfx.ui('victory');
       return;
     }
@@ -1984,6 +2009,11 @@ export class Game {
     this.send({ t: 'start', bots, mats, mode: mode || this.settingsState.mode });
   }
 
+  /** A best-of-N series is being played (between its rounds too): no placings, no PLAY AGAIN. */
+  inSeries() {
+    return (this.rules.rounds | 0) > 1 && (this.phase === 'match' || this.phase === 'bus');
+  }
+
   playAgain() {
     if (this.phase === 'lobby') this.startMatch(this.settingsState.bots, this.settingsState.mats);
     else { this.autoRestart = true; this.send({ t: 'end' }); }
@@ -1999,10 +2029,14 @@ export class Game {
     for (const r of this.remotes.values()) r.dispose();
     this.bots.clear();
     this.remotes.clear();
+    forgetGame(this);
     this.loot.clear();
-    this.scene.remove(this.storm.mesh);
-    this.scene.remove(this.bus.mesh);
     this.resetWorld();
+    // GPU buffers and shaders this Game made for itself (a party switch makes a new Game; the
+    // shared floor-loot meshes stay for the next one)
+    this.storm.dispose();
+    this.bus.dispose();
+    this.ballistics.dispose();
     this.builds.showGhost(null);
     this.hud.elim(null);
     this.hud.lobby(null);

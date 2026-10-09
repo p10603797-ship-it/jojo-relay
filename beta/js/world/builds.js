@@ -359,6 +359,20 @@ export class Builds {
   clear() {
     for (const k of [...this.pieces.keys()]) this.remove(k, false);
     this.grid.clear();
+    // Edited shapes (one mesh and geometry per type, material and edit mask, made on first use)
+    // would pile up over a long session: drop them with the pieces; meshFor makes them again.
+    for (const key of Object.keys(this.meshes)) {
+      if (!key.includes(':')) continue;
+      const mesh = this.meshes[key];
+      this.scene.remove(mesh);
+      mesh.dispose();
+      delete this.meshes[key];
+    }
+    for (const gk of Object.keys(this.geos)) {
+      if (!gk.includes(':')) continue;
+      this.geos[gk].dispose();
+      delete this.geos[gk];
+    }
   }
 
   // ------------------------------------------------------------------ placement

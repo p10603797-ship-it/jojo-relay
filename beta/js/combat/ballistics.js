@@ -181,4 +181,13 @@ export class Ballistics {
     for (const b of this.list) if (b.mesh) this.scene.remove(b.mesh);
     this.list.length = 0;
   }
+
+  /** The Game is going away: its rocket geometry and material (made per Game) go with it. */
+  dispose() {
+    this.clear();
+    if (this.rocketGeo) this.rocketGeo.dispose();
+    if (this.rocketMat) this.rocketMat.dispose();
+    this.rocketGeo = this.rocketMat = null;
+    this.scene = null;
+  }
 }

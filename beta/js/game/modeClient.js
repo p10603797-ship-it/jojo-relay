@@ -38,6 +38,44 @@ export function objective(r) {
   }
 }
 
+/** A team's {name, color}: the room's team list, else TEAM_LOOK by id (free for all: 1000 + player id). */
+export function teamLookOf(game, id) {
+  const t = game.teams && game.teams.get ? game.teams.get(id) : null;
+  if (t && t.color) return t;
+  const n = Number(id) || 0;
+  const i = (n > 999 ? n : Math.max(0, n - 1)) % TEAM_LOOK.length;
+  return { id, name: TEAM_LOOK[i][0], color: TEAM_LOOK[i][1] };
+}
+
+/**
+ * Best of N: the series so far as rows [{id, name, color, wins, mine}] for the round card and the
+ * mode HUD. Listed teams keep the room's order (Blue, Red); free for all (each player their own
+ * team, 1000 + id) is sorted by round wins, with 'You' for the local player.
+ */
+export function seriesRows(game, series) {
+  const wins = (series && series.series) || {};
+  const myTeam = game.teamOf ? game.teamOf(game.myId) : game.myId;
+  const ids = [];
+  const listed = !!(game.teams && game.teams.size);
+  if (listed) for (const id of game.teams.keys()) ids.push(id);
+  else if (game.roster) {
+    for (const p of game.roster.values()) {
+      if (p.spec) continue;
+      const t = game.teamOf ? game.teamOf(p.id) : p.id;
+      if (!ids.includes(t)) ids.push(t);
+    }
+  }
+  for (const k of Object.keys(wins)) if (!ids.includes(+k)) ids.push(+k);
+  const rows = ids.map((id) => {
+    const solo = id >= 1000;
+    const look = teamLookOf(game, id);
+    const name = id === myTeam && solo ? 'You' : solo && game.nameOf ? game.nameOf(id - 1000) : look.name;
+    return { id, name, color: look.color, wins: wins[id] | 0, mine: id === myTeam };
+  });
+  if (!listed) rows.sort((a, b) => b.wins - a.wins || (b.mine ? 1 : 0) - (a.mine ? 1 : 0));
+  return rows;
+}
+
 function isTeamGame(win) {
   if (own(GAMES, win) && GAMES[win].teamGame !== undefined) return !!GAMES[win].teamGame;
   return win === 'teamelims' || win === 'koth';
@@ -63,6 +101,7 @@ export class ModeClient {
     this.koth = null; // game.mapExtras.koth while there is a hill
     this.warmed = false;
     this.blind = false; // Hide & Seek: the local seeker's head start (input blanked, eyes closed)
+    this.series = null; // best of N: {n, series: {team: round wins}, between} (also game.series)
   }
 
   get rules() { return this.game.rules || {}; }
@@ -74,7 +113,12 @@ export class ModeClient {
       case 'welcome':
         if (m.ms) this.setMs(m.ms);
         if (m.roles) this.loadRoles(m.roles);
+        this.setSeries(m.round);
         break;
+      case 'resumed': this.setSeries(m.round); break;
+      case 'start': this.setSeries(m.round); break;
+      case 'round': this.setSeries({ n: m.n, series: m.series }, !m.start); break;
+      case 'win': if (m.round) this.setSeries(m.round, true); break;
       case 'role': this.onRole(m); break;
       case 'respawn':
         if (m.id === this.game.myId) this.deadAt = 0;
@@ -181,6 +225,7 @@ export class ModeClient {
     const was = this.active;
     this.active = false;
     this.ms = null;
+    this.setSeries(null);
     this.deadAt = 0;
     clearTimeout(this.busTimer);
     if (typeof document !== 'undefined') this.applyClasses();
@@ -242,6 +287,14 @@ export class ModeClient {
     if (!this.ms) this.ms = {};
     for (const k in m) if (k !== 't') this.ms[k] = m[k];
     this.msAt = performance.now();
+    this.hudT = 0;
+  }
+
+  /** The best-of-N series ({n, series} from start / round / welcome / win; null: none). between:
+   * round n is over and the next one has not started. Game reads it as game.series. */
+  setSeries(r, between = false) {
+    this.series = r && Number.isFinite(r.n) ? { n: r.n, series: { ...(r.series || {}) }, between } : null;
+    this.game.series = this.series;
     this.hudT = 0;
   }
 
@@ -309,13 +362,7 @@ export class ModeClient {
   }
 
   // ------------------------------------------------------------------ teams
-  teamLook(id) {
-    const t = this.game.teams && this.game.teams.get ? this.game.teams.get(id) : null;
-    if (t && t.color) return t;
-    const n = Number(id) || 0;
-    const i = (n > 999 ? n : Math.max(0, n - 1)) % TEAM_LOOK.length;
-    return { id, name: TEAM_LOOK[i][0], color: TEAM_LOOK[i][1] };
-  }
+  teamLook(id) { return teamLookOf(this.game, id); }
 
   teamColor(id) { return this.teamLook(id).color; }
 
@@ -390,7 +437,8 @@ export class ModeClient {
     const myId = g.myId;
     const win = r.win;
     const inPlay = g.phase === 'bus' || g.phase === 'match' || g.phase === 'ended';
-    v.show(inPlay && (win !== 'last' || r.timeLimit > 0));
+    const series = r.rounds > 1 && this.series && g.phase !== 'lobby' ? this.series : null;
+    v.show(inPlay && (win !== 'last' || r.timeLimit > 0 || !!series));
     const tl = ms ? this.left(ms.tl) : null;
     v.clockText(tl !== null && r.timeLimit > 0 ? clock(tl) : '');
 
@@ -461,6 +509,7 @@ export class ModeClient {
       line = `🌋 LAVA <b>${gh.lava.toFixed(1)} m</b>${above !== null ? `<br><small>${above < 0.2 ? 'YOU\'RE IN THE LAVA! CLIMB!' : `you are ${above.toFixed(1)} m above it`}</small>` : ''}`;
       cls = above !== null && above < 2.5 ? 'danger' : '';
     }
+    if (!line && series) line = this.seriesLine(series);
     if (win !== 'hideseek' && this.blind) { this.blind = false; v.blindfold(-1); }
     v.ladder(GUN_LADDER, lv);
     v.line(line, cls);
@@ -497,6 +546,20 @@ export class ModeClient {
     }
     const sub = g.roleOf && g.roleOf(myId) === 'zombie' ? 'You come back as a zombie!' : r.spawn === 'sky' ? 'You\'ll drop in from the sky' : 'Get ready!';
     v.respawn(left, total, sub);
+  }
+
+  /** Best of N in the mode HUD: '🏆 ROUND 2/3 · BLUE 1 · RED 0' (free for all: the leaders and you). */
+  seriesLine(series) {
+    const rows = seriesRows(this.game, series);
+    let shown = rows;
+    if (rows.length > 2) {
+      shown = rows.slice(0, 2);
+      const me = rows.find((x) => x.mine);
+      if (me && !shown.includes(me)) shown.push(me);
+    }
+    const need = Math.ceil((this.rules.rounds || 1) / 2);
+    const score = shown.map((x) => `<span style="color:${x.color}">${esc(x.name.toUpperCase())}</span> <b>${x.wins}</b>`).join(' · ');
+    return `🏆 ROUND <b>${series.n}</b>/${this.rules.rounds} · ${score}<br><small>First to ${need} round win${need === 1 ? '' : 's'}</small>`;
   }
 
   /** Team ids to show: the room's teams, else whoever has scored, plus mine. */

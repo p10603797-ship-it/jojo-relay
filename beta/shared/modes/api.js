@@ -53,6 +53,8 @@
  * @typedef {object} Ctx
  * @property {object} rules               normalized rules (shared/modes/rules.js)
  * @property {() => number} now           match clock in ms
+ * @property {() => number} [endTime]     when the time limit runs out on the now() clock (ms, after a
+ *   bus ride), 0 = no limit; known from the first tick (the Room sets it after setup)
  * @property {() => number} rng           deterministic random in [0, 1), seeded per match
  * @property {() => Player[]} players     everyone in the match, bots included
  * @property {() => Player[]} alive

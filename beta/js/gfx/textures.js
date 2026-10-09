@@ -195,7 +195,7 @@ class LayerArray {
 
   paint(layer, rgba, nrm) {
     const S = this.size * this.size * 4, NS = this.nsize * this.nsize * 4;
-    if (rgba.length !== S || nrm.length !== NS) return;
+    if (rgba.length !== S || nrm.length !== NS || !this.albedo.image.data) return;
     this.albedo.image.data.set(rgba, layer * S);
     this.normal.image.data.set(nrm, layer * NS);
     this.albedo.addLayerUpdate(layer);
@@ -214,6 +214,23 @@ class LayerArray {
   }
 
   get complete() { return this.done.every((d) => d === 1); }
+
+  /**
+   * Every layer is painted and on the GPU: drop the JS copies of the pixels (about 20 MB per
+   * array at Medium). Only when the renderer reports both textures uploaded at their current
+   * version; nothing paints or re-uploads them after that.
+   */
+  release(renderer) {
+    if (this.released || !this.complete || this.dirty || !renderer || !renderer.properties) return false;
+    for (const t of [this.albedo, this.normal]) {
+      const p = renderer.properties.get(t);
+      if (!p || p.__version !== t.version) return false;
+    }
+    this.albedo.image.data = null;
+    this.normal.image.data = null;
+    this.released = true;
+    return true;
+  }
 }
 
 /**
@@ -319,6 +336,11 @@ export class TextureLayers {
       } catch (e) { /* the next render uploads them */ }
     }
     if (a || b) for (const fn of this.listeners) fn();
+    // all painted and uploaded: the pixel copies in JS are not needed any more
+    if (!this.queue.length && !this.busy && this.renderer) {
+      this.surfaces.release(this.renderer);
+      this.looks.release(this.renderer);
+    }
   }
 
   dispose() {
