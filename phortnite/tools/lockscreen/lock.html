@@ -1,0 +1,26 @@
+  <!-- ===================================================== LOCK SCREEN -->
+  <!-- tools/lock.mjs puts this in place of the game script; lock.js unlocks the encrypted game -->
+  <div id="lockscreen" role="dialog" aria-modal="true" aria-labelledby="ls-title">
+    <div class="ls-wrap">
+      <div class="logo ls-logo"><div class="logo-main">PHORTNITE</div></div>
+      <form id="ls-card" class="ls-card" autocomplete="off" novalidate onsubmit="return false">
+        <h1 id="ls-title" class="ls-title"><span aria-hidden="true">🔒</span> This game is locked</h1>
+        <div class="ls-field">
+          <input id="ls-pass" class="ls-input" type="text" aria-label="Password" placeholder="••••••••"
+            autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"
+            inputmode="text" enterkeyhint="go" maxlength="12">
+          <!-- right under the box: in iPad landscape the keyboard covers everything below the button -->
+          <div id="ls-msg" class="ls-msg" role="alert" aria-live="assertive"></div>
+          <button id="ls-go" class="btn yellow ls-go" type="submit">UNLOCK</button>
+          <label class="ls-remember"><input id="ls-remember" type="checkbox" checked> Remember on this device</label>
+        </div>
+        <button id="ls-retry" class="btn yellow ls-retry" type="button">TRY AGAIN</button>
+        <div class="ls-ask">Ask Philip for a password.</div>
+      </form>
+      <div class="ls-wait" aria-live="polite">
+        <div class="load-bar"><div class="ls-busy"></div></div>
+        <div class="ls-wait-text">Unlocking…</div>
+      </div>
+    </div>
+    <noscript><p class="ls-msg">Turn on JavaScript to play Phortnite.</p></noscript>
+  </div>

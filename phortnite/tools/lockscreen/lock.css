@@ -1,0 +1,66 @@
+    /* the lock screen (tools/lockscreen): over everything until lock.js has unlocked the game.
+       States (data-state on #lockscreen, set by lock.js): ask, wait (a remembered password), error
+       (TRY AGAIN), fatal (this browser can't unlock). html.ls-auto = "wait" before lock.js runs. */
+    #lockscreen {
+      position: fixed; inset: 0; z-index: 200; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      display: flex; flex-direction: column; align-items: center;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      background: radial-gradient(ellipse at 50% 40%, #4b2bb8 0%, #1a0f3d 60%, #08051a 100%);
+      color: #fff; font-family: var(--font-hud); touch-action: pan-y; transition: opacity 0.35s;
+    }
+    #lockscreen.ls-gone { opacity: 0; pointer-events: none; }
+    /* the card sits high, so the iPad keyboard never covers the box and nothing has to move */
+    .ls-wrap { width: min(440px, 100%); margin: clamp(8px, 7vh, 80px) 0 auto; display: flex; flex-direction: column; align-items: center; gap: clamp(16px, 3.4vh, 30px); }
+    .ls-logo .logo-main { font-size: clamp(46px, 7.4vw, 92px); }
+    .ls-card {
+      width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 14px; margin: 0;
+      background: linear-gradient(180deg, #2a2070, #160f44); border-radius: 14px; padding: 22px 22px 18px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+    .ls-title { margin: 0; text-align: center; font-family: var(--font-title); font-weight: normal; font-size: 28px; letter-spacing: 1px; line-height: 1.1; }
+    .ls-field { display: flex; flex-direction: column; gap: 14px; }
+    .ls-input {
+      width: 100%; min-height: 64px; padding: 8px 12px; border-radius: 8px; border: 3px solid rgba(255, 255, 255, 0.28);
+      background: rgba(0, 0, 0, 0.4); color: #fff; outline: none; text-align: center; text-transform: uppercase;
+      font-family: var(--font-hud); font-size: 34px; letter-spacing: 0.22em; text-indent: 0.22em;
+      -webkit-user-select: text; user-select: text; touch-action: manipulation; -webkit-appearance: none; appearance: none;
+    }
+    .ls-input::placeholder { color: rgba(255, 255, 255, 0.28); letter-spacing: 0.3em; }
+    .ls-input:focus { border-color: var(--yellow); box-shadow: 0 0 0 4px rgba(255, 210, 63, 0.18); }
+    .ls-go, .ls-retry { width: 100%; min-height: 60px; font-size: 28px; text-align: center; touch-action: manipulation; }
+    .ls-go:disabled { filter: none; opacity: 0.8; }
+    .ls-remember { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 44px; font-family: system-ui, -apple-system, sans-serif; font-size: 16px; cursor: pointer; }
+    .ls-remember input { width: 26px; height: 26px; margin: 0; accent-color: var(--yellow); flex: none; }
+    .ls-msg { margin: 0; min-height: 1.35em; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 17px; font-weight: 600; line-height: 1.35; color: #ff9b8f; }
+    .ls-msg:empty { display: none; }
+    .ls-ask { text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; opacity: 0.7; }
+    .ls-wait { display: none; flex-direction: column; align-items: center; gap: 18px; }
+    .ls-wait .load-bar { width: min(320px, 70vw); position: relative; }
+    .ls-busy { position: absolute; top: 0; bottom: 0; width: 35%; border-radius: 8px; background: linear-gradient(90deg, #4fb3ff, #ffd23f); animation: ls-busy 1.1s ease-in-out infinite alternate; }
+    .ls-wait-text { font-size: 18px; opacity: 0.9; }
+    @keyframes ls-busy { from { left: 0; } to { left: 65%; } }
+    .ls-retry { display: none; }
+    #lockscreen[data-state="wait"] .ls-card, html.ls-auto #lockscreen:not([data-state]) .ls-card { display: none; }
+    #lockscreen[data-state="wait"] .ls-wait, html.ls-auto #lockscreen:not([data-state]) .ls-wait { display: flex; }
+    #lockscreen[data-state="error"] .ls-field > :not(.ls-msg), #lockscreen[data-state="fatal"] .ls-field > :not(.ls-msg) { display: none; }
+    #lockscreen[data-state="error"] .ls-retry { display: block; }
+    #lockscreen[data-state="error"] .ls-ask, #lockscreen[data-state="fatal"] .ls-ask { display: none; }
+    .ls-card.ls-shake { animation: ls-shake 0.42s; }
+    @keyframes ls-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-12px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-7px); } 80% { transform: translateX(4px); } }
+    @media (prefers-reduced-motion: reduce) { .ls-card.ls-shake { animation: none; } .ls-busy { animation-duration: 3s; } }
+    /* tall iPads (portrait): a little lower, still well above the keyboard */
+    @media (orientation: portrait) and (min-height: 900px) { .ls-wrap { margin-top: 14vh; } }
+    /* iPads on their side: the keyboard takes the lower half, so the box and its message sit higher */
+    @media (orientation: landscape) and (max-height: 900px) { .ls-wrap { margin-top: clamp(8px, 3vh, 40px); gap: 14px; } }
+    /* phones on their side: the logo beside the card */
+    @media (max-height: 520px) and (orientation: landscape) {
+      .ls-wrap { width: min(780px, 100%); flex-direction: row; justify-content: center; gap: 28px; margin: auto 0; }
+      .ls-logo { flex: 1; } .ls-logo .logo-main { font-size: clamp(40px, 7vw, 64px); }
+      .ls-card { width: 360px; flex: none; gap: 9px; padding: 14px 16px 12px; }
+      .ls-title { font-size: 22px; }
+      .ls-field { gap: 9px; }
+      .ls-input { min-height: 54px; font-size: 28px; }
+      .ls-go, .ls-retry { min-height: 56px; font-size: 24px; }
+      .ls-remember { min-height: 36px; font-size: 15px; }
+    }
+    @media (max-width: 380px) { .ls-input { font-size: 28px; letter-spacing: 0.16em; text-indent: 0.16em; } .ls-card { padding: 18px 14px 14px; } }

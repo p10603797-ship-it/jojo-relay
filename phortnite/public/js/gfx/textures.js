@@ -251,7 +251,10 @@ export class TextureLayers {
     this.lastFlush = 0;
     this.listeners = [];
     try {
-      const url = new URL('./texgen.js', import.meta.url).href;
+      // The worker imports texgen.js by URL. On the locked website (tools/lock.mjs) every module is
+      // a decrypted blob: URL, so nothing sits "next to" this file: the loader (lock.js) hands out
+      // texgen.js's own blob URL instead. Everywhere else it is the file beside this one.
+      const url = globalThis.__phortniteModuleURL?.('js/gfx/texgen.js') || new URL('./texgen.js', import.meta.url).href;
       const blob = new Blob([WORKER_SRC(url)], { type: 'text/javascript' });
       this.worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
       this.worker.onmessage = (e) => this.received(e.data);

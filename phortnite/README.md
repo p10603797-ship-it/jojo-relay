@@ -12,9 +12,10 @@ Phortnite is a plain static website, so it runs straight from **GitHub Pages**:
 
 **https://p10603797-ship-it.github.io/jojo-relay/**
 
-The website is published from the **`gh-pages`** branch, which holds a copy of the `public/`
-folder at its root. To update the website, copy `phortnite/public/` onto the `gh-pages` branch
-and push; GitHub rebuilds the site within a minute or two.
+The website is **locked**: it asks for a password before the game opens (ask Philip for one).
+It is published from the **`gh-pages`** branch, which holds a *locked build* of the `public/`
+folder at its root (see [Publishing the locked website](#publishing-the-locked-website)); GitHub
+rebuilds the site within a minute or two of a push.
 
 The game opens in the **lobby**: your character on a glowing podium, with your party around you.
 
@@ -45,6 +46,84 @@ says "here, in the lobby" or "here, in a match" under a random id that changes o
 
 Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
 screen for a true full-screen game.
+
+## Publishing the locked website
+
+On the website the game's code is **encrypted**: anyone can download the files, but they are
+useless without one of Philip's passwords. The page shows a lock screen; the right password
+unlocks the code on the device and the game starts (tick *Remember on this device* to type it
+only once). The server on your own computer (`npm start`) is not locked.
+
+* A password is 8 letters and numbers, without 0/O and 1/I so it is easy to read. Small letters,
+  spaces and dashes don't matter when typing it.
+* `lock/slots.json` holds one *key slot* per password: the game's key, encrypted with that
+  password (PBKDF2-SHA256, 600,000 rounds). It contains no passwords, so it is committed.
+  **Passwords are never committed or saved anywhere**: they are printed once, when they are
+  made. Write them down with their numbers (so you know which one to turn off later).
+
+```bash
+cd phortnite
+npm install                                  # once (the build needs es-module-lexer)
+
+node tools/lock.mjs new --count 10           # once: 10 new passwords, printed only this one time
+
+# every update: build the locked site (it asks for any one working password), then publish it
+node tools/lock.mjs build --out ~/phortnite-locked
+```
+
+The password is typed when the tool asks for it (it isn't shown), or comes from the
+`PHORTNITE_PASSWORD` environment variable in scripts; it is never a command-line argument, which
+would end up in the shell history. Every build encrypts afresh, but the passwords stay the same
+as long as `lock/slots.json` does. (The build refuses key slots with fewer than 600,000 rounds:
+those are made only by the tests, with `--iter … --allow-weak`.)
+
+**Publishing.** The `gh-pages` branch must hold *only* locked builds: one plain-text copy of the
+game anywhere on it (an old `js/` or `shared/` folder, or the old `beta/` copy) and the game opens
+without a password. So replace the whole branch, keeping only what the build wrote:
+
+```bash
+git worktree add /tmp/pages gh-pages          # from the repository root
+cd /tmp/pages
+git rm -r -q .                                # everything: old js/, shared/ and beta/ too
+cp -R ~/phortnite-locked/. .                  # the locked build (with its .nojekyll)
+# beta/ stays deleted. To keep a beta, lock it too, from the same lock/slots.json:
+#   node tools/lock.mjs build --out ~/phortnite-locked-beta   (in the beta's source checkout)
+#   mkdir beta && cp -R ~/phortnite-locked-beta/. beta/
+git add -A && git commit -m "Publish the locked build" && git push origin gh-pages
+cd - && git worktree remove /tmp/pages
+```
+
+About 10 minutes later (GitHub Pages caches), check that `…/jojo-relay/js/main.js`,
+`…/jojo-relay/shared/room.js` and `…/jojo-relay/beta/js/main.js` answer *404*.
+
+**The repository must not give the game away.** The lock only keeps the game private while no
+plain-text copy of it is public. This repository is public: `phortnite/public/` on every branch,
+and every earlier commit of `gh-pages`, can be read on GitHub, and file-proxy sites even run it
+straight from there, no password needed. Either make the repository private (GitHub Pages from a
+private repository needs a paid GitHub plan), or move the source to a new private repository and
+publish only locked builds from a separate public repository whose history has only ever held
+locked builds. Until then the lock keeps out people who only open the website.
+
+```bash
+node tools/lock.mjs list                     # the slot numbers in use
+node tools/lock.mjs add --count 2            # 2 more passwords (needs a working one); new numbers
+node tools/lock.mjs remove --slot 3          # turn password 3 off…
+node tools/lock.mjs build --out ~/phortnite-locked   # …from the next published build on
+```
+
+A turned-off password stops working on devices that remembered it too (they ask again: *That
+password was turned off — ask Philip for a new one*). It is a soft off-switch: the game's key
+stays the same, and the old key slot is still in the git history, so someone who has that
+password and knows how could still decrypt later builds. If a password reached someone who must
+be shut out completely, run `node tools/lock.mjs new --count 10 --force` instead (a new key and
+new passwords for everyone), hand out the new passwords and publish. The same command starts over
+if every password is lost. A number is never given to a second password, even after the
+highest one is removed.
+
+*Remember on this device* keeps the password in the browser (one per site folder, so the main
+site and `beta/` remember separately). On an iPad it lasts while the game keeps being opened:
+Safari forgets a site's saved data after about a week of not visiting it, and a Home Screen icon
+has its own storage, so the password is asked for again then. That is not a turned-off password.
 
 ## Run your own server (optional)
 
@@ -177,6 +256,8 @@ public/js/net/p2p.js      website parties over WebRTC (PeerJS)
 public/shared/plugins/party.js  party rules in the room: ready, kick, promote, countdown, rejoin
 public/js/lobby/          the lobby stage (3D) and the bridge between a match and the lobby
 public/js/ui/lobby.js     the lobby screen; ui/invite.js invites and joining; ui/endscreen.js
+tools/lock.mjs            builds the locked (encrypted) website; tools/lockscreen/ is its lock
+                          screen and loader (lock.js); lock/slots.json the password key slots
 ```
 
 ### Checking a website (P2P) party on real iPads
