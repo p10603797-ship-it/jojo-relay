@@ -24,15 +24,105 @@
        The bundled Node server (npm start) rewrites these to its own local copies. -->
   <!-- import maps polyfill for older Safari / iPadOS (only kicks in when needed) -->
   <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@2.8.4/dist/es-module-shims.js"></script>
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
-        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
-        "rapier": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs"
-      }
+  <!-- the lock screen (tools/lock.mjs): the game is encrypted; lock.js opens it with a password -->
+  <script>(function (c) { var b = false, m; try { b = parseInt(localStorage.getItem('phortnite.ban'), 10) >= 3; } catch (e) {} try { m = /(?:^|;\s*)phortnite_ban=(\d+)/.exec(document.cookie); b = b || (!!m && +m[1] >= 3); } catch (e) {} if (b) c.add('ls-banned'); else try { if (localStorage.getItem('phortnite.pass:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-auto'); } catch (e) {} })(document.documentElement.classList);</script>
+  <style>
+    /* the lock screen (tools/lockscreen): over everything until lock.js has unlocked the game.
+       States (data-state on #lockscreen, set by lock.js): ask, wait (a remembered password), error
+       (TRY AGAIN), fatal (this browser can't unlock), banned. Before lock.js runs, the page's <head>
+       sets html.ls-auto ("wait") or html.ls-banned ("banned"). */
+    #lockscreen {
+      position: fixed; inset: 0; z-index: 200; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      display: flex; flex-direction: column; align-items: center;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      background: radial-gradient(ellipse at 50% 40%, #4b2bb8 0%, #1a0f3d 60%, #08051a 100%);
+      color: #fff; font-family: var(--font-hud); touch-action: pan-y; transition: opacity 0.35s;
     }
-  </script>
+    #lockscreen.ls-gone { opacity: 0; pointer-events: none; }
+    /* the card sits high, so the iPad keyboard never covers the box and nothing has to move */
+    .ls-wrap { width: min(440px, 100%); margin: clamp(8px, 7vh, 80px) 0 auto; display: flex; flex-direction: column; align-items: center; gap: clamp(16px, 3.4vh, 30px); }
+    .ls-logo .logo-main { font-size: clamp(46px, 7.4vw, 92px); }
+    .ls-card {
+      width: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 14px; margin: 0;
+      background: linear-gradient(180deg, #2a2070, #160f44); border-radius: 14px; padding: 22px 22px 18px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+    .ls-title { margin: 0; text-align: center; font-family: var(--font-title); font-weight: normal; font-size: 28px; letter-spacing: 1px; line-height: 1.1; }
+    .ls-field { display: flex; flex-direction: column; gap: 14px; }
+    .ls-input {
+      width: 100%; min-height: 64px; padding: 8px 12px; border-radius: 8px; border: 3px solid rgba(255, 255, 255, 0.28);
+      background: rgba(0, 0, 0, 0.4); color: #fff; outline: none; text-align: center; text-transform: uppercase;
+      font-family: var(--font-hud); font-size: 34px; letter-spacing: 0.22em; text-indent: 0.22em;
+      -webkit-user-select: text; user-select: text; touch-action: manipulation; -webkit-appearance: none; appearance: none;
+    }
+    .ls-input::placeholder { color: rgba(255, 255, 255, 0.28); letter-spacing: 0.3em; }
+    .ls-input:focus { border-color: var(--yellow); box-shadow: 0 0 0 4px rgba(255, 210, 63, 0.18); }
+    .ls-go, .ls-retry { width: 100%; min-height: 60px; font-size: 28px; text-align: center; touch-action: manipulation; }
+    .ls-go:disabled { filter: none; opacity: 0.8; }
+    .ls-remember { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 44px; font-family: system-ui, -apple-system, sans-serif; font-size: 16px; cursor: pointer; }
+    .ls-remember input { width: 26px; height: 26px; margin: 0; accent-color: var(--yellow); flex: none; }
+    .ls-msg { margin: 0; min-height: 1.35em; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 17px; font-weight: 600; line-height: 1.35; color: #ff9b8f; }
+    .ls-msg:empty { display: none; }
+    .ls-ask { text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; opacity: 0.7; }
+    .ls-wait { display: none; flex-direction: column; align-items: center; gap: 18px; }
+    .ls-wait .load-bar { width: min(320px, 70vw); position: relative; }
+    .ls-busy { position: absolute; top: 0; bottom: 0; width: 35%; border-radius: 8px; background: linear-gradient(90deg, #4fb3ff, #ffd23f); animation: ls-busy 1.1s ease-in-out infinite alternate; }
+    .ls-wait-text { font-size: 18px; opacity: 0.9; }
+    @keyframes ls-busy { from { left: 0; } to { left: 65%; } }
+    .ls-retry { display: none; }
+    #lockscreen[data-state="wait"] .ls-card, html.ls-auto #lockscreen:not([data-state]) .ls-card { display: none; }
+    #lockscreen[data-state="wait"] .ls-wait, html.ls-auto #lockscreen:not([data-state]) .ls-wait { display: flex; }
+    #lockscreen[data-state="error"] .ls-field > :not(.ls-msg), #lockscreen[data-state="fatal"] .ls-field > :not(.ls-msg) { display: none; }
+    #lockscreen[data-state="error"] .ls-retry { display: block; }
+    #lockscreen[data-state="error"] .ls-ask, #lockscreen[data-state="fatal"] .ls-ask { display: none; }
+    /* banned: the ban message instead of the password box; "Philip: unban" (only when the build has an
+       unban code: data-unban) opens the unban box (.ls-unbanning) */
+    .ls-t-ban, .ls-ban, .ls-unban, .ls-unban-open { display: none; }
+    #lockscreen[data-state="banned"] .ls-t-lock, html.ls-banned #lockscreen:not([data-state]) .ls-t-lock { display: none; }
+    #lockscreen[data-state="banned"] .ls-t-ban, html.ls-banned #lockscreen:not([data-state]) .ls-t-ban { display: inline; }
+    #lockscreen[data-state="banned"] .ls-ban, html.ls-banned #lockscreen:not([data-state]) .ls-ban { display: flex; }
+    #lockscreen[data-state="banned"] .ls-field, html.ls-banned #lockscreen:not([data-state]) .ls-field,
+    #lockscreen[data-state="banned"] .ls-ask, html.ls-banned #lockscreen:not([data-state]) .ls-ask { display: none; }
+    #lockscreen[data-state="banned"][data-unban]:not(.ls-unbanning) .ls-unban-open { display: block; }
+    #lockscreen[data-state="banned"].ls-unbanning .ls-unban { display: flex; }
+    /* the code box (and its message) where the password box was: above the iPad keyboard */
+    #lockscreen.ls-unbanning .ls-ban-text { display: none; }
+    .ls-ban { flex-direction: column; gap: 14px; }
+    .ls-ban-text { margin: 0; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 18px; line-height: 1.4; }
+    .ls-unban { flex-direction: column; gap: 14px; }
+    /* dots, not the code: a child looking over Philip's shoulder can't read it off the box */
+    .ls-code { font-size: 28px; letter-spacing: 0.12em; text-indent: 0.12em; -webkit-text-security: disc; }
+    /* a 44 px tap target that looks as small as before (the negative margins take up the difference) */
+    .ls-unban-open {
+      align-self: center; min-height: 44px; padding: 4px 12px; margin: -8px 0 -10px; border: 0; background: none; cursor: pointer;
+      color: rgba(255, 255, 255, 0.45); font-family: system-ui, -apple-system, sans-serif; font-size: 13px; text-decoration: underline; touch-action: manipulation;
+    }
+    .ls-msg.ls-ok { color: #8ff0a4; }
+    .ls-card.ls-shake { animation: ls-shake 0.42s; }
+    @keyframes ls-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-12px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-7px); } 80% { transform: translateX(4px); } }
+    @media (prefers-reduced-motion: reduce) { .ls-card.ls-shake { animation: none; } .ls-busy { animation-duration: 3s; } }
+    /* tall iPads (portrait): a little lower, still well above the keyboard */
+    @media (orientation: portrait) and (min-height: 900px) { .ls-wrap { margin-top: 14vh; } }
+    /* iPads on their side: the keyboard takes the lower half, so the box and its message sit higher */
+    @media (orientation: landscape) and (max-height: 900px) { .ls-wrap { margin-top: clamp(8px, 3vh, 40px); gap: 14px; } }
+    /* phones on their side: the logo beside the card */
+    @media (max-height: 520px) and (orientation: landscape) {
+      .ls-wrap { width: min(780px, 100%); flex-direction: row; justify-content: center; gap: 28px; margin: auto 0; }
+      .ls-logo { flex: 1; } .ls-logo .logo-main { font-size: clamp(40px, 7vw, 64px); }
+      .ls-card { width: 360px; flex: none; gap: 9px; padding: 14px 16px 12px; }
+      .ls-title { font-size: 22px; }
+      .ls-field { gap: 9px; }
+      .ls-input { min-height: 54px; font-size: 28px; }
+      .ls-code { font-size: 24px; }
+      .ls-ban-text { font-size: 16px; }
+      .ls-ban, .ls-unban { gap: 9px; }
+      .ls-go, .ls-retry { min-height: 56px; font-size: 24px; }
+      .ls-remember { min-height: 36px; font-size: 15px; }
+    }
+    @media (max-width: 380px) { .ls-input { font-size: 28px; letter-spacing: 0.16em; text-indent: 0.16em; } .ls-card { padding: 18px 14px 14px; } }
+    /* (after the rule above, which would otherwise widen the 10-character code past its box on phones) */
+    @media (max-width: 420px) { .ls-code { font-size: min(24px, 6.5vw); letter-spacing: 0.06em; text-indent: 0.06em; } }
+  </style>
 </head>
 <body>
   <canvas id="game"></canvas>
@@ -118,6 +208,44 @@
 
   <div id="rotate"><div>↻ Turn your iPad sideways to play</div><button class="btn yellow rot-lobby">↩ LOBBY</button></div>
 
-  <script type="module" src="js/main.js"></script>
+  <!-- ===================================================== LOCK SCREEN -->
+  <!-- tools/lock.mjs puts this in place of the game script; lock.js unlocks the encrypted game -->
+  <div id="lockscreen" role="dialog" aria-modal="true" aria-labelledby="ls-title">
+    <div class="ls-wrap">
+      <div class="logo ls-logo"><div class="logo-main">PHORTNITE</div></div>
+      <form id="ls-card" class="ls-card" autocomplete="off" novalidate onsubmit="return false">
+        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span></h1>
+        <div class="ls-field">
+          <input id="ls-pass" class="ls-input" type="text" aria-label="Password" placeholder="••••••••"
+            autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"
+            inputmode="text" enterkeyhint="go" maxlength="12">
+          <!-- right under the box: in iPad landscape the keyboard covers everything below the button -->
+          <div id="ls-msg" class="ls-msg" role="alert" aria-live="assertive"></div>
+          <button id="ls-go" class="btn yellow ls-go" type="submit">UNLOCK</button>
+          <label class="ls-remember"><input id="ls-remember" type="checkbox" checked> Remember on this device</label>
+        </div>
+        <!-- 3 wrong passwords in a row ban this device (lock.js); Philip's unban code lifts it -->
+        <div class="ls-ban">
+          <p class="ls-ban-text">Too many wrong passwords. This device can’t open Phortnite any more.</p>
+          <div class="ls-unban">
+            <input id="ls-code" class="ls-input ls-code" type="text" aria-label="Unban code" placeholder="••••••••••"
+              autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"
+              inputmode="text" enterkeyhint="go" maxlength="16">
+            <div id="ls-umsg" class="ls-msg" role="alert" aria-live="assertive"></div>
+            <button id="ls-unban-go" class="btn yellow ls-go" type="button">UNBAN</button>
+          </div>
+          <button id="ls-unban-open" class="ls-unban-open" type="button">Philip: unban</button>
+        </div>
+        <button id="ls-retry" class="btn yellow ls-retry" type="button">TRY AGAIN</button>
+        <div class="ls-ask">Ask Philip for a password.</div>
+      </form>
+      <div class="ls-wait" aria-live="polite">
+        <div class="load-bar"><div class="ls-busy"></div></div>
+        <div class="ls-wait-text">Unlocking…</div>
+      </div>
+    </div>
+    <noscript><p class="ls-msg">Turn on JavaScript to play Phortnite.</p></noscript>
+  </div>
+  <script src="lock.js?h=03f8dac14e"></script>
 </body>
 </html>
