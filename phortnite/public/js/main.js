@@ -5,6 +5,7 @@
 // stage (enterParty), and losing a party drops you back into a party of one with a toast.
 import * as THREE from 'three';
 import { VERSION, PROTOCOL } from '../shared/constants.js';
+import { Announce } from './ui/announce.js';
 import { getWorld } from '../shared/room.js';
 import { Physics } from './physics.js';
 import { buildTextures, spriteTextures } from './gfx/textures.js';
@@ -109,6 +110,9 @@ class App {
 
   async boot() {
     $('.load-tip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
+    // news from Philip, from the very start (the loading screen too)
+    this.announce = new Announce(this);
+    this.announce.start();
     const q = this.quality();
     this.q = q;
     const canvas = $('#game');
@@ -503,6 +507,8 @@ class App {
     if (on) this.input.exitLock();
     else this.resume();
     this.updateWake();
+    // the news banner moves between the lobby's top bar and the match's top middle
+    if (this.announce) requestAnimationFrame(() => { this.announce.render(); this.announce.place(); });
   }
 
   /** The leader's PLAY: 3, 2, 1 for everyone, then the bus. */

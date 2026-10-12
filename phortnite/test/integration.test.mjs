@@ -9,9 +9,9 @@ import { MODES, findMode } from '../public/shared/modes/index.js';
 import { cleanSettings } from '../public/shared/plugins/party.js';
 import { settingsFrom } from '../public/shared/room.js';
 
-test('v2: PROTOCOL 3, VERSION 2.0.1 (2.0.1: relay links for P2P parties, same protocol)', () => {
+test('v2: PROTOCOL 3, VERSION 2.0.2 (2.0.1 relay links, 2.0.2 news banner; same protocol)', () => {
   assert.equal(PROTOCOL, 3);
-  assert.equal(VERSION, '2.0.1');
+  assert.equal(VERSION, '2.0.2');
 });
 
 test('roles reach clients after the start (clients clear roles on start): infection, juggernaut, hide & seek', () => {
