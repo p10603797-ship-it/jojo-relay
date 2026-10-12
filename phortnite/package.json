@@ -18,5 +18,8 @@
     "three": "0.186.1",
     "ws": "^8.18.0"
   },
-  "description": "Phortnite - a 3D battle royale for the browser (iPad friendly) with LAN multiplayer."
+  "description": "Phortnite - a 3D battle royale for the browser (iPad friendly) with LAN multiplayer.",
+  "devDependencies": {
+    "es-module-lexer": "3.0.2"
+  }
 }
