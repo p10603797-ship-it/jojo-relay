@@ -23,6 +23,10 @@
 //       completely, start over with `new --force` (a new key and new passwords for everyone).
 //   node tools/lock.mjs list [--slots ...]
 //       the slot numbers in use
+//   node tools/lock.mjs unban-code [--slots ...]
+//       Philip's unban code, printed ONCE. Three wrong passwords in a row ban a device (lock.js keeps
+//       that in the device's own storage); on the ban screen this code lifts it. slots.json (and so
+//       lock.json) only gets a PBKDF2 verifier of it. Works from the next published build on.
 //
 // The password comes from the PHORTNITE_PASSWORD environment variable (or is typed, hidden, when
 // run in a terminal), never from the command line (that would land in the shell history).
@@ -31,7 +35,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { randomInt, webcrypto, createHash } from 'node:crypto';
+import { randomInt, webcrypto, createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { init as lexerReady, parse as lexModule } from 'es-module-lexer';
 /** es-module-lexer is WebAssembly: await this once before rewriteModule (collectModules does). */
@@ -48,6 +52,12 @@ export const SCREEN_DIR = path.join(HERE, 'lockscreen');
 export const ITERATIONS = 600000;
 export const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I: easy to read and type
 export const PASSWORD_LENGTH = 8;
+export const UNBAN_LENGTH = 10;
+/** wrong passwords in a row that ban a device (lock.js: STRIKES) */
+export const STRIKES = 3;
+/** where a device keeps its wrong-password count / ban (lock.js: BAN, COOKIE; IndexedDB too) */
+export const BAN_KEY = 'phortnite.ban';
+export const BAN_COOKIE = 'phortnite_ban';
 export const PREFIX = '@phortnite/';
 export const ARCHIVES = { gz: 'game.lock', raw: 'game.raw.lock' };
 /** directories of public/ whose modules are encrypted (and never copied as plaintext) */
@@ -118,9 +128,11 @@ async function wrapSlot(kek, K, n) {
   return { n, iv: b64(iv), wk: b64(wk) };
 }
 
+const isUnban = (u) => !!u && typeof u.salt === 'string' && Number.isInteger(u.iter) && u.iter >= 1 && typeof u.hash === 'string';
+
 function checkSlotsDoc(doc) {
   if (!doc || doc.v !== 1 || typeof doc.salt !== 'string' || !Number.isInteger(doc.iter) || doc.iter < 1 || !Array.isArray(doc.slots)
-    || (doc.next !== undefined && !Number.isInteger(doc.next))
+    || (doc.next !== undefined && !Number.isInteger(doc.next)) || (doc.unban !== undefined && !isUnban(doc.unban))
     || doc.slots.some((s) => !s || !Number.isInteger(s.n) || typeof s.iv !== 'string' || typeof s.wk !== 'string')) {
     throw new LockError('the slots file is not a Phortnite key slots file (v 1)');
   }
@@ -217,6 +229,39 @@ export function readSlots(file) {
 export function writeSlots(file, doc) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+}
+
+// ------------------------------------------------------------------ Philip's unban code
+
+/** A random unban code: UNBAN_LENGTH characters from ALPHABET (crypto.randomInt, like the passwords). */
+export function generateUnbanCode() {
+  let c = '';
+  for (let i = 0; i < UNBAN_LENGTH; i++) c += ALPHABET[randomInt(ALPHABET.length)];
+  return c;
+}
+
+/** PBKDF2-HMAC-SHA256(normalize(code), salt, iter), 256 bits (lock.js's unbanOk computes the same). */
+async function unbanHash(code, salt, iter) {
+  const base = await subtle.importKey('raw', enc.encode(normalize(code)), 'PBKDF2', false, ['deriveBits']);
+  return new Uint8Array(await subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, base, 256));
+}
+
+/** The public verifier of an unban code, { salt, iter, hash }: the website can check a code with it. */
+export async function makeUnban(code, { iter = ITERATIONS, salt = randomBytes(16) } = {}) {
+  return { salt: b64(salt), iter, hash: b64(await unbanHash(code, salt, iter)) };
+}
+
+/** Does `code` match the verifier? */
+export async function checkUnban(unban, code) {
+  const want = unb64(unban.hash), got = await unbanHash(code, unb64(unban.salt), unban.iter);
+  return got.length === want.length && timingSafeEqual(got, want);
+}
+
+/** A new unban code for the slots document (replacing any earlier one): { doc, code }. */
+export async function setUnban(doc, { iter = ITERATIONS } = {}) {
+  checkSlotsDoc(doc);
+  const code = generateUnbanCode();
+  return { doc: { ...doc, unban: await makeUnban(code, { iter }) }, code };
 }
 
 // ------------------------------------------------------------------ modules
@@ -325,6 +370,18 @@ const shortHash = (s) => createHash('sha256').update(s).digest('hex').slice(0, 1
  */
 export const STORE_EXPR = "'phortnite.pass:' + location.pathname.replace(/[^/]*$/, '')";
 
+/**
+ * The page's first-frame check, in its <head>: a banned device (localStorage or the cookie say
+ * STRIKES or more, the way lock.js's readSync reads them) shows the ban screen from the first
+ * frame (html.ls-banned), never the prompt or "Unlocking…"; otherwise a remembered password shows
+ * "Unlocking…" (html.ls-auto). (IndexedDB can only answer later: lock.js asks it.)
+ */
+export const HEAD_SCRIPT = '<script>(function (c) { var b = false, m;'
+  + ` try { b = parseInt(localStorage.getItem('${BAN_KEY}'), 10) >= ${STRIKES}; } catch (e) {}`
+  + ` try { m = /(?:^|;\\s*)${BAN_COOKIE}=(\\d+)/.exec(document.cookie); b = b || (!!m && +m[1] >= ${STRIKES}); } catch (e) {}`
+  + ` if (b) c.add('ls-banned'); else try { if (localStorage.getItem(${STORE_EXPR})) c.add('ls-auto'); } catch (e) {}`
+  + ' })(document.documentElement.classList);</script>';
+
 /** index.html without its import map and main.js, with the lock screen and lock.js instead. */
 export function lockIndexHtml(html, { loaderHash = '' } = {}) {
   const maps = [...html.matchAll(/[ \t]*<script type="importmap">([\s\S]*?)<\/script>[ \t]*\n?/g)];
@@ -337,9 +394,9 @@ export function lockIndexHtml(html, { loaderHash = '' } = {}) {
   if (html.split(main).length !== 2) throw new LockError(`index.html: expected exactly one ${main}`);
   const css = fs.readFileSync(path.join(SCREEN_DIR, 'lock.css'), 'utf8').replace(/^\n+|\s+$/g, '');
   const markup = fs.readFileSync(path.join(SCREEN_DIR, 'lock.html'), 'utf8').trim();
-  // a remembered password: show "Unlocking…" from the first frame, never the prompt
+  // banned: the ban screen from the first frame; a remembered password: "Unlocking…", never the prompt
   const head = `  <!-- the lock screen (tools/lock.mjs): the game is encrypted; lock.js opens it with a password -->\n`
-    + `  <script>try { if (localStorage.getItem(${STORE_EXPR})) document.documentElement.classList.add('ls-auto'); } catch (e) {}</script>\n`
+    + `  ${HEAD_SCRIPT}\n`
     + `  <style>\n${css}\n  </style>\n`;
   // (replacer functions: the inserted text is taken literally, '$' and all)
   let out = html.replace(maps[0][0], () => '');
@@ -392,6 +449,11 @@ export function checkStrength(doc, allowWeak) {
     throw new LockError(`these key slots use only ${doc.iter} PBKDF2 rounds (the website needs ${ITERATIONS}), so they are for tests only; `
       + 'make real ones with `new --force`, or pass --allow-weak for a test build');
   }
+  // (the unban code's verifier is public in lock.json too: as hard to guess at as the passwords)
+  if (doc.unban && doc.unban.iter < ITERATIONS && !allowWeak) {
+    throw new LockError(`the unban code uses only ${doc.unban.iter} PBKDF2 rounds (the website needs ${ITERATIONS}), so it is for tests only; `
+      + 'make a real one with `unban-code`, or pass --allow-weak for a test build');
+  }
 }
 
 /**
@@ -435,6 +497,8 @@ export async function buildLocked({ slots, password, outDir, publicDir = PUBLIC_
     files: { gz: { path: ARCHIVES.gz, iv: b64(egz.iv) }, raw: { path: ARCHIVES.raw, iv: b64(eraw.iv) } },
     built, // (the names this build writes at the top of --out: the next build may replace them)
   };
+  // Philip's unban code: only its verifier (lock.js hides "Philip: unban" without one)
+  if (slots.unban) lock.unban = { salt: slots.unban.salt, iter: slots.unban.iter, hash: slots.unban.hash };
 
   const out = prepareOut(outDir, publicDir, built);
   const copied = [];
@@ -494,7 +558,8 @@ const USAGE = `usage:
   node tools/lock.mjs add --count 2 [--slots lock/slots.json]        (password: PHORTNITE_PASSWORD, or typed)
   node tools/lock.mjs remove --slot 3 [--slots lock/slots.json]
   node tools/lock.mjs list [--slots lock/slots.json]
-tests only: new --iter <rounds below ${ITERATIONS}> --allow-weak; build/add --allow-weak take such slots`;
+  node tools/lock.mjs unban-code [--slots lock/slots.json]
+tests only: new/unban-code --iter <rounds below ${ITERATIONS}> --allow-weak; build/add --allow-weak take such slots`;
 
 function printPasswords(list, log) {
   log('');
@@ -502,6 +567,15 @@ function printPasswords(list, log) {
   log('');
   for (const { n, password } of list) log(`    ${String(n).padStart(3)}   ${password}`);
   log('');
+}
+
+/** --iter: fewer rounds than ITERATIONS only when asked for in so many words (--allow-weak). */
+function iterOption(opts, log) {
+  const iter = opts.iter ? int(opts.iter, '--iter') : ITERATIONS;
+  if (iter < 1) throw new LockError('--iter must be at least 1');
+  if (iter < ITERATIONS && !opts['allow-weak']) throw new LockError(`--iter below ${ITERATIONS} is for tests only (add --allow-weak if that is what this is)`);
+  if (iter < ITERATIONS) log(`  (testing only: ${iter} PBKDF2 rounds instead of ${ITERATIONS})`);
+  return iter;
 }
 
 /** Type the password in a terminal without showing it (when PHORTNITE_PASSWORD is not set). */
@@ -541,14 +615,15 @@ export async function main(argv = process.argv.slice(2), { env = process.env, lo
     if (fs.existsSync(slotsFile) && !opts.force) {
       throw new LockError(`${slotsFile} exists: a new set replaces every password. Use add/remove, or --force to start over`);
     }
-    const iter = opts.iter ? int(opts.iter, '--iter') : ITERATIONS;
-    if (iter < 1) throw new LockError('--iter must be at least 1');
-    if (iter < ITERATIONS && !opts['allow-weak']) throw new LockError(`--iter below ${ITERATIONS} is for tests only (add --allow-weak if that is what this is)`);
-    if (iter < ITERATIONS) log(`  (testing only: ${iter} PBKDF2 rounds instead of ${ITERATIONS})`);
+    const iter = iterOption(opts, log);
+    // Philip's unban code has nothing to do with the game key: starting over keeps it
+    let unban;
+    try { unban = fs.existsSync(slotsFile) ? readSlots(slotsFile).unban : undefined; } catch (e) { /* a broken file: nothing to keep */ }
     const { doc, passwords } = await newSlots({ count: int(opts.count ?? 10, '--count'), iter });
+    if (unban) doc.unban = unban;
     writeSlots(slotsFile, doc);
     printPasswords(passwords, log);
-    log(`  ${passwords.length} key slots written to ${slotsFile} (no passwords in it).`);
+    log(`  ${passwords.length} key slots written to ${slotsFile} (no passwords in it).${unban ? ' The unban code stays the same.' : ''}`);
     return 0;
   }
   if (cmd === 'add') {
@@ -573,6 +648,21 @@ export async function main(argv = process.argv.slice(2), { env = process.env, lo
   if (cmd === 'list') {
     const doc = readSlots(slotsFile);
     log(`  ${doc.slots.length} slots: ${doc.slots.map((s) => s.n).join(', ')}  (PBKDF2-SHA256, ${doc.iter} rounds)`);
+    log(doc.unban ? '  An unban code is set.' : '  No unban code yet (`unban-code` makes one).');
+    return 0;
+  }
+  if (cmd === 'unban-code') {
+    const doc = readSlots(slotsFile); // (it is kept next to the key slots: make those first, with `new`)
+    const { doc: next, code } = await setUnban(doc, { iter: iterOption(opts, log) });
+    writeSlots(slotsFile, next);
+    log('');
+    log('  Unban code (shown only this once: write it down, it is not saved anywhere):');
+    log('');
+    log(`    ${code}`);
+    log('');
+    log('  On a banned device tap "Philip: unban" and type it. It works once a new build is published'
+      + `${doc.unban ? ', and from then on the earlier unban code no longer does' : ''}.`);
+    log(`  ${slotsFile} holds only a check for it (PBKDF2-SHA256), not the code.`);
     return 0;
   }
   if (cmd === 'build') {

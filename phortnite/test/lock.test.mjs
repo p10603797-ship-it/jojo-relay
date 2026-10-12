@@ -7,12 +7,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { webcrypto } from 'node:crypto';
+import { webcrypto, pbkdf2Sync } from 'node:crypto';
 import { parse as lexModule, init as lexInit } from 'es-module-lexer';
 import {
   ALPHABET, ITERATIONS, PREFIX, PUBLIC_DIR, ROOT, LockError, normalize, isValidPassword, generatePassword, generatePasswords,
   makeSlots, newSlots, unlockSlots, addSlots, removeSlot, buildLocked as buildLockedStrict, openArchive, rewriteModule, ready, lockIndexHtml,
-  collectModules, STORE_EXPR,
+  collectModules, STORE_EXPR, HEAD_SCRIPT, STRIKES, BAN_KEY, BAN_COOKIE, UNBAN_LENGTH, generateUnbanCode, makeUnban, checkUnban,
+  setUnban, checkStrength,
 } from '../tools/lock.mjs';
 
 const ITER = 1000;
@@ -25,6 +26,27 @@ const hex = (u8) => Buffer.from(u8).toString('hex');
 const cli = (args, env = {}) => spawnSync(process.execPath, [TOOL, ...args], { encoding: 'utf8', env: { ...process.env, PHORTNITE_PASSWORD: '', ...env } });
 // the slots here have only ITER rounds: test builds must say so (a real build refuses them)
 const buildLocked = (o) => buildLockedStrict({ allowWeak: true, ...o });
+
+/**
+ * lock.js's own helpers (the part between "helpers" and "end of helpers"), run here in Node with a
+ * stand-in localStorage and document.cookie: the very code the browser runs.
+ */
+function loaderHelpers({ storage = {}, cookie = '', storageThrows = false } = {}) {
+  const part = /\/\/ -+ helpers\n[\s\S]*?\/\/ -+ end of helpers/.exec(fs.readFileSync(LOADER, 'utf8'))[0];
+  const localStorage = { getItem: (k) => { if (storageThrows) throw new Error('SecurityError'); return k in storage ? storage[k] : null; } };
+  const document = { cookie };
+  return new Function('localStorage', 'document', 'crypto', `'use strict';\n${part}\nreturn { STRIKES, UNBAN_TRIES, UNBAN_WAIT, BAN, COOKIE, CHARS, normalize, parseBan, formatBan, mergeBan, isBanned, siteFolder, readSync, unbanOk, current, clampLock, idbRecord };`)(localStorage, document, webcrypto);
+}
+
+/** The page's <head> check (HEAD_SCRIPT) run with the same stand-ins: the classes it puts on <html>. */
+function headClasses({ storage = {}, cookie = '', storageThrows = false, pathname = '/jojo-relay/' } = {}) {
+  const classes = new Set();
+  const localStorage = { getItem: (k) => { if (storageThrows) throw new Error('SecurityError'); return k in storage ? storage[k] : null; } };
+  const document = { cookie, documentElement: { classList: { add: (c) => classes.add(c) } } };
+  const body = /^<script>([\s\S]*)<\/script>$/.exec(HEAD_SCRIPT)[1];
+  new Function('localStorage', 'document', 'location', body)(localStorage, document, { pathname });
+  return [...classes];
+}
 
 function walkFiles(dir, rel = '') {
   const out = [];
@@ -391,6 +413,7 @@ test('lock: index.html must have exactly the import map and main.js the lock rep
   assert.equal(imports.three, 'https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js');
   assert.match(locked, /<script src="lock\.js"><\/script>/);
   assert.ok(locked.includes(`localStorage.getItem(${STORE_EXPR})`));
+  assert.ok(locked.includes(HEAD_SCRIPT), 'the first-frame ban / remembered-password check');
   assert.throws(() => lockIndexHtml(html.replace('<script type="module" src="js/main.js"></script>', '')), LockError);
   assert.throws(() => lockIndexHtml(html.replace(/<script type="importmap">[\s\S]*?<\/script>/, '')), LockError);
 });
@@ -402,8 +425,22 @@ test('lock: lock.js is plain ES2017 and never logs, sends or stores more than it
   const bare = code.replace(/'(?:[^'\\\n]|\\.)*'/g, "''"); // (without its strings)
   assert.doesNotMatch(bare, /\?\.|\?\?|catch\s*\{|\.\.\.|\bimport\s*\(|\bclass\s|\|\|=|&&=/, 'nothing newer than ES2017');
   assert.doesNotMatch(code, /console\.|XMLHttpRequest|sendBeacon|WebSocket|Math\.random/);
-  // the only places the password goes: PBKDF2, and localStorage when "Remember" is ticked
+  // the only places the password goes: PBKDF2, and localStorage when "Remember" is ticked; the
+  // only other thing stored is the ban record (never the password or an unban code)
   assert.match(code, /localStorage\.setItem\(STORE, p\)/);
+  assert.deepEqual([...code.matchAll(/localStorage\.setItem\(([^)]*)\)/g)].map((m) => m[1]), ['STORE, p', 'BAN, v']);
+  assert.deepEqual([...code.matchAll(/document\.cookie = (\w+)/g)].map((m) => m[1]), ['COOKIE']);
+  assert.deepEqual([...code.matchAll(/\.put\((.*), 'ban'\)/g)].map((m) => m[1]), ['formatBan(idbRecord(w, parseBan(r.result)))']);
+  assert.match(code, /'; Max-Age=' \+ \(clear \? 0 : 315360000\) \+ '; Path=' \+ SITE\s*\+ '; SameSite=Lax' \+ \(location\.protocol === 'https:' \? '; Secure' : ''\)/);
+  // one strike per real wrong password (in one place), the messages Philip asked for
+  assert.equal(code.match(/ban\.strikes\+\+/g).length, 1);
+  assert.match(code, /'1 try left\. One more wrong password bans this device\.'/);
+  assert.match(code, /'Wrong password — ' \+ triesLeft/);
+  assert.match(code, /'Unbanned\. Type a password\.'/);
+  assert.match(code, /'Wrong code 3 times\. Unbanning is locked for an hour\.'/);
+  const markup = fs.readFileSync(path.join(ROOT, 'tools', 'lockscreen', 'lock.html'), 'utf8');
+  for (const s of ['id="ls-unban-open"', '>Philip: unban<', 'id="ls-code"', 'id="ls-unban-go"', '>UNBAN<', 'id="ls-umsg"', '🚫</span> Banned',
+    'Too many wrong passwords. This device can’t open Phortnite any more.']) assert.ok(markup.includes(s), s);
   // one remembered password per folder of the site (/ and /beta/ share an origin), the same key
   // the page's <head> checks for its first frame
   assert.ok(code.includes(`var STORE = ${STORE_EXPR};`), 'STORE is STORE_EXPR');
@@ -424,4 +461,221 @@ test('lock: lock.js is plain ES2017 and never logs, sends or stores more than it
   // lock.js and lock.mjs agree on what a password looks like once typed
   const norm = new Function(`${/function normalize\(p\) \{[\s\S]*?\n {2}\}/.exec(src)[0]}; return normalize;`)();
   for (const s of ['ab cd-23\u201345', ' TESTAB23 ', 'test\u00a0ab23', 'TEST--AB23', 'ab\u2212cd\u201023 45']) assert.equal(norm(s), normalize(s), s);
+});
+
+test('lock: unban codes are 10 characters from the password alphabet, from crypto random numbers; only a PBKDF2 verifier is kept', async () => {
+  assert.equal(UNBAN_LENGTH, 10);
+  const list = Array.from({ length: 3000 }, () => generateUnbanCode());
+  assert.equal(new Set(list).size, 3000, 'no repeats');
+  const seen = new Set();
+  for (const c of list) {
+    assert.match(c, /^[A-HJ-NP-Z2-9]{10}$/);
+    for (const ch of c) seen.add(ch);
+  }
+  assert.equal(seen.size, ALPHABET.length, 'every character turns up');
+  // the system's secure random numbers (crypto.randomInt), never Math.random
+  assert.match(/export function generateUnbanCode\(\) \{[\s\S]*?\n\}/.exec(fs.readFileSync(TOOL, 'utf8'))[0], /randomInt\(ALPHABET\.length\)/);
+
+  const code = generateUnbanCode();
+  const u = await makeUnban(code);
+  assert.deepEqual(Object.keys(u).sort(), ['hash', 'iter', 'salt']);
+  assert.equal(u.iter, ITERATIONS);
+  assert.equal(Buffer.from(u.salt, 'base64').length, 16);
+  assert.equal(Buffer.from(u.hash, 'base64').length, 32);
+  // = PBKDF2-HMAC-SHA256(code, salt, 600,000 rounds, 256 bits), worked out independently here
+  assert.equal(u.hash, pbkdf2Sync(code, Buffer.from(u.salt, 'base64'), ITERATIONS, 32, 'sha256').toString('base64'));
+  assert.ok(!JSON.stringify(u).includes(code), 'no code in the verifier');
+  assert.equal(await checkUnban(u, code), true);
+  assert.equal(await checkUnban(u, `${code.slice(0, 5).toLowerCase()} - ${code.slice(5).toLowerCase()}`), true, 'typed in lowercase with a dash');
+  assert.equal(await checkUnban(u, code.slice(0, 9) + (code[9] === 'A' ? 'B' : 'A')), false);
+  assert.equal(await checkUnban(u, ''), false);
+  const again = await makeUnban(code, { iter: ITER });
+  assert.notEqual(again.salt, u.salt, 'a fresh salt every time');
+  // a weak (test) verifier is never built into a site by mistake
+  assert.throws(() => checkStrength({ iter: ITERATIONS, unban: again }, false), /unban code uses only 1000 PBKDF2 rounds/);
+  checkStrength({ iter: ITERATIONS, unban: u }, false);
+  // the slots document gets the verifier (and a broken one is refused)
+  const { doc } = await shared;
+  const set = await setUnban(doc, { iter: ITER });
+  assert.deepEqual(set.doc.slots, doc.slots, 'the key slots stay as they are');
+  assert.equal(await checkUnban(set.doc.unban, set.code), true);
+  assert.equal(doc.unban, undefined, 'setUnban does not change the original');
+  await assert.rejects(unlockSlots({ ...doc, unban: { salt: 'x' } }, PASSWORDS[0]), LockError);
+});
+
+test('lock: lock.js checks an unban code with the same PBKDF2 as lock.mjs (its own code, run in Node)', async () => {
+  const h = loaderHelpers();
+  const code = generateUnbanCode();
+  const u = await makeUnban(code); // (the real 600,000 rounds, as on the website)
+  assert.equal(await h.unbanOk(u, code), true);
+  assert.equal(await h.unbanOk(u, `${code.slice(0, 5).toLowerCase()}-${code.slice(5)}`), true);
+  assert.equal(await h.unbanOk(u, code.split('').reverse().join('')), code === code.split('').reverse().join(''));
+  const w = await makeUnban(code, { iter: ITER });
+  assert.equal(await h.unbanOk(w, code), true, 'the rounds come from the verifier');
+  assert.equal(await h.unbanOk(w, 'TESTAB2345'), code === 'TESTAB2345');
+  const flipped = Buffer.from(w.hash, 'base64');
+  flipped[31] ^= 1;
+  assert.equal(await h.unbanOk({ ...w, hash: flipped.toString('base64') }, code), false, 'one bit off');
+  assert.equal(await h.unbanOk({ ...w, hash: flipped.subarray(0, 16).toString('base64') }, code), false, 'a short hash');
+  assert.equal(await h.unbanOk({ ...w, hash: '' }, code), false);
+  // the same alphabet, limit and storage names on both sides
+  assert.equal(h.STRIKES, STRIKES);
+  assert.equal(h.STRIKES, 3);
+  assert.equal(h.BAN, BAN_KEY);
+  assert.equal(h.COOKIE, BAN_COOKIE);
+  assert.equal(h.UNBAN_TRIES, 3);
+  assert.equal(h.UNBAN_WAIT, 3600000);
+  for (const c of ALPHABET) assert.ok(h.CHARS.test(c), c);
+  for (const c of '0O1I!a ') assert.ok(!h.CHARS.test(c), c);
+  for (const s of ['ab cd-23\u201345', ' TESTAB23 ', 'TEST--AB23']) assert.equal(h.normalize(s), normalize(s), s);
+});
+
+test('lock: the ban record: the highest of the three stores wins, and the page <head> and lock.js agree on "banned"', () => {
+  const h = loaderHelpers();
+  assert.deepEqual(h.parseBan('2.1.1700000000000'), { strikes: 2, tries: 1, until: 1700000000000 });
+  for (const junk of [null, undefined, '', 'banned', '-3.-1.x', '.']) assert.deepEqual(h.parseBan(junk), { strikes: 0, tries: 0, until: 0 }, String(junk));
+  assert.equal(h.formatBan(h.parseBan('3.0.1700000000000')), '3.0.1700000000000');
+  assert.deepEqual(h.mergeBan(h.parseBan('1.2.0'), h.parseBan('3.0.5')), { strikes: 3, tries: 2, until: 5 });
+  assert.equal(h.isBanned(h.parseBan('2.0.0')), false);
+  assert.equal(h.isBanned(h.parseBan('3.0.0')), true);
+  // the cookie's path: the site's top folder, the same for the main site and its beta/
+  const site = { '/jojo-relay/': '/jojo-relay/', '/jojo-relay/index.html': '/jojo-relay/', '/jojo-relay/beta/': '/jojo-relay/', '/jojo-relay/beta/index.html': '/jojo-relay/', '/': '/', '/beta/': '/', '/a/beta/': '/a/', '/betamax/': '/betamax/' };
+  for (const [p, want] of Object.entries(site)) assert.equal(h.siteFolder(p), want, p);
+
+  // localStorage and the cookie together; the <head> check says the same before lock.js runs
+  const pass = { 'phortnite.pass:/jojo-relay/': 'TESTAB23' };
+  const cases = [
+    [{}, false, []],
+    [{ storage: pass }, false, ['ls-auto']],
+    [{ storage: { 'phortnite.ban': '2.0.0', ...pass } }, false, ['ls-auto']],
+    [{ storage: { 'phortnite.ban': '3.0.0', ...pass } }, true, ['ls-banned']], // (never "Unlocking…")
+    [{ storage: { 'phortnite.ban': '3' } }, true, ['ls-banned']],
+    [{ cookie: 'phortnite_ban=3.0.0' }, true, ['ls-banned']],
+    [{ cookie: 'a=1; phortnite_ban=4.2.17; b=2', storage: pass }, true, ['ls-banned']],
+    [{ cookie: 'phortnite_ban=2.0.0', storage: { 'phortnite.ban': '1.0.0' } }, false, []],
+    [{ cookie: 'xphortnite_ban=3.0.0' }, false, []],
+    [{ cookie: 'phortnite_ban=3.0.0', storageThrows: true }, true, ['ls-banned']],
+    [{ storage: { 'phortnite.ban': 'junk' }, cookie: 'phortnite_ban=' }, false, []],
+  ];
+  for (const [env, banned, classes] of cases) {
+    const got = loaderHelpers(env).readSync();
+    assert.equal(h.isBanned(got), banned, JSON.stringify(env));
+    assert.deepEqual(headClasses(env), classes, JSON.stringify(env));
+  }
+  assert.deepEqual(loaderHelpers({ storage: { 'phortnite.ban': '1.2.300' }, cookie: 'phortnite_ban=2.0.100' }).readSync(), { strikes: 2, tries: 2, until: 300 });
+});
+
+test('lock: unban-code prints the code once and keeps only its verifier; the build copies that into lock.json, and the code is nowhere in the site', async () => {
+  const dir = tmp('unban');
+  const slots = path.join(dir, 'slots.json');
+  const none = cli(['unban-code', '--slots', slots]);
+  assert.equal(none.status, 1, 'the key slots come first');
+  assert.match(none.stderr, /can't read the slots file/);
+  const made = cli(['new', '--count', '2', '--slots', slots, '--iter', String(ITER), '--allow-weak']);
+  assert.equal(made.status, 0, made.stderr);
+  const pw = [...made.stdout.matchAll(/^\s+\d+\s+([A-Z0-9]{8})$/gm)].map((m) => m[1]);
+  assert.match(cli(['list', '--slots', slots]).stdout, /No unban code yet/);
+  const weak = cli(['unban-code', '--slots', slots, '--iter', String(ITER)]);
+  assert.equal(weak.status, 1);
+  assert.match(weak.stderr, /--allow-weak/);
+
+  const r = cli(['unban-code', '--slots', slots]);
+  assert.equal(r.status, 0, r.stderr);
+  const codes = [...r.stdout.matchAll(/^\s+([A-Z0-9]{10})$/gm)].map((m) => m[1]);
+  assert.equal(codes.length, 1, 'printed once');
+  const code = codes[0];
+  assert.match(code, /^[A-HJ-NP-Z2-9]{10}$/);
+  assert.match(r.stdout, /shown only this once/);
+  assert.match(r.stdout, /Philip: unban/);
+  const text = fs.readFileSync(slots, 'utf8');
+  for (const v of [code, code.toLowerCase(), `${code.slice(0, 5)}-${code.slice(5)}`]) assert.ok(!text.includes(v), 'no code in the slots file');
+  const doc = JSON.parse(text);
+  assert.deepEqual(Object.keys(doc.unban).sort(), ['hash', 'iter', 'salt']);
+  assert.equal(doc.unban.iter, ITERATIONS);
+  assert.equal(Buffer.from(doc.unban.salt, 'base64').length, 16);
+  assert.equal(await checkUnban(doc.unban, code), true);
+  assert.equal(await loaderHelpers().unbanOk(doc.unban, code.toLowerCase()), true, 'lock.js takes it');
+  for (const p of pw) assert.ok(await unlockSlots(doc, p), 'the passwords still work');
+  assert.match(cli(['list', '--slots', slots]).stdout, /An unban code is set/);
+  // add and remove keep it
+  assert.equal(cli(['add', '--count', '1', '--slots', slots, '--allow-weak'], { PHORTNITE_PASSWORD: pw[0] }).status, 0);
+  assert.equal(cli(['remove', '--slot', '2', '--slots', slots]).status, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(slots, 'utf8')).unban, doc.unban);
+
+  // the build: the verifier in lock.json, the code in no file at all
+  const out = path.join(dir, 'site');
+  const built = cli(['build', '--slots', slots, '--out', out, '--allow-weak'], { PHORTNITE_PASSWORD: pw[0] });
+  assert.equal(built.status, 0, built.stderr);
+  assert.ok(!built.stdout.includes(code) && !built.stderr.includes(code));
+  const lock = JSON.parse(fs.readFileSync(path.join(out, 'lock.json'), 'utf8'));
+  assert.deepEqual(lock.unban, doc.unban);
+  const files = walkFiles(out);
+  assert.ok(files.length > 10);
+  for (const f of files) {
+    const body = fs.readFileSync(path.join(out, f));
+    for (const v of [code, code.toLowerCase(), `${code.slice(0, 5)}-${code.slice(5)}`]) {
+      assert.ok(!body.toString('utf8').includes(v) && !body.toString('latin1').includes(v), `${f} contains the unban code`);
+    }
+  }
+
+  // a new code replaces the old one
+  const r2 = cli(['unban-code', '--slots', slots]);
+  assert.equal(r2.status, 0, r2.stderr);
+  const code2 = /^\s+([A-Z0-9]{10})$/m.exec(r2.stdout)[1];
+  assert.match(r2.stdout, /earlier unban code no longer does/);
+  const doc2 = JSON.parse(fs.readFileSync(slots, 'utf8'));
+  assert.equal(await checkUnban(doc2.unban, code2), true);
+  assert.equal(await checkUnban(doc2.unban, code), code === code2);
+  // starting over (new --force) keeps the unban code: it has nothing to do with the game key
+  const restart = cli(['new', '--count', '1', '--slots', slots, '--iter', String(ITER), '--allow-weak', '--force']);
+  assert.equal(restart.status, 0, restart.stderr);
+  assert.match(restart.stdout, /unban code stays the same/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(slots, 'utf8')).unban, doc2.unban);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('lock: a strike counts on from the stores (not a page left open), the same wrong password or code is not counted twice, IndexedDB keeps its strikes', () => {
+  const h = loaderHelpers();
+  const b = (s) => h.parseBan(s);
+  // wrong, wrong in this tab, the RIGHT password in another (the stores are cleared), wrong here: strike 1
+  assert.deepEqual(h.current(b(''), b('2.0.0'), true), b(''), 'the stores, not the stale page');
+  assert.deepEqual(h.current(b('1.0.0'), b('2.1.0'), true), b('1.0.0'));
+  // storage blocked (nothing kept): this page counts by itself, so 3 wrong passwords still ban it
+  assert.deepEqual(h.current(b(''), b('2.0.0'), false), b('2.0.0'));
+  assert.deepEqual(h.current(b('1.2.0'), b('2.0.0'), false), b('2.2.0'));
+  // an unban lock-out ends at most an hour from now (a clock put back since can't make it longer)
+  const now = 1800000000000;
+  assert.deepEqual(h.clampLock(b(`3.0.${now + 24 * 3600000}`), now), b(`3.0.${now + 3600000}`));
+  for (const s of [`3.0.${now + 3600000}`, `3.0.${now + 60000}`, `3.2.${now - 5}`, '3.1.0', '2.0.0']) {
+    const x = b(s);
+    assert.equal(h.clampLock(x, now), x, s);
+  }
+  // IndexedDB never loses strikes it had (it may have answered too late for the page to know them);
+  // tries and the lock-out are written as they are (locking starts the tries again)
+  assert.deepEqual(h.idbRecord(b('1.0.0'), b('3.0.0')), b('3.0.0'));
+  assert.deepEqual(h.idbRecord(b('2.0.0'), b('1.0.0')), b('2.0.0'));
+  assert.deepEqual(h.idbRecord(b(`3.0.${now}`), b('3.2.0')), b(`3.0.${now}`));
+  assert.deepEqual(h.idbRecord(b('3.0.5'), b('3.0.99')), b('3.0.5'));
+
+  const code = fs.readFileSync(LOADER, 'utf8');
+  const unlockFn = /async function unlock\(password, auto\) \{[\s\S]*?\n {2}\}\n/.exec(code)[0];
+  // the stores are read again for every try (while the password is checked) and the strike counts on from them
+  assert.match(unlockFn, /await checked;\s*(?:\/\/.*\n\s*)*var now = readAll\(\);[\s\S]*useStores\(await now\);\s*if \(isBanned\(ban\)\) \{ banned\(\); return; \}/);
+  assert.ok(unlockFn.indexOf('useStores(await now)') < unlockFn.indexOf('ban.strikes++'));
+  assert.doesNotMatch(code, /mergeBan\(ban, readSync\(\)\);\s*ban\.(strikes|tries)\+\+/, 'never the higher of the page and the stores');
+  assert.match(unlockFn, /ban\.strikes\+\+;\s*lastWrong = normalize\(password\);/);
+  // the right password clears every store, whatever the page knew
+  assert.match(unlockFn, /lastWrong = '';\s*ban = parseBan\(''\);\s*saveBan\(ban\);/);
+  // Go again with the same wrong password (a double tap): the same message, no new check, no strike
+  const submit = /card\.onsubmit = function \(e\) \{[\s\S]*?\n {2}\};/.exec(code)[0];
+  assert.match(submit, /if \(p === lastWrong\) \{ ask\('Wrong password — ' \+ triesLeft\(ban\.strikes\)\); shake\(\); return false; \}\s*unlock\(p, false\);/);
+  // the same for unban codes, and an unban try reads the stores first (Philip may have unbanned in another tab)
+  const unbanFn = /async function tryUnban\(\) \{[\s\S]*?\n {2}\}\n/.exec(code)[0];
+  assert.match(unbanFn, /useStores\(await readAll\(\)\);[\s\S]*if \(!isBanned\(ban\)\) \{ unbanned\(\); return; \}/);
+  assert.ok(unbanFn.indexOf('if (c === lastCode)') > 0 && unbanFn.indexOf('if (c === lastCode)') < unbanFn.indexOf('unbanOk('));
+  assert.match(unbanFn, /lastCode = c;\s*ban\.tries\+\+;/);
+  assert.ok(unbanFn.indexOf('fixClock()') < unbanFn.indexOf('if (ban.until > Date.now())'), 'a lock-out from a clock put back is cut to an hour first');
+  // the page's first look at a banned device writes nothing before IndexedDB has answered
+  assert.match(code, /if \(isBanned\(ban\)\) \{ getMeta\(\); banned\(true\); \}/);
+  assert.match(code, /function banned\(first\) \{[\s\S]*?if \(!first\) saveBan\(ban\);/);
 });

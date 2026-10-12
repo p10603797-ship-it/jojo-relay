@@ -125,6 +125,21 @@ site and `beta/` remember separately). On an iPad it lasts while the game keeps 
 Safari forgets a site's saved data after about a week of not visiting it, and a Home Screen icon
 has its own storage, so the password is asked for again then. That is not a turned-off password.
 
+**Three wrong passwords in a row ban the device** from the whole site (`beta/` too). Only a typed
+password that was really checked counts (not a too-short one, a lost connection, a turned-off
+remembered one or the same wrong one again), and the right password starts the count again. No
+website can recognise one particular iPad, so the ban is kept in the device's own browser storage,
+in three places so that clearing one doesn't lift it. Clearing Safari's website data, a private
+window, a new Home Screen icon (it has its own storage) or another browser app all give new tries,
+and with Safari set to block all cookies nothing is kept at all (no website can prevent that); like
+a remembered password, the ban is forgotten after about a week without a visit. Deleting the site's
+data on the iPad (Settings › (Apps ›) Safari › Advanced › Website Data) lifts a ban straight away,
+even while the unban box is locked. Or run `node tools/lock.mjs unban-code` once (it prints the code
+once; `lock/slots.json` keeps only a check for it) and publish a build; then tap the small *Philip:
+unban* on the banned device and type the code (the box shows dots). Three wrong codes lock that box
+for an hour. Running `unban-code` again (and publishing) replaces the code: do that if someone saw
+it.
+
 ## Run your own server (optional)
 
 You can also run Phortnite on a computer, for example to play on a Wi-Fi with no internet. You

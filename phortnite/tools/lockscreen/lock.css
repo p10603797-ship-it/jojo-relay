@@ -1,6 +1,7 @@
     /* the lock screen (tools/lockscreen): over everything until lock.js has unlocked the game.
        States (data-state on #lockscreen, set by lock.js): ask, wait (a remembered password), error
-       (TRY AGAIN), fatal (this browser can't unlock). html.ls-auto = "wait" before lock.js runs. */
+       (TRY AGAIN), fatal (this browser can't unlock), banned. Before lock.js runs, the page's <head>
+       sets html.ls-auto ("wait") or html.ls-banned ("banned"). */
     #lockscreen {
       position: fixed; inset: 0; z-index: 200; overflow-y: auto; -webkit-overflow-scrolling: touch;
       display: flex; flex-direction: column; align-items: center;
@@ -45,6 +46,29 @@
     #lockscreen[data-state="error"] .ls-field > :not(.ls-msg), #lockscreen[data-state="fatal"] .ls-field > :not(.ls-msg) { display: none; }
     #lockscreen[data-state="error"] .ls-retry { display: block; }
     #lockscreen[data-state="error"] .ls-ask, #lockscreen[data-state="fatal"] .ls-ask { display: none; }
+    /* banned: the ban message instead of the password box; "Philip: unban" (only when the build has an
+       unban code: data-unban) opens the unban box (.ls-unbanning) */
+    .ls-t-ban, .ls-ban, .ls-unban, .ls-unban-open { display: none; }
+    #lockscreen[data-state="banned"] .ls-t-lock, html.ls-banned #lockscreen:not([data-state]) .ls-t-lock { display: none; }
+    #lockscreen[data-state="banned"] .ls-t-ban, html.ls-banned #lockscreen:not([data-state]) .ls-t-ban { display: inline; }
+    #lockscreen[data-state="banned"] .ls-ban, html.ls-banned #lockscreen:not([data-state]) .ls-ban { display: flex; }
+    #lockscreen[data-state="banned"] .ls-field, html.ls-banned #lockscreen:not([data-state]) .ls-field,
+    #lockscreen[data-state="banned"] .ls-ask, html.ls-banned #lockscreen:not([data-state]) .ls-ask { display: none; }
+    #lockscreen[data-state="banned"][data-unban]:not(.ls-unbanning) .ls-unban-open { display: block; }
+    #lockscreen[data-state="banned"].ls-unbanning .ls-unban { display: flex; }
+    /* the code box (and its message) where the password box was: above the iPad keyboard */
+    #lockscreen.ls-unbanning .ls-ban-text { display: none; }
+    .ls-ban { flex-direction: column; gap: 14px; }
+    .ls-ban-text { margin: 0; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 18px; line-height: 1.4; }
+    .ls-unban { flex-direction: column; gap: 14px; }
+    /* dots, not the code: a child looking over Philip's shoulder can't read it off the box */
+    .ls-code { font-size: 28px; letter-spacing: 0.12em; text-indent: 0.12em; -webkit-text-security: disc; }
+    /* a 44 px tap target that looks as small as before (the negative margins take up the difference) */
+    .ls-unban-open {
+      align-self: center; min-height: 44px; padding: 4px 12px; margin: -8px 0 -10px; border: 0; background: none; cursor: pointer;
+      color: rgba(255, 255, 255, 0.45); font-family: system-ui, -apple-system, sans-serif; font-size: 13px; text-decoration: underline; touch-action: manipulation;
+    }
+    .ls-msg.ls-ok { color: #8ff0a4; }
     .ls-card.ls-shake { animation: ls-shake 0.42s; }
     @keyframes ls-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-12px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-7px); } 80% { transform: translateX(4px); } }
     @media (prefers-reduced-motion: reduce) { .ls-card.ls-shake { animation: none; } .ls-busy { animation-duration: 3s; } }
@@ -60,7 +84,12 @@
       .ls-title { font-size: 22px; }
       .ls-field { gap: 9px; }
       .ls-input { min-height: 54px; font-size: 28px; }
+      .ls-code { font-size: 24px; }
+      .ls-ban-text { font-size: 16px; }
+      .ls-ban, .ls-unban { gap: 9px; }
       .ls-go, .ls-retry { min-height: 56px; font-size: 24px; }
       .ls-remember { min-height: 36px; font-size: 15px; }
     }
     @media (max-width: 380px) { .ls-input { font-size: 28px; letter-spacing: 0.16em; text-indent: 0.16em; } .ls-card { padding: 18px 14px 14px; } }
+    /* (after the rule above, which would otherwise widen the 10-character code past its box on phones) */
+    @media (max-width: 420px) { .ls-code { font-size: 24px; letter-spacing: 0.06em; text-indent: 0.06em; } }
