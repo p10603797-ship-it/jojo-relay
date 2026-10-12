@@ -41,7 +41,25 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
 .lb-xp { width: 90px; height: 10px; border-radius: 5px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
 .lb-xp i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4fb3ff, #7cf2ff); }
 .lb-icon { width: 56px; height: 56px; border: 0; border-radius: 50%; background: rgba(16, 12, 44, 0.7); color: #fff; font-size: 24px; display: grid; place-items: center; font-family: system-ui, sans-serif !important; }
-.lb-icon:active, .lb-tab:active, .lb-btn:active, .lc:active, .lb-change:active { transform: translateY(2px); }
+.lb-icon:active, .lb-tab:active, .lb-btn:active, .lc:active, .lb-change:active, .lb-live:active { transform: translateY(2px); }
+/* the live player count (js/net/presence.js): a pulsing green dot and '12 PLAYING' */
+.lb-live {
+  display: flex; align-items: center; gap: 10px; height: 56px; min-width: 56px; padding: 0 18px 0 16px; border: 0; border-radius: 28px; flex: none;
+  background: rgba(16, 12, 44, 0.7); color: #fff; font-size: 20px; letter-spacing: 1px; white-space: nowrap;
+}
+.lb-live i { position: relative; width: 12px; height: 12px; border-radius: 50%; background: #45e05a; flex: none; box-shadow: 0 0 6px rgba(69, 224, 90, 0.8); }
+/* the pulse: a ring that grows and fades (transform + opacity only, so it costs the iPad nothing) */
+.lb-live i::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: #45e05a; animation: livepulse 1.8s ease-out infinite; }
+.lb-live b { font-weight: normal; color: #8dff97; }
+@keyframes livepulse { from { transform: scale(1); opacity: 0.8; } to { transform: scale(2.8); opacity: 0; } }
+/* no count yet (or offline): invisible, but keeping its room */
+.lb-live.waiting { visibility: hidden; }
+.lb-live.waiting i::after { animation: none; }
+@media (prefers-reduced-motion: reduce) { .lb-live i::after { animation: none; opacity: 0; } }
+/* a tight bar (iPad portrait): the XP bar gives way, the round buttons keep their 56 px */
+.lb-icon, .lb-lv { flex: none; }
+.lb-level { min-width: 56px; }
+.lb-xp { min-width: 30px; }
 
 /* ------------------------------------------------------------------ left rail: party */
 .lb-rail { position: absolute; left: var(--pad-l); top: calc(86px + var(--sat)); width: 258px; display: flex; flex-direction: column; gap: 8px; max-height: calc(100% - 170px - var(--sat) - var(--sab)); }
@@ -341,6 +359,7 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
 }
 @media (orientation: portrait) {
   .lb-top .lb-tab { display: none; }
+  .lb-live .lb-lword { display: none; } /* just the dot and the number */
   .lb-rail { width: min(300px, 46vw); max-height: calc(100% - 420px - var(--sat) - var(--sab)); }
   .lb-br { left: var(--pad-l); width: auto; }
   /* above the mode card + PLAY, however tall they are (--brh: lobby.js measures it) */
@@ -350,8 +369,14 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
 }
 @media (max-width: 760px) {
   .lb-logo { display: none; }
+  .lb-live { padding: 0 14px 0 12px; gap: 8px; }
   .lb-rail { width: 200px; }
   .lc .lc-lv { display: none; }
   .rs-top { grid-template-columns: 1fr; }
   .inv-wrap { flex-direction: column-reverse; }
+}
+/* phones held upright: the top bar keeps to the essentials (like phones on their side) */
+@media (max-width: 560px) {
+  .lb-top { gap: 6px; }
+  .lb-xp, .lb-help { display: none; }
 }

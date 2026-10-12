@@ -1,5 +1,5 @@
 // The lobby screen over the stage (iPad first: every tap target is at least 56 px).
-//   top bar      PLAY tab, level chip, locker, help, settings, full screen
+//   top bar      PLAY tab, live player count, level chip, locker, help, settings, full screen
 //   left rail    party cards (crown, READY, level), '+' INVITE slots, JOIN A FRIEND, REJOIN, LEAVE
 //   bottom right the mode card with CHANGE (Discover), PLAY for the leader / READY for members
 //   bottom left  EMOTE, WARM UP
@@ -69,6 +69,7 @@ export class LobbyUi {
       <div class="lb-top">
         <div class="lb-logo">PHORTNITE</div>
         <button class="lb-tab sel">PLAY</button>
+        <button class="lb-live waiting" aria-label="Players online"><i></i><b class="lb-lnum">1</b><span class="lb-lword">PLAYING</span></button>
         <div class="lb-spacer"></div>
         <div class="lb-level" title="Your level"><b class="lb-lv">1</b><div class="lb-xp"><i></i></div></div>
         <button class="lb-icon lb-locker" aria-label="Locker">👕</button>
@@ -102,7 +103,7 @@ export class LobbyUi {
       <div class="lb-results hidden"></div>`;
     this.el = {};
     for (const k of ['code', 'cards', 'join', 'rejoin', 'leave', 'memoji', 'mname', 'mtags', 'mode', 'change', 'play', 'psub', 'banner', 'btext', 'spec',
-      'count', 'cnum', 'cancel', 'victory', 'results', 'lv', 'xp', 'emote', 'warm', 'ptitle']) this.el[k] = $(`.lb-${k}`, this.root);
+      'count', 'cnum', 'cancel', 'victory', 'results', 'lv', 'xp', 'emote', 'warm', 'ptitle', 'live', 'lnum']) this.el[k] = $(`.lb-${k}`, this.root);
     this.el.xp = $('.lb-xp i', this.root);
     this.cache = {};
     const confetti = $('.lb-confetti', this.root);
@@ -139,6 +140,7 @@ export class LobbyUi {
     on(this.el.play, () => this.play());
     on(this.el.cancel, () => app.game && app.game.send({ t: 'cancel' }));
     on(this.el.spec, () => app.spectate());
+    on(this.el.live, () => this.liveToast());
     on($('.lb-level', this.root), () => app.ui.profileModal && app.ui.profileModal());
     this.el.cards.addEventListener('click', (e) => {
       const card = e.target.closest('[data-act]');
@@ -346,6 +348,7 @@ export class LobbyUi {
 
   /** A short message at the top; opts {action, onAction, ms, kind}. */
   toast(html, opts = {}) {
+    this.placeToasts();
     const d = document.createElement('div');
     d.className = `toast ${opts.kind || ''}`;
     d.innerHTML = `<span>${html}</span>`;
@@ -360,6 +363,47 @@ export class LobbyUi {
     while (this.toasts.children.length > 3) this.toasts.firstChild.remove();
     setTimeout(() => d.remove(), opts.ms || 4500);
     return d;
+  }
+
+  /**
+   * In the lobby on a narrow screen (portrait, phones) the toasts go right of the party rail, not
+   * over its cards (like Philip's news under the bar, js/ui/announce.js); else the top middle.
+   */
+  placeToasts() {
+    const st = this.toasts.style;
+    st.left = st.width = st.transform = '';
+    if (!document.body.classList.contains('onstage')) return;
+    const rail = $('.lb-rail', this.root).getBoundingClientRect();
+    const left = rail.right + 12, right = innerWidth - 12;
+    if (!rail.width || this.toasts.getBoundingClientRect().left >= left || right - left < 200) return;
+    st.left = `${left}px`;
+    st.width = `${right - left}px`;
+    st.transform = 'none';
+  }
+
+  /**
+   * The live player count (js/net/presence.js): c = { total, inMatch, inLobby, online }. Hidden
+   * until the first count is in, and while it can't reach the broker; hidden, it keeps its room in
+   * the top bar, so Philip's news there doesn't jump between the bar and under it.
+   */
+  playerCount(c) {
+    this.live = c && c.online ? c : null;
+    const n = this.live ? this.live.total : 0;
+    this.set('live', this.live ? (n > 999 ? '999+' : String(n)) : '', (v) => {
+      this.el.live.classList.toggle('waiting', !v);
+      if (v) this.el.lnum.textContent = v;
+      this.el.live.setAttribute('aria-label', v ? `${v} playing right now` : 'Players online');
+      // the number's width moves the top bar's gap, where Philip's news may sit
+      if (this.app.announce) requestAnimationFrame(() => this.app.announce.place());
+    });
+  }
+
+  /** Tap the count: who's playing where. */
+  liveToast() {
+    const c = this.live;
+    if (!c) return;
+    if (c.total <= 1) { this.toast('<b>Only you</b> are playing Phortnite right now. Invite a friend! 👋', { ms: 5000 }); return; }
+    this.toast(`<b>${c.total} people</b> are playing Phortnite right now · ${c.inMatch} in a match · ${c.inLobby} in the lobby`, { ms: 5000 });
   }
 
   /** The connection pill: text, or '' to hide. */

@@ -79,11 +79,12 @@ export class Announce {
 
   /**
    * In the lobby: in the top bar between its buttons when it fits, else under the bar right of the
-   * party cards. In a match (and while loading) the stylesheet's spot: the top middle.
+   * party cards (and the toasts under it). In a match (and while loading) the stylesheet's spot:
+   * the top middle.
    */
   place() {
     const el = this.el, st = el.style;
-    st.left = st.top = st.maxWidth = '';
+    st.left = st.top = st.maxWidth = st.width = '';
     let low = false;
     const lobby = document.body.classList.contains('onstage') && !el.classList.contains('hidden');
     const sp = lobby && document.querySelector('#lobby .lb-spacer');
@@ -99,7 +100,11 @@ export class Announce {
         const left = (rail ? rail.getBoundingClientRect().right : 0) + 12, right = innerWidth - 12;
         st.left = `${(left + right) / 2}px`;
         st.maxWidth = `${Math.floor(right - left)}px`;
+        // (centred on 'left', a fixed box would only get the width right of it: half the room)
+        st.width = 'max-content';
         st.top = `${c.bottom + 10}px`;
+        // the toasts go under it, however many lines the message takes
+        document.body.style.setProperty('--toasts-top', `${Math.round(c.bottom + 10 + el.offsetHeight + 8)}px`);
         low = true;
       }
     }

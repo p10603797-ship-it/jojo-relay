@@ -1,5 +1,6 @@
 // A tiny MQTT 3.1.1 client over WebSocket (QoS 0, clean sessions): just enough to pass party
-// messages through a public broker when two devices can't open a direct link (see relay.js).
+// messages through a public broker when two devices can't open a direct link (see relay.js), and
+// for the live player count (presence.js): retained messages, a Last Will, '+' / '#' filters.
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -41,6 +42,18 @@ function packet(head, parts) {
   return out;
 }
 
+/** Does an MQTT topic filter match a topic? '+' is one level, '#' every level from there on. */
+export function topicMatches(filter, topic) {
+  const f = typeof filter === 'string' ? filter.split('/') : filter;
+  if ((f[0] === '+' || f[0] === '#') && topic[0] === '$') return false; // the broker's own topics
+  const t = topic.split('/');
+  for (let i = 0; i < f.length; i++) {
+    if (f[i] === '#') return true; // ('a/#' matches 'a' too)
+    if (i >= t.length || (f[i] !== '+' && f[i] !== t[i])) return false;
+  }
+  return f.length === t.length;
+}
+
 function bytes(data) {
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -48,12 +61,18 @@ function bytes(data) {
 }
 
 export class Mqtt {
-  /** server: { url, user?, pass? } */
+  /**
+   * server: { url, user?, pass? }
+   * opts.will: { topic, payload, retain } the broker publishes for us if we vanish without a
+   * goodbye (a crash, lost Wi-Fi); a clean close() skips it.
+   */
   constructor(server, opts = {}) {
     this.server = server;
     this.keepalive = opts.keepalive || 20; // seconds
     this.id = opts.clientId || `phx${Math.random().toString(36).slice(2, 12)}`;
-    this.subs = new Map(); // topic -> fn(text)
+    this.will = opts.will || null;
+    this.subs = new Map(); // topic -> fn(text, topic, retained)
+    this.wild = new Map(); // filter with '+' or '#' -> { parts, fn }
     this.acks = new Map(); // packet id -> fn(ok)
     this.pid = 0;
     this.rx = new Uint8Array(0);
@@ -90,9 +109,11 @@ export class Mqtt {
         done();
       };
       ws.onopen = () => {
-        const u = this.server.user, p = this.server.pass;
-        const flags = 0x02 | (u ? 0x80 : 0) | (u && p ? 0x40 : 0); // clean session
+        const u = this.server.user, p = this.server.pass, w = this.will;
+        // clean session; a will at QoS 0, kept by the broker (retained) if asked
+        const flags = 0x02 | (w ? 0x04 | (w.retain ? 0x20 : 0) : 0) | (u ? 0x80 : 0) | (u && p ? 0x40 : 0);
         const parts = [utf8('MQTT'), Uint8Array.of(4, flags, this.keepalive >> 8, this.keepalive & 255), utf8(this.id)];
+        if (w) parts.push(utf8(w.topic), utf8(w.payload || ''));
         if (u) parts.push(utf8(u));
         if (u && p) parts.push(utf8(p));
         this.raw(packet(0x10, parts));
@@ -151,8 +172,17 @@ export class Mqtt {
         if (qos === 1) this.raw(Uint8Array.of(0x40, 2, body[off], body[off + 1])); // PUBACK
         off += 2;
       }
+      // retained: the broker kept it from before (sent because we just subscribed)
+      const retained = (head & 1) === 1;
+      let text = null;
       const fn = this.subs.get(topic);
-      if (fn) fn(dec.decode(body.subarray(off)));
+      if (fn) fn(text = dec.decode(body.subarray(off)), topic, retained);
+      for (const w of this.wild.values()) {
+        if (this.dead) return;
+        if (!topicMatches(w.parts, topic)) continue;
+        if (text === null) text = dec.decode(body.subarray(off));
+        w.fn(text, topic, retained);
+      }
     } else if (type === 9) {
       const fn = this.acks.get((body[0] << 8) | body[1]);
       if (fn) fn(body[2] !== 0x80);
@@ -160,9 +190,13 @@ export class Mqtt {
     // PINGRESP and anything else: lastRx already moved on
   }
 
-  /** Subscribe (QoS 0); fn(text) hears every message on the topic. */
+  /**
+   * Subscribe (QoS 0); fn(text, topic, retained) hears every message on the topic, or on every
+   * topic a filter with '+' / '#' matches.
+   */
   subscribe(topic, fn) {
-    this.subs.set(topic, fn);
+    if (/[+#]/.test(topic)) this.wild.set(topic, { parts: topic.split('/'), fn });
+    else this.subs.set(topic, fn);
     this.pid = (this.pid % 65535) + 1;
     const id = this.pid;
     return new Promise((resolve, reject) => {
@@ -176,9 +210,10 @@ export class Mqtt {
     });
   }
 
-  publish(topic, text) {
+  /** retain: the broker keeps it and hands it to whoever subscribes later ('' deletes it). */
+  publish(topic, text, { retain = false } = {}) {
     if (!this.open) return false;
-    return this.raw(packet(0x30, [utf8(topic), enc.encode(text)]));
+    return this.raw(packet(retain ? 0x31 : 0x30, [utf8(topic), enc.encode(text)]));
   }
 
   /** Every 2 s: keep the broker happy, and notice a connection that died while the page slept. */
@@ -211,6 +246,7 @@ export class Mqtt {
     for (const fn of [...this.acks.values()]) fn(false);
     this.acks.clear();
     this.subs.clear();
+    this.wild.clear();
     const cb = this.onClose;
     this.onClose = null;
     if (cb) cb();
