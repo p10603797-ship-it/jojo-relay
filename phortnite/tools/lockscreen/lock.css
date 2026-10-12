@@ -92,4 +92,4 @@
     }
     @media (max-width: 380px) { .ls-input { font-size: 28px; letter-spacing: 0.16em; text-indent: 0.16em; } .ls-card { padding: 18px 14px 14px; } }
     /* (after the rule above, which would otherwise widen the 10-character code past its box on phones) */
-    @media (max-width: 420px) { .ls-code { font-size: 24px; letter-spacing: 0.06em; text-indent: 0.06em; } }
+    @media (max-width: 420px) { .ls-code { font-size: min(24px, 6.5vw); letter-spacing: 0.06em; text-indent: 0.06em; } }
