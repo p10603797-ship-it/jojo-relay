@@ -25,6 +25,7 @@ import { LobbyUi } from './ui/lobby.js';
 import { Invite, keepSettings } from './ui/invite.js';
 import { Profile } from './profile.js';
 import { Music } from './music.js';
+import { Presence } from './net/presence.js';
 
 const TIPS = [
   'Tip: build a wall the moment someone starts shooting at you.',
@@ -211,6 +212,12 @@ class App {
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
     window.__phortnite = this;
+    // the live player count in the lobby: everyone with the game open, counted over the public
+    // relay brokers. 'm' on the island in a match (not warm-up); it connects a moment after the
+    // first frames, never in their way
+    this.presence = new Presence({ state: () => (this.game && !this.stageOn && !this.warming ? 'm' : 'l') });
+    this.presence.onChange((c) => this.lobby.playerCount(c));
+    setTimeout(() => this.presence.start(), 1000);
     // ?bench: the benchmark (js/bench.js) takes over from here
     if (new URLSearchParams(location.search).has('bench')) {
       import('./bench.js').then((m) => m.runBench && m.runBench(this)).catch((e) => console.error('bench', e));
@@ -509,6 +516,8 @@ class App {
     this.updateWake();
     // the news banner moves between the lobby's top bar and the match's top middle
     if (this.announce) requestAnimationFrame(() => { this.announce.render(); this.announce.place(); });
+    // lobby <-> match for the player count
+    if (this.presence) this.presence.update();
   }
 
   /** The leader's PLAY: 3, 2, 1 for everyone, then the bus. */

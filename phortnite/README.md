@@ -39,6 +39,10 @@ directly over WebRTC (the free [PeerJS](https://peerjs.com) service only introdu
 to each other, and relays traffic if a direct link isn't possible). Up to 8 players fit in a
 website party. The host keeps the same party code across reloads, so friends can **REJOIN**.
 
+The lobby shows how many people are playing Phortnite right now (tap it to see how many are in
+a match). It is counted through the same free public relay, anonymously: each open game only
+says "here, in the lobby" or "here, in a match" under a random id that changes on every load.
+
 Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
 screen for a true full-screen game.
 

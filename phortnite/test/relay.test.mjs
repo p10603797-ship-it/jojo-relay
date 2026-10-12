@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startBroker } from './helpers/minibroker.mjs';
-import { Mqtt } from '../public/js/net/mqtt.js';
+import { Mqtt, topicMatches, useWebSocket } from '../public/js/net/mqtt.js';
 import { RelayHost, relayDial, useBrokers, topicFor } from '../public/js/net/relay.js';
 import { P2PHost, P2PClient, usePeer, frameSender, frameReceiver } from '../public/js/net/p2p.js';
 import { PROTOCOL } from '../public/shared/constants.js';
@@ -44,6 +44,102 @@ test('mqtt: connects with a login, hears its own messages (packets split over fr
     await assert.rejects(new Mqtt({ url: 'ws://127.0.0.1:1/mqtt' }).connect(2000));
   } finally {
     await b.stop();
+  }
+});
+
+test('mqtt: retained messages, a Last Will and wildcard filters (what the live player count needs)', async () => {
+  const b = await startBroker({ split: true });
+  const ms = [];
+  const client = async (opts) => { const m = new Mqtt({ url: b.url }, opts); ms.push(m); await m.connect(); return m; };
+  try {
+    const a = await client({ will: { topic: 'w/a', payload: 'a is gone', retain: true } });
+    a.publish('r/1', 'one', { retain: true });
+    a.publish('r/2', 'two', { retain: true });
+    a.publish('r/x/deep', 'deep', { retain: true });
+    a.publish('r/3', 'not kept');
+    // (one client each: a client hands a message to every one of its filters that matches)
+    const c = await client(), c2 = await client(), c3 = await client();
+    const got = [], deep = [], exact = [];
+    await c.subscribe('r/+', (t, topic, retained) => got.push([topic, t, retained]));
+    await c2.subscribe('r/#', (t, topic) => deep.push(topic));
+    await c3.subscribe('r/1', (t, topic, retained) => exact.push([t, retained]));
+    await until(() => got.length === 2 && deep.length >= 3 && exact.length === 1);
+    // a new subscriber gets what the broker kept, flagged as retained; '+' is one level, '#' all of them
+    assert.deepEqual(got.sort(), [['r/1', 'one', true], ['r/2', 'two', true]]);
+    assert.ok(deep.includes('r/x/deep'));
+    assert.deepEqual(exact, [['one', true]]);
+    // live messages: not flagged, to wildcard and exact subscribers alike
+    got.length = 0; exact.length = 0;
+    a.publish('r/1', 'uno');
+    a.publish('r/4', 'four', { retain: true });
+    await until(() => got.length === 2 && exact.length === 1);
+    assert.deepEqual(got, [['r/1', 'uno', false], ['r/4', 'four', false]]);
+    assert.deepEqual(exact, [['uno', false]]);
+    // an empty retained message reaches subscribers, and deletes the kept one
+    a.publish('r/2', '', { retain: true });
+    await until(() => got.length === 3);
+    assert.deepEqual(got[2], ['r/2', '', false]);
+    const d = await client();
+    const later = [];
+    await d.subscribe('r/+', (t, topic) => later.push(topic));
+    await sleep(150);
+    assert.deepEqual(later.sort(), ['r/1', 'r/4']);
+    // a vanishes without a goodbye: the broker speaks (and keeps) its will
+    const wills = [];
+    await c.subscribe('w/+', (t, topic) => wills.push([topic, t]));
+    b.drop(a.id);
+    await until(() => wills.length === 1);
+    assert.deepEqual(wills, [['w/a', 'a is gone']]);
+    assert.equal(String(b.retained.get('w/a')), 'a is gone');
+    // a clean close: no will
+    const e = await client({ will: { topic: 'w/e', payload: 'e is gone' } });
+    e.close();
+    await sleep(200);
+    assert.equal(wills.length, 1);
+    // closing drops every subscription, wildcards included
+    c.close();
+    assert.equal(c.subs.size + c.wild.size, 0);
+    // the filter rules
+    for (const [f, t, yes] of [['a/+', 'a/b', true], ['a/+', 'a/b/c', false], ['a/+', 'a', false], ['a/#', 'a', true], ['a/#', 'a/b/c', true],
+      ['#', 'x/y', true], ['+/b', 'a/b', true], ['+/b', '$SYS/b', false], ['a/b', 'a/b', true], ['a/+/c', 'a//c', true], ['p/v1/+', 'p/v1/x/y', false]]) {
+      assert.equal(topicMatches(f, t), yes, `${f} vs ${t}`);
+    }
+  } finally {
+    for (const m of ms) m.close();
+    await b.stop();
+  }
+});
+
+test('mqtt: CONNECT carries the will (QoS 0, retain flag) between the client id and the login', async () => {
+  const sent = [];
+  class FakeWS {
+    constructor() { this.readyState = 1; this.bufferedAmount = 0; setTimeout(() => this.onopen(), 0); }
+    send(b) {
+      sent.push(Uint8Array.from(b));
+      if (b[0] === 0x10) setTimeout(() => this.onmessage({ data: Uint8Array.of(0x20, 2, 0, 0).buffer }), 0); // CONNACK
+    }
+    close() {}
+  }
+  useWebSocket(FakeWS);
+  try {
+    const m = new Mqtt({ url: 'ws://x', user: 'u', pass: 'p' }, { clientId: 'id', will: { topic: 'w', payload: 'bye', retain: true } });
+    await m.connect();
+    const c = sent[0];
+    assert.equal(c[0], 0x10);
+    assert.equal(c[9], 0x02 | 0x04 | 0x20 | 0x80 | 0x40, 'clean session, will, will retain, user, pass (will QoS 0)');
+    assert.deepEqual([...c.subarray(12)], [0, 2, 105, 100, 0, 1, 119, 0, 3, 98, 121, 101, 0, 1, 117, 0, 1, 112]);
+    m.publish('t', 'x', { retain: true });
+    m.publish('t', 'y');
+    assert.equal(sent[1][0], 0x31);
+    assert.equal(sent[2][0], 0x30);
+    m.close();
+    sent.length = 0;
+    const plain = new Mqtt({ url: 'ws://x' }, { clientId: 'id' });
+    await plain.connect();
+    assert.equal(sent[0][9], 0x02, 'no will, no login: just a clean session');
+    plain.close();
+  } finally {
+    useWebSocket(null);
   }
 });
 
