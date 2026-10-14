@@ -1,6 +1,6 @@
 {
  "v": 1,
- "version": "2.2.0",
+ "version": "2.3.0",
  "kdf": "PBKDF2-SHA256",
  "iter": 600000,
  "salt": "0UF3J2wETCCl4Znr8T56zg==",
@@ -65,11 +65,11 @@
  "files": {
   "gz": {
    "path": "game.lock",
-   "iv": "q2cz45mbz1oOBWAc"
+   "iv": "AYjT8B4NgtIXmOa2"
   },
   "raw": {
    "path": "game.raw.lock",
-   "iv": "5/JXnOs+whP73Kpt"
+   "iv": "YCQ01gCKgznQlC7E"
   }
  },
  "built": [
