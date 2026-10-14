@@ -70,6 +70,7 @@ export class LobbyUi {
         <div class="lb-logo">PHORTNITE</div>
         <button class="lb-tab sel">PLAY</button>
         <button class="lb-live waiting" aria-label="Players online"><i></i><b class="lb-lnum">1</b><span class="lb-lword">PLAYING</span></button>
+        <button class="lb-admin hidden" aria-label="Admin panel">🛡<span class="lb-adword">ADMIN</span></button>
         <div class="lb-spacer"></div>
         <div class="lb-level" title="Your level"><b class="lb-lv">1</b><div class="lb-xp"><i></i></div></div>
         <button class="lb-icon lb-locker" aria-label="Locker">👕</button>
@@ -141,6 +142,7 @@ export class LobbyUi {
     on(this.el.cancel, () => app.game && app.game.send({ t: 'cancel' }));
     on(this.el.spec, () => app.spectate());
     on(this.el.live, () => this.liveToast());
+    on($('.lb-admin', this.root), () => app.adminLogin && app.adminLogin.openPanel());
     on($('.lb-level', this.root), () => app.ui.profileModal && app.ui.profileModal());
     this.el.cards.addEventListener('click', (e) => {
       const card = e.target.closest('[data-act]');
@@ -360,7 +362,9 @@ export class LobbyUi {
     }
     d.addEventListener('click', () => d.remove());
     this.toasts.appendChild(d);
-    while (this.toasts.children.length > 3) this.toasts.firstChild.remove();
+    // (three toasts at most; the admin's chips and message cards at the column's top stay)
+    const all = this.toasts.querySelectorAll(':scope > .toast');
+    for (let i = 0; i < all.length - 3; i++) all[i].remove();
     setTimeout(() => d.remove(), opts.ms || 4500);
     return d;
   }
@@ -396,6 +400,12 @@ export class LobbyUi {
       // the number's width moves the top bar's gap, where Philip's news may sit
       if (this.app.announce) requestAnimationFrame(() => this.app.announce.place());
     });
+  }
+
+  /** The 🛡 ADMIN button (admin mode only, js/ui/adminLogin.js); Philip's news moves with the gap it leaves. */
+  adminButton(on) {
+    $('.lb-admin', this.root).classList.toggle('hidden', !on);
+    if (this.app.announce) requestAnimationFrame(() => this.app.announce.place());
   }
 
   /** Tap the count: who's playing where. */

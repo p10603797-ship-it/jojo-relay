@@ -10,9 +10,15 @@
 // broker notices a dead connection only after the page has reconnected): a page that hears its
 // own message deleted says it again.
 //
-// The id is random per page load and never stored, and nothing else is sent: no names, no
-// tracking. Traffic stays tiny however many play: with N playing everyone refreshes every
-// max(2 min, N s), so each page hears about one message a second at most.
+// The id is random per page load and never stored: no tracking. Traffic stays tiny however many
+// play: with N playing everyone refreshes every max(2 min, N s), so each page hears about one
+// message a second at most.
+//
+// Where the website has an admin (public/admin.json), the message also carries 'a': the page's
+// player card sealed to the admin's key (js/admin/client.js, setExtra): the broker and everyone
+// else see only ciphertext, never a name. Pages without it (or old ones) send just {s, t}. The admin's
+// signed commands ride on this same connection (listen / publish, js/admin/): one broker
+// connection per page.
 import { Mqtt } from './mqtt.js';
 import { brokers } from './relay.js';
 
@@ -45,12 +51,19 @@ function newId() {
   return s.slice(0, 12);
 }
 
-/** A presence message, or null when it isn't one. */
-function parse(text) {
+/** A sealed admin card's shape ({e, iv, ct}: js/admin/keys.js sealToAdmin), size-capped. */
+function sealedShape(a) {
+  return !!a && typeof a === 'object' && typeof a.e === 'string' && a.e.length <= 120 && typeof a.iv === 'string'
+    && a.iv.length <= 24 && typeof a.ct === 'string' && a.ct.length <= 1400;
+}
+
+/** A presence message ({s, t} and maybe a sealed card 'a'), or null when it isn't one. */
+export function parse(text) {
   let v;
   try { v = JSON.parse(text); } catch (e) { return null; }
   if (!v || typeof v !== 'object' || (v.s !== 'l' && v.s !== 'm') || !Number.isFinite(v.t)) return null;
-  return v;
+  // a card that isn't one is dropped (the page still counts)
+  return sealedShape(v.a) ? { s: v.s, t: v.t, a: { e: v.a.e, iv: v.a.iv, ct: v.a.ct } } : { s: v.s, t: v.t };
 }
 
 export class Presence {
@@ -60,8 +73,8 @@ export class Presence {
     this.state = typeof opts.state === 'function' ? opts.state : () => 'l';
     this.id = newId();
     this.topic = PRESENCE_PREFIX + this.id;
-    this.peers = new Map(); // id -> { s, at: when we last heard (local clock) }
-    this.snap = new Map(); // the broker's snapshot while it comes in: id -> { s, t }
+    this.peers = new Map(); // id -> { s, at: when we last heard (local clock), a: sealed card or null }
+    this.snap = new Map(); // the broker's snapshot while it comes in: id -> { s, t, a? }
     this.fns = [];
     this.m = null; // the broker connection in use
     this.pending = null; // one being made
@@ -77,10 +90,71 @@ export class Presence {
     this.lastNotify = 0;
     this.shown = '';
     this.wait = this.o.backoffMs;
+    this.extra = null; // more fields for our message (the sealed admin card 'a': setExtra)
+    this.extraKey = '';
+    this.extraDirty = false;
+    this.said = []; // our last few messages: their echoes are ours, anything else on our topic is not
+    this.listens = []; // more topics on this connection: [{ filter, fn }] (the admin channel: listen)
+    this.cardFns = [];
   }
 
   /** fn({ total, inMatch, inLobby, online }) whenever those change (at most ~2 a second). */
   onChange(fn) { this.fns.push(fn); }
+
+  /** fn() when someone's sealed card changed, or someone came or went (at most ~2 a second): see cards(). */
+  onCards(fn) {
+    this.cardFns.push(fn);
+    return () => { this.cardFns = this.cardFns.filter((f) => f !== fn); };
+  }
+
+  /**
+   * Everyone else heard with a sealed card: [{ id, s, a, prev, at }] (the admin opens them). prev:
+   * the card before it (null at first): one that was there only for a moment (someone faking that
+   * player, put right again at once by its page) still reaches the admin's panel.
+   */
+  cards() {
+    const out = [];
+    for (const [id, p] of this.peers) if (p.a) out.push({ id, s: p.s, a: p.a, prev: p.prev || null, at: p.at });
+    return out;
+  }
+
+  /**
+   * More fields for our message (null: none), e.g. { a: sealed card }. Said again when they change
+   * (no sooner than minGapMs after the last message: see update()), and with every refresh.
+   */
+  setExtra(fields) {
+    const key = fields ? JSON.stringify(fields) : '';
+    if (key === this.extraKey) return;
+    this.extra = fields || null;
+    this.extraKey = key;
+    this.extraDirty = true;
+    this.update();
+  }
+
+  /**
+   * Hear another topic (or '+' / '#' filter) on this page's broker connection, on every connection
+   * it makes from now on: fn(text, topic, retained). Returns a function that stops it.
+   */
+  listen(filter, fn) {
+    const l = { filter, fn };
+    this.listens.push(l);
+    if (this.m && this.m.open) this.hook(this.m, l);
+    return () => { this.listens = this.listens.filter((x) => x !== l); };
+  }
+
+  /** Publish on this page's broker connection. False when not connected. */
+  publish(topic, text, opts = {}) {
+    const m = this.m;
+    if (!m || !m.open) return false;
+    return m.publish(topic, text, opts);
+  }
+
+  hook(m, l) {
+    // (a broker that refuses the topic leaves the player count alone)
+    m.subscribe(l.filter, (text, topic, retained) => {
+      if (m === this.m && this.listens.includes(l)) l.fn(text, topic, retained);
+    }).catch(() => {});
+  }
 
   /** Go online. False when there are no brokers to use (?relay=off). */
   start() {
@@ -110,6 +184,7 @@ export class Presence {
     clearInterval(this.ticker);
     clearTimeout(this.hideTimer);
     clearTimeout(this.notifyTimer);
+    clearTimeout(this.cardTimer);
     if (this.onVis) {
       document.removeEventListener('visibilitychange', this.onVis);
       removeEventListener('pagehide', this.onPageHide);
@@ -169,6 +244,7 @@ export class Presence {
           clearTimeout(this.settleTimer);
           this.settleTimer = setTimeout(() => this.settle(m), this.o.settleMs);
           this.homeward();
+          for (const l of this.listens) this.hook(m, l);
           return;
         } catch (e) {
           if (this.pending === m) this.pending = null;
@@ -282,23 +358,29 @@ export class Presence {
     if (!m || !m.open) return;
     this.mine = this.own();
     this.lastSay = Date.now();
-    m.publish(this.topic, JSON.stringify({ s: this.mine, t: this.secs() }), { retain: true });
+    this.extraDirty = false;
+    const text = JSON.stringify({ ...this.extra, s: this.mine, t: this.secs() });
+    this.said = [...this.said.slice(-7), text];
+    m.publish(this.topic, text, { retain: true });
     clearTimeout(this.sayTimer);
     this.sayTimer = setTimeout(() => this.say(), this.refreshMs(this.peers.size + 1) * (0.9 + Math.random() * 0.2));
     this.changed();
   }
 
-  /** Lobby <-> match: tell everyone now (or at the next tick, so a flip-flop can't spam). */
+  /** Lobby <-> match (or new extra fields): tell everyone now (or at the next tick, so a flip-flop can't spam). */
   update() {
-    if (!this.m || !this.m.open || this.own() === this.mine) return;
-    this.changed();
+    if (!this.m || !this.m.open) return;
+    const moved = this.own() !== this.mine;
+    if (!moved && !this.extraDirty) return;
+    if (moved) this.changed();
     if (Date.now() - this.lastSay >= Math.max(this.o.minGapMs, this.o.perPlayerMs * (this.peers.size + 1) / 20)) this.say();
   }
 
   /**
    * Our own entry was deleted while we're connected: the will of a connection we already gave up
    * on, spoken late (the broker noticed it dead only after we had reconnected), or a newcomer that
-   * took us for a ghost. Say it again (no more than once per minGapMs).
+   * took us for a ghost; or someone else's message took its place (anyone can publish there). Say
+   * it again (no more than once per minGapMs).
    */
   reclaim() {
     const wait = this.lastSay + this.o.minGapMs - Date.now();
@@ -312,7 +394,8 @@ export class Presence {
     const id = topic.slice(PRESENCE_PREFIX.length);
     if (!ID_RE.test(id)) return;
     if (id === this.id) { // (our own goodbyes go out after this.m has let go, so they never get here)
-      if (!text) this.reclaim();
+      // deleted, or someone else's message on our topic (e.g. a faked admin card): ours goes back
+      if (!text || !this.said.includes(text)) this.reclaim();
       return;
     }
     if (!text) { // left
@@ -330,7 +413,7 @@ export class Presence {
       }
       if (this.tooOld(v.t, this.peers.size + 1)) return;
     }
-    this.put(id, v.s);
+    this.put(id, v.s, v.a);
   }
 
   /** A retained entry from before the last STALE (k of them): a ghost (its will got lost), not a player. */
@@ -338,15 +421,16 @@ export class Presence {
     return this.secs() - t > Math.ceil(this.staleMs(n) / 1000);
   }
 
-  put(id, s) {
+  put(id, s, a = null) {
     const p = this.peers.get(id);
     if (p) {
       p.at = Date.now();
       if (p.s !== s) { p.s = s; this.changed(); }
+      if ((p.a && p.a.ct) !== (a && a.ct)) { p.prev = p.a; p.a = a || null; this.cardsChanged(); }
       return;
     }
     if (this.peers.size >= this.o.max) return;
-    this.peers.set(id, { s, at: Date.now() });
+    this.peers.set(id, { s, at: Date.now(), a: a || null });
     this.changed();
   }
 
@@ -360,7 +444,7 @@ export class Presence {
     const dead = [];
     let fresh = 0;
     for (const [id, v] of this.snap) {
-      if (!this.tooOld(v.t, n)) { this.put(id, v.s); fresh++; continue; }
+      if (!this.tooOld(v.t, n)) { this.put(id, v.s, v.a); fresh++; continue; }
       if (this.peers.has(id) && this.peers.get(id).at < this.since) this.peers.delete(id);
       if (this.secs() - v.t > this.o.clearMs / 1000) dead.push(id);
     }
@@ -397,6 +481,8 @@ export class Presence {
   }
 
   changed() {
+    // (whoever came or went: the admin's list of cards changes too)
+    this.cardsChanged();
     if (this.notifyTimer || !this.fns.length || this.stopped) return;
     const ms = Math.max(0, this.lastNotify + this.o.notifyMs - Date.now());
     this.notifyTimer = setTimeout(() => {
@@ -404,6 +490,16 @@ export class Presence {
       this.lastNotify = Date.now();
       this.emit();
     }, ms);
+  }
+
+  cardsChanged() {
+    if (this.cardTimer || !this.cardFns.length || this.stopped) return;
+    this.cardTimer = setTimeout(() => {
+      this.cardTimer = 0;
+      for (const fn of this.cardFns) {
+        try { fn(); } catch (e) { console.error('presence cards', e); }
+      }
+    }, this.o.notifyMs);
   }
 
   emit() {

@@ -41,8 +41,11 @@ to each other, and relays traffic if a direct link isn't possible). Up to 8 play
 website party. The host keeps the same party code across reloads, so friends can **REJOIN**.
 
 The lobby shows how many people are playing Phortnite right now (tap it to see how many are in
-a match). It is counted through the same free public relay, anonymously: each open game only
-says "here, in the lobby" or "here, in a match" under a random id that changes on every load.
+a match). It is counted through the same free public relay: each open game says "here, in the
+lobby" or "here, in a match" under a random id that changes on every load. Where the website has
+an admin (see [Admin](#admin)), each game also sends a small *player card* (name, level, lobby or
+match, party) that is encrypted so that only the admin can read it; the relay and everyone else
+only ever see scrambled data.
 
 Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
 screen for a true full-screen game.
@@ -164,6 +167,75 @@ setup after about a week without playing; the next typed password offers it agai
 password off (`remove`) also turns off Face ID set up with it (*That password was turned off*), and
 new passwords for everyone (`new --force`) need Face ID set up again. Clearing the website's data
 removes the Face ID setup. A ban hides Face ID; the unban brings it back.
+
+## Admin
+
+Philip (the admin) can see who's online and moderate the game, from any iPad, with the admin
+password. Players are told this on the *Who's playing?* screen, and moderation is never secret:
+every time the admin does something to a player, that player sees it on screen ("The admin removed
+you from the match.", "📣 Message from the admin: …", "🚫 You've been banned by the admin"…). On
+the locked website a banned device's ban screen says the admin banned it (and why), not "too many
+wrong passwords".
+
+* **Getting in.** Tap the small **Admin** button on the *Who's playing?* screen (or in the account
+  panel under the level chip) and type the admin password. Tick *Remember admin on this iPad* to
+  skip the password next time on that iPad (for 30 days); **ADMIN SIGN OUT** (same place) turns it
+  off again. Only tick it on Philip's own iPad: while the keys are remembered, any page on the same
+  website address could use them (never read them), so keep no other GitHub Pages projects on the
+  `p10603797-ship-it` account, or give Phortnite its own domain or account. A
+  wrong password just says so (it never bans the device). In admin mode the lobby's top bar has a
+  **🛡 ADMIN** button. Making an *account* an admin is not a thing: only the password gives the powers.
+* **🛡 ADMIN → PLAYERS** (everyone online, live, with their name, level, guest or account, lobby
+  or match, party code and size, host or member, mode, game version and how long they've been
+  online; tap a player for the buttons): **spectate** their match, send a **message**, **kick**
+  someone back to their own lobby, **ban** a device (it gets the lock screen's ban screen, and
+  Philip's unban code lifts it like any other ban), **rename** them, **give XP** (up to 100,000),
+  **reset stats**, or **reload** their game. For a party host: **end the match** (everyone back to the lobby) or **pause / resume** it
+  during a match, or **set the mode** in the party's lobby; everyone in that party sees that the
+  admin did it (kicking or banning a host ends their party, and the others are told why). A row
+  marked ⚠ means someone is faking that player's card: commands still reach only the real player.
+* **🛡 ADMIN → EVERYONE**: a **banner** across the top of every game (in the lobby and in matches)
+  for 5 minutes, 30 minutes, 2 hours or until cleared (a week at most); **maintenance mode** ("🛠 Philip is working
+  on the game": everyone is taken out of their match and PLAY waits until it is off); a **message
+  for everyone**; **reload everyone**. The panel says a command was *sent*: a game that is offline
+  at that moment doesn't get it.
+* **Spectating** a match joins that party as an *observer*: not a player (no spot in the party, no
+  character, nobody can hit it), just the spectator camera with ◀ ▶ to switch who you watch and
+  LEAVE. Everyone in that party sees **👁 Admin is watching** for as long as the admin is there. The
+  host's game lets an observer in only with a hello signed by the admin key for that party, and
+  each signed hello only once (the admin's game signs a new one for every join), so nobody else
+  can watch unseen. (Parties on the `npm start` server can't be watched.)
+
+How it works: `public/admin.json` holds two public keys and the matching private keys *encrypted*
+with the admin password (PBKDF2-SHA256, 600,000 rounds, then AES-256-GCM), so it is safe to publish.
+Every admin command is **signed** with the admin's private key (ECDSA P-256) and travels through the
+same free public relay as the player count; every game checks the signature against the public key
+in `admin.json` (and that the command is less than 2 minutes old, never seen before, and meant for
+it) before doing anything, so nobody else can send one. Player cards are sealed to the admin's
+other key (ECDH P-256 + AES-256-GCM), so only an unlocked admin can read names; each card also
+carries that game's own one-visit key, and what the admin sends to one player (a message, a new
+name, a reason) is sealed to it, so the relay never sees it in the clear and a faked card can't
+steer a command onto someone else. A banner and a message for *everyone* are not secret (anyone
+on the relay can read them). The password is **never stored** anywhere: on the iPad it turns into
+keys the page can use but never read back. Without an `admin.json` all of this is simply absent.
+
+What the relay can still do (it is public): drop or delay messages, so a command can fail to
+arrive (the panel only says *sent*); and someone who recorded one of the admin's *own* signed
+banners or maintenance messages can put it back on the relay after Philip changed it. A game that
+already saw the newer one never goes back (it remembers), and while Philip's admin page is open it
+puts his newest one back at once; otherwise a game opened later can show that old banner (a week
+at most) or maintenance (until the time it was set for, 12 hours unless chosen otherwise).
+
+```bash
+node tools/admin.mjs new --out public/admin.json     # a new admin key; the password is printed ONCE
+PHORTNITE_ADMIN=…  node tools/admin.mjs check --in public/admin.json   # does this password work?
+```
+
+Write the password down when it is printed: it is not saved anywhere and can't be recovered. Then
+publish the website (the locked build copies `admin.json` as it is). To **change the admin
+password or key** (it was seen, or lost), run `node tools/admin.mjs new --out public/admin.json
+--force` and publish: from then on only the new password works, every game obeys only the new key,
+and iPads that remembered the old admin forget it.
 
 ## Run your own server (optional)
 

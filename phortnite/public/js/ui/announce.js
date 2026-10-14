@@ -4,9 +4,13 @@
 // A message shows as a banner across the top until it is closed (closed messages stay closed,
 // by id). A version newer than this page's shows 'tap to update' in the lobby, which reloads with
 // fresh copies of the game's files.
+// The admin's banner (a signed state message, js/admin/client.js -> setAdmin) uses the same box, in
+// the lobby and in matches, and comes first while it is up; it says it is from the admin, can be
+// closed, and goes when the admin clears it or its time is up.
 import { VERSION } from '../../shared/constants.js';
 
 const SEEN_KEY = 'phortnite.announceSeen';
+const ADMIN_SEEN_KEY = 'phortnite.adminBannerSeen';
 const CHECK_MS = 60000;
 
 /** True when version a is newer than b ('2.10.0' > '2.9.1'). */
@@ -56,6 +60,24 @@ export class Announce {
     this.data = null;
     this.shown = '';
     this.closed = ''; // closed this session (when localStorage can't keep it)
+    this.admin = null; // the admin's banner { text, id, until } (setAdmin)
+    this.adminClosed = '';
+  }
+
+  /** The admin's banner ({ text, id, until: ms or 0 = until cleared }), or null to clear it. */
+  setAdmin(b) {
+    this.admin = b && b.text ? { text: String(b.text).slice(0, 200), id: String(b.id || b.text).slice(0, 80), until: +b.until || 0 } : null;
+    this.render();
+    requestAnimationFrame(() => this.place());
+  }
+
+  /** The admin's banner while it is up and not closed here, else null. */
+  adminBanner() {
+    const b = this.admin;
+    if (!b || (b.until && Date.now() > b.until)) return null;
+    let stored = '';
+    try { stored = localStorage.getItem(ADMIN_SEEN_KEY) || ''; } catch (e) { /* private mode */ }
+    return b.id === stored || b.id === this.adminClosed ? null : b;
   }
 
   start() {
@@ -109,6 +131,9 @@ export class Announce {
       }
     }
     document.body.classList.toggle('announce-low', low);
+    // where it ends (0: not shown): in a match the admin's chips and cards and the toasts go under it
+    const shown = !el.classList.contains('hidden') && el.offsetHeight > 0;
+    document.body.style.setProperty('--announce-bottom', `${shown ? Math.round(el.offsetTop + el.offsetHeight) : 0}px`);
   }
 
   seen() {
@@ -121,15 +146,34 @@ export class Announce {
     const app = this.app;
     const inMatch = !!(app.game && !app.stageOn);
     const b = pickBanner(this.data, { seen: this.seen(), inMatch });
-    const key = `${b.update}|${b.id}`;
+    const ab = this.adminBanner();
+    const key = ab ? `admin|${ab.id}|${ab.text}` : `${b.update}|${b.id}`;
     if (key === this.shown) return;
     this.shown = key;
     const el = this.el;
-    el.classList.toggle('hidden', !b.update && !b.message);
+    el.classList.toggle('hidden', !ab && !b.update && !b.message);
     // (placed once it has its new text)
     requestAnimationFrame(() => this.place());
-    el.classList.toggle('update', b.update);
+    el.classList.toggle('update', !ab && b.update);
+    el.classList.toggle('admin', !!ab);
     el.innerHTML = '';
+    if (ab) {
+      const t = document.createElement('span');
+      t.className = 'an-text';
+      const tag = document.createElement('b');
+      tag.className = 'an-tag';
+      tag.textContent = '🛡 ADMIN';
+      t.append(tag, ` ${ab.text}`);
+      // (in a match it shows two lines at most: a tap shows all of it, another tap two lines again)
+      el.classList.remove('open');
+      t.addEventListener('click', () => { el.classList.toggle('open'); this.place(); });
+      el.append(t, this.closer(() => {
+        this.adminClosed = ab.id;
+        try { localStorage.setItem(ADMIN_SEEN_KEY, ab.id); } catch (e) { /* private mode: closed for this visit */ }
+        this.render();
+      }));
+      return;
+    }
     if (b.update) {
       const btn = document.createElement('button');
       btn.className = 'an-text';
@@ -142,15 +186,20 @@ export class Announce {
     const t = document.createElement('span');
     t.className = 'an-text';
     t.textContent = `📢 ${b.message}`;
+    el.append(t, this.closer(() => {
+      this.closed = b.id;
+      try { localStorage.setItem(SEEN_KEY, b.id); } catch (e) { /* private mode: closed for this visit */ }
+      this.render();
+    }));
+  }
+
+  /** The banner's ✕. */
+  closer(fn) {
     const x = document.createElement('button');
     x.className = 'an-x';
     x.setAttribute('aria-label', 'Close');
     x.textContent = '✕';
-    x.addEventListener('click', () => {
-      this.closed = b.id;
-      try { localStorage.setItem(SEEN_KEY, b.id); } catch (e) { /* private mode: closed for this visit */ }
-      this.render();
-    });
-    el.append(t, x);
+    x.addEventListener('click', fn);
+    return x;
   }
 }

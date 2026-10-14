@@ -19,5 +19,6 @@ import { PartyBridge } from '../lobby/bridge.js';
 import { ModeClient } from './modeClient.js';
 import { MapClient } from '../ui/mapclient.js';
 import { BuildClient } from '../world/buildClient.js';
+import { AdminNotes } from '../admin/notes.js';
 
-export const GAME_PLUGINS = [PartyBridge, ModeClient, MapClient, BuildClient];
+export const GAME_PLUGINS = [PartyBridge, ModeClient, MapClient, BuildClient, AdminNotes];

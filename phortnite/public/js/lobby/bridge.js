@@ -39,7 +39,8 @@ export class PartyBridge {
     game.partyInfo = { max: 16, cd: 0 };
   }
 
-  get on() { return !!(this.app && this.app.lobby && this.app.stage); }
+  // (not for the admin watching a party: no stage, no results or XP, js/ui/adminWatch.js runs that view)
+  get on() { return !!(this.app && this.app.lobby && this.app.stage) && !this.game.observer; }
 
   filterInput(s) {
     if (this.app.stageOn) blank(s);

@@ -54,12 +54,15 @@ export class AccountsUi {
       <button class="lb-btn acc-guest" data-act="guest">👋 PLAY AS GUEST</button>
       <p class="acc-note">Guest play isn't saved — your wins and level only last this time.</p>
       <button class="acc-link acc-import" data-act="import">I have an account code…</button>
+      <div class="acc-adminrow" data-back="who" data-gate="${gate ? 1 : 0}"></div>
     </div>`;
     app.ui.modal(html, (b) => {
       b.querySelectorAll('.who-card[data-id]').forEach((c) => c.addEventListener('click', () => { app.sfx.ui(); this.pick(c.dataset.id); }));
       $('.who-new', b).addEventListener('click', () => { app.sfx.ui(); this.createScreen(); });
       $('.acc-guest', b).addEventListener('click', () => { app.sfx.ui(); this.playGuest(); });
       $('.acc-import', b).addEventListener('click', () => { app.sfx.ui(); this.transferImport(); });
+      // where the website has an admin (admin.json): that it does, and the way into admin mode
+      if (app.adminLogin) app.adminLogin.bits($('.acc-adminrow', b));
     }, null, { locked: gate });
   }
 
@@ -219,8 +222,10 @@ export class AccountsUi {
         ${acc.guest ? '' : '<button class="btn acc-delete danger">🗑 DELETE ACCOUNT</button>'}
       </div>
       <p class="acc-note">Everything here is saved only on this iPad.</p>
+      <div class="acc-adminrow" data-back="panel"></div>
     </div>`;
     app.ui.modal(html, (b) => {
+      if (app.adminLogin) app.adminLogin.bits($('.acc-adminrow', b));
       $('.acc-switch', b).addEventListener('click', () => { app.sfx.ui(); this.whoScreen({ gate: false }); });
       $('.acc-rename', b).addEventListener('click', () => { app.sfx.ui(); app.ui.closeModal(true); app.ui.renameModal(); });
       $('.acc-signout', b).addEventListener('click', () => { app.sfx.ui(); app.signOut(); });

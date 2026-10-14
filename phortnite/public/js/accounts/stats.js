@@ -107,6 +107,21 @@ export function applyAward(s, r) {
   return { gained: total, lines, from, to: levelInfo(s), steps, levelUp: steps.some((x) => x.levelUp) };
 }
 
+/**
+ * Add XP outside a match (the admin's GIVE XP, js/admin/client.js): it counts towards the level and
+ * total like match XP, rolling over levels, but no match, win or streak. Returns the levels gained.
+ */
+export function addXp(s, n) {
+  let left = Math.max(0, Math.min(1e7, Math.floor(Number(n) || 0)));
+  const from = s.level;
+  s.total += left;
+  while (left > 0 && s.level < MAX_LEVEL) {
+    const need = xpForLevel(s.level) - s.xp;
+    if (left >= need) { left -= need; s.level++; s.xp = 0; } else { s.xp += left; left = 0; }
+  }
+  return s.level - from;
+}
+
 // ------------------------------------------------------------------ derived numbers (the STATS card)
 
 /** Kills / deaths, shown to 2 decimals; a death-free run shows the kill count itself. */

@@ -244,15 +244,28 @@ export class Ui {
     const g = app.game;
     if (!g || app.stageOn) return;
     app.input.exitLock();
+    // the admin watching a party: keep watching, or stop
+    if (g.observer) {
+      this.modal(`<h2>👁 WATCHING</h2><p style="opacity:.75;font-size:14px">Party <b style="color:#ffd23f;letter-spacing:3px">${esc(g.code)}</b> — everyone there can see that the admin is watching.</p>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px"><button class="btn yellow p-resume">KEEP WATCHING</button><button class="btn p-stop">STOP WATCHING</button></div>`, (b) => {
+        $('.p-resume', b).addEventListener('click', () => this.closeModal());
+        $('.p-stop', b).addEventListener('click', () => { this.closeModal(); if (app.adminWatch) app.adminWatch.stop(); });
+      });
+      return;
+    }
     const solo = g.net.kind === 'solo';
     const live = g.phase === 'bus' || g.phase === 'match';
     // solo: the match really stops while this is open
     if (solo && live) app.pauseSolo();
     const canEnd = g.leader === g.myId && g.phase !== 'lobby' && !solo;
+    // the admin paused the match for everyone: only the admin resumes it (RESUME here would do nothing)
+    const adminPaused = !!app.adminPaused;
+    const sub = adminPaused ? '⏸ The admin paused the match. It goes on when the admin resumes it.'
+      : solo ? (live ? 'The match is paused.' : 'Warm-up') : `Party code <b style="color:#ffd23f;letter-spacing:3px">${esc(g.code)}</b> — the match keeps running for your friends.`;
     const html = `<h2>PAUSED</h2>
-      <p style="opacity:.75;font-size:14px">${solo ? (live ? 'The match is paused.' : 'Warm-up') : `Party code <b style="color:#ffd23f;letter-spacing:3px">${esc(g.code)}</b> — the match keeps running for your friends.`}</p>
+      <p style="opacity:.75;font-size:14px">${sub}</p>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
-        <button class="btn yellow p-resume">RESUME</button>
+        <button class="btn yellow p-resume">${adminPaused ? 'BACK TO THE MATCH' : 'RESUME'}</button>
         <button class="btn p-settings">SETTINGS</button>
         <button class="btn p-help">HOW TO PLAY</button>
         ${solo && live ? '<button class="btn p-restart">RESTART MATCH</button>' : ''}

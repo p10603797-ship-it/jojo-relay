@@ -10,6 +10,13 @@
 //
 // Room plugins (shared/plugins/index.js) hook into joins, leaves, roster rows, the welcome,
 // ticks, match start / lobby / eliminations, build piece messages and client messages.
+//
+// Observers: the admin watching a party (js/admin, stage E). join(conn, hello, {observer: true})
+// with hello.observer set, only after the transport checked the admin's signature on that hello
+// (P2PHost awaits makeObserverCheck; the Node server never passes it, so it refuses them all). An
+// observer is not a player: it is in no roster, never counted toward maxHumans, never spawns and
+// has no team, but it hears everything a spectator does (snapshots, events). Its id is negative.
+// Moderation is open: everyone in the party hears how many watch ({t: 'obs', n}, welcome.obs).
 import {
   MAP, BUILD, MAT_KEYS, PLAYER, WEAPONS, WEAPON_KEYS, AMMO, HEALS, BUS, SKINS, BOT_NAMES,
   clampRarity, weaponDamage, MAX_MATS, PROTOCOL, ANIM, own, STORM_PRESETS, SKY_SPAWN_HEIGHT,
@@ -33,6 +40,7 @@ export function getWorld() {
 
 const MAX_HUMANS = 16;
 const MAX_TOTAL = 32;
+export const MAX_OBSERVERS = 2; // admin observers per party (each costs the host a friend's upload)
 const HUMANS_OUT_MS = 20000; // every human is out: bots play on this long (spectating) before the end
 const MYSTERY_EVERY = 60000;
 const ROUND_BREAK = 4000;
@@ -142,6 +150,8 @@ export class Room {
     this.grid.destroyedObjects = this.destroyed;
     this.players = new Map();
     this.conns = new Map();   // connId -> { conn, pid }
+    this.observers = new Map(); // connId -> { conn, id (negative), watch }: the admin watching
+    this.nextObs = 1;
     this.nextId = 1;
     this.phase = 'lobby';
     this.phaseEnds = 0;
@@ -263,6 +273,8 @@ export class Room {
     for (const { conn } of this.conns.values()) {
       if (conn.id !== exceptConnId) this.send(conn, msg);
     }
+    // observers hear everything a spectator does
+    if (this.observers.size) for (const { conn } of this.observers.values()) if (conn.id !== exceptConnId) this.send(conn, msg);
   }
 
   connOf(p) {
@@ -328,11 +340,23 @@ export class Room {
   }
 
   // ------------------------------------------------------------------ connections
-  join(conn, hello = {}) {
+  /**
+   * A connection joins with its hello. opts.observer: true only when the transport has checked the
+   * admin's signature on hello.observer (see Observers at the top); an observer hello without it is
+   * refused.
+   */
+  join(conn, hello = {}, opts = {}) {
     // a friend whose page is still on an older (or newer) build would play by different rules
     if ((hello.v | 0) !== PROTOCOL) {
       this.send(conn, { t: 'err', ver: true, msg: 'Phortnite was updated, and this page is on a different version than your friends. Everyone should reload the page, then try again.' });
       return false;
+    }
+    if (hello.observer !== undefined && hello.observer !== null && hello.observer !== false) {
+      if (!opts || opts.observer !== true) {
+        this.send(conn, { t: 'err', msg: 'Only the admin can watch a party without playing in it.' });
+        return false;
+      }
+      return this.addObserver(conn);
     }
     // a room plugin may take the join over (e.g. a rejoin after a dropped connection)
     const took = this.plugAnswer('onJoin', this, conn, hello);
@@ -362,7 +386,48 @@ export class Room {
     return true;
   }
 
+  /** The admin watching (verified by the transport): the welcome, and the party hears about it. */
+  addObserver(conn) {
+    if (this.observers.size >= MAX_OBSERVERS) {
+      this.send(conn, { t: 'err', msg: 'Someone is already watching this party.' });
+      return false;
+    }
+    const ob = { conn, id: -(this.nextObs++), watch: 0 };
+    this.observers.set(conn.id, ob);
+    const w = this.welcome(0);
+    w.you = ob.id;
+    w.observer = true;
+    this.send(conn, w);
+    this.broadcast({ t: 'obs', n: this.observers.size }, conn.id);
+    this.log('observer join', { room: this.code, id: ob.id });
+    return true;
+  }
+
+  /** An observer's connection is gone: it watches nobody now, and the party hears it. */
+  dropObserver(connId) {
+    const ob = this.observers.get(connId);
+    if (!ob) return;
+    this.observers.delete(connId);
+    if (ob.watch) { ob.watch = 0; this.tellWatch(ob); }
+    this.broadcast({ t: 'obs', n: this.observers.size });
+    this.log('observer leave', { room: this.code, id: ob.id });
+  }
+
+  /** What an observer may say: ping, whom it watches, bye. Nothing that touches the match. */
+  observerMessage(ob, msg) {
+    if (msg.t === 'ping') this.send(ob.conn, { t: 'pong', c: msg.c, ts: this.now() });
+    else if (msg.t === 'watch') {
+      let id = num(msg.id) | 0;
+      const t = id ? this.players.get(id) : null;
+      if (!t || !t.bot) id = 0;
+      if ((ob.watch | 0) === id) return;
+      ob.watch = id;
+      this.tellWatch(ob);
+    }
+  }
+
   leave(connId) {
+    if (this.observers.has(connId)) { this.dropObserver(connId); return; }
     const c = this.conns.get(connId);
     if (!c) return;
     this.conns.delete(connId);
@@ -437,8 +502,9 @@ export class Room {
     this.send(conn, { t: 'bots', own });
     if (resend && moved && (this.phase === 'match' || this.phase === 'bus' || this.phase === 'round')) {
       for (const p of this.players.values()) if (p.bot && p.alive && p.lo && p.lo.kit) this.send(conn, { t: 'lo', id: p.id, lo: p.lo });
-      // and who watches which bot
+      // and who watches which bot (observers too)
       for (const p of this.players.values()) if (!p.bot && p.watch) this.send(conn, { t: 'watch', from: p.id, id: p.watch });
+      for (const ob of this.observers.values()) if (ob.watch) this.send(conn, { t: 'watch', from: ob.id, id: ob.watch });
     }
   }
 
@@ -464,12 +530,16 @@ export class Room {
       roles,
       chestsOff: live && this.rules.chests === false,
       round: live && this.round ? { n: this.round.n, series: this.round.series } : null,
+      // the admin is watching (everyone in the party is told: moderation is open)
+      ...(this.observers.size ? { obs: this.observers.size } : {}),
     }, 'welcome', this, id);
   }
 
   // ------------------------------------------------------------------ messages
   message(connId, msg) {
     if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') return;
+    const ob = this.observers.get(connId);
+    if (ob) { this.observerMessage(ob, msg); return; }
     const c = this.conns.get(connId);
     if (!c) return;
     c.last = this.now();
@@ -484,6 +554,16 @@ export class Room {
 
   get handlers() {
     return HANDLERS;
+  }
+
+  /**
+   * A catalogue mode for the next match (lobby only): the leader's pick ('mode'), or the admin's
+   * SET MODE on the host's page (js/admin/client.js). False when it can't be played here (or now).
+   */
+  pickMode(id) {
+    if (this.phase !== 'lobby' || typeof id !== 'string' || id === 'custom' || !playableMode(id)) return false;
+    this.setSettings(modeSettings(id, this.settings.rules));
+    return true;
   }
 
   /** New settings (lobby): the next match's rules follow them; everyone hears about it. */
@@ -1057,7 +1137,7 @@ export class Room {
     this.sendRoles(all);
   }
 
-  /** Tell the bots' device whom p is watching (p.watch, 0 = nobody). */
+  /** Tell the bots' device whom p (a player, or an observer) is watching (p.watch, 0 = nobody). */
   tellWatch(p) {
     let owner = 0;
     for (const q of this.players.values()) if (q.bot) { owner = q.owner; break; }
@@ -1473,8 +1553,7 @@ const HANDLERS = {
   mode(c, m) {
     if (c.pid !== this.leader || this.phase !== 'lobby') return;
     if (typeof m.id === 'string' && m.id !== 'custom') {
-      if (!playableMode(m.id)) return;
-      this.setSettings(modeSettings(m.id, this.settings.rules));
+      this.pickMode(m.id);
     } else if (m.custom && typeof m.custom === 'object') {
       this.setSettings(customSettings(m.custom, m.name));
     }

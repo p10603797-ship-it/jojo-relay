@@ -106,6 +106,8 @@ export class Game {
     this.camRight = 0.62;
     this.curFov = this.settings.fov;
     this.spectateId = 0;
+    // the admin watching this party (a signed observer join, js/admin): never spawns, only spectates
+    this.observer = false;
     this.specYaw = 0;
     this.specPitch = -0.2;
     this.settingsState = { bots: 8, mats: 0 };
@@ -221,6 +223,7 @@ export class Game {
       return;
     }
     this.myId = m.you;
+    this.observer = m.observer === true;
     this.leader = m.leader;
     this.phase = m.phase;
     this.code = m.code;
@@ -250,7 +253,10 @@ export class Game {
     for (const c of m.chests) this.world.setChestOpen(c, true);
     if (m.chestsOff) this.allChestsOpen();
     for (const p of m.players) if (p.id !== m.you) this.ensureRemote(p);
-    if (m.phase === 'lobby') {
+    if (this.observer) {
+      this.observe();
+      if (m.bus) this.bus.start(m.bus);
+    } else if (m.phase === 'lobby') {
       this.spawnWarmup();
     } else {
       this.me.alive = false;
@@ -264,6 +270,20 @@ export class Game {
     this.updateLobby();
     this.input.enabled = true;
     this.plug('onPhase', this.phase, m);
+  }
+
+  /** The admin watching: my own player stays out of the world (no spawn, no warm-up, no card). */
+  observe() {
+    const me = this.me;
+    me.alive = false;
+    me.inBus = false;
+    me.mover.setEnabled(false);
+    me.mover.mode = 'dead';
+    me.char.setVisible(false);
+    this.spectateId = 0;
+    this.lastElim = null;
+    this.hud.elim(null);
+    document.body.classList.add('dead', 'observing');
   }
 
   ensureRemote(p) {
@@ -350,14 +370,27 @@ export class Game {
       }
     }
     const me = this.me;
+    this.startSpawns = m.spawns || null;
+    this.startLo = this.loadoutTable(m.lo);
+    if (this.observer) {
+      // the admin watches the match from the first second: nobody to spawn here
+      this.storm.clear();
+      this.kills = 0;
+      this.chestAsked.clear();
+      this.hud.lobby(null);
+      if (m.chestsOff) this.allChestsOpen();
+      document.body.classList.toggle('nobuild', this.rules.build === 'off');
+      if (m.bus) this.bus.start(m.bus); else this.bus.stop();
+      this.observe();
+      this.plug('onPhase', this.phase, m);
+      return;
+    }
     me.char.endRagdoll();
     me.alive = true;
     me.dancing = false;
     me.hp = this.rules.hp;
     me.sh = this.rules.shield;
     me.infinite = false;
-    this.startSpawns = m.spawns || null;
-    this.startLo = this.loadoutTable(m.lo);
     this.giveLoadout(me, this.startLo.get(me.id) || null);
     this.applyMode(me);
     this.input.resetToggles();
@@ -589,11 +622,12 @@ export class Game {
     this.loot.clear();
     this.storm.clear();
     this.bus.stop();
-    this.spawnWarmup();
     this.hud.elim(null);
     this.spectateId = 0;
     this.lastElim = null;
     document.body.classList.remove('dead', 'inbus');
+    // the admin watching: the party's warm-up, from the outside
+    if (this.observer) this.observe(); else this.spawnWarmup();
     this.updateLobby();
     if (this.autoRestart) {
       this.autoRestart = false;
@@ -967,6 +1001,12 @@ export class Game {
 
   on_win(m) {
     this.phase = 'ended';
+    if (this.observer) {
+      // the admin watching: who won, no card (its buttons are for players)
+      this.hud.big(`${m.name ? `${esc(m.name)} WINS!` : 'MATCH OVER'}<small>Back to the lobby in a few seconds</small>`);
+      this.plug('onPhase', this.phase, m);
+      return;
+    }
     const myTeam = this.teamOf(this.myId);
     // best of N: every end card shows the final series score
     const fin = m.round ? { series: seriesRows(this, m.round), best: this.rules.rounds } : { series: undefined };
@@ -1127,7 +1167,8 @@ export class Game {
       me.mover.mode = 'dead';
       me.char.setVisible(false);
       document.body.classList.add('dead');
-      this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next match. Spectating…', leave: true });
+      if (this.observer) this.observe();
+      else this.hud.elim({ spectating: true, sub: 'A match is in progress — you will join the next match. Spectating…', leave: true });
     }
     for (const a of [...(meIn ? [me] : []), ...this.bots.values()]) {
       a.char.endRagdoll();
@@ -1573,9 +1614,10 @@ export class Game {
       this.specYaw += s.lookX;
       this.specPitch = Math.max(-1.2, Math.min(0.6, this.specPitch + s.lookY));
       yaw = this.specYaw; pitch = this.specPitch;
-      if (t) pivot = _v.set(t.pos.x, t.pos.y + 1.6, t.pos.z);
-      else { const p = me.char.ragdoll ? me.char.ragdollPosition(_v3) : me.pos; pivot = _v.set(p.x, p.y + 1.6, p.z); }
       dist = 5;
+      if (t) pivot = _v.set(t.pos.x, t.pos.y + 1.6, t.pos.z);
+      else if (this.phase === 'bus' && this.bus.path) { pivot = _v.copy(this.bus.pos).add(_v2.set(0, 3, 0)); dist = 22; } // everyone is still on the bus
+      else { const p = me.char.ragdoll ? me.char.ragdollPosition(_v3) : me.pos; pivot = _v.set(p.x, p.y + 1.6, p.z); }
       right = 0;
     }
     this.hud.scope(scope);
@@ -1937,11 +1979,13 @@ export class Game {
     return !this.physics.raycast(o.x, o.y, o.z, dx / l, dy / l, dz / l, l - 0.4, l < 3 ? RAY_SOLID : RAY_SHOT);
   }
 
-  cycleSpectate() {
+  /** Watch the next (dir 1) or previous (dir -1) player who is still in the game. */
+  cycleSpectate(dir = 1) {
     const list = this.actors().filter((a) => a.alive && a !== this.me && a.mode !== 'bus');
     if (!list.length) return;
     const i = list.findIndex((a) => a.id === this.spectateId);
-    this.spectateId = list[(i + 1) % list.length].id;
+    const n = list.length;
+    this.spectateId = list[i < 0 ? (dir > 0 ? 0 : n - 1) : (i + (dir > 0 ? 1 : n - 1)) % n].id;
   }
 
   interactions(s) {
@@ -2101,7 +2145,7 @@ export class Game {
       if (this.lobbyT > 0) return;
       this.lobbyT = 30;
     }
-    if (this.phase !== 'lobby') { this.hud.lobby(null); return; }
+    if (this.phase !== 'lobby' || this.observer) { this.hud.lobby(null); return; }
     this.hud.lobby({
       solo: this.solo, code: this.code, players: [...this.roster.values()], leader: this.leader, you: this.myId,
       settings: this.settingsState, share: this.app.shareHtml || '',
@@ -2147,6 +2191,6 @@ export class Game {
     this.input.enabled = false;
     this.sfx.setStorm(0);
     this.sfx.setWind(0);
-    document.body.classList.remove('dead', 'inbus', 'building');
+    document.body.classList.remove('dead', 'inbus', 'building', 'observing');
   }
 }

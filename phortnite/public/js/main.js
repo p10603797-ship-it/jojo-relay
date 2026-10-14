@@ -29,6 +29,7 @@ import { AccountStore } from './accounts/store.js';
 import { AccountsUi } from './ui/accounts.js';
 import { Music } from './music.js';
 import { Presence } from './net/presence.js';
+import { fetchAdminConfig, startAdmin } from './admin/client.js';
 
 const TIPS = [
   'Tip: build a wall the moment someone starts shooting at you.',
@@ -93,6 +94,13 @@ class App {
     this.paused = false; // solo: the pause menu / an app switch stopped the match
     this.rejoinState = null;
     this.playAgainPending = false;
+    // the admin (js/admin/): admin.json's checked config, every page's command side, and admin mode
+    // (app.admin: only with Philip's unlocked keys). All stay null where there is no admin.json.
+    this.adminCfg = null;
+    this.adminClient = null;
+    this.admin = null;
+    this.adminPaused = false; // the admin paused this party's match (only the admin resumes it)
+    this.maintenance = false;
   }
 
   saveSettings() {
@@ -144,6 +152,8 @@ class App {
 
   async boot() {
     $('.load-tip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
+    // admin.json (if the website has an admin): fetched while everything else loads
+    const adminCfg = fetchAdminConfig();
     // news from Philip, from the very start (the loading screen too)
     this.announce = new Announce(this);
     this.announce.start();
@@ -261,6 +271,8 @@ class App {
     // first frames, never in their way
     this.presence = new Presence({ state: () => (this.game && !this.stageOn && !this.warming ? 'm' : 'l') });
     this.presence.onChange((c) => this.lobby.playerCount(c));
+    // the admin's commands ride on the same broker connection (before it starts: no message missed)
+    adminCfg.then((cfg) => (cfg ? startAdmin(this, cfg) : null)).catch(() => {});
     setTimeout(() => this.presence.start(), 1000);
     // ?bench: the benchmark (js/bench.js) takes over from here
     if (new URLSearchParams(location.search).has('bench')) {
@@ -358,6 +370,8 @@ class App {
     document.body.classList.add('ingame');
     document.body.classList.remove('ended', 'dead', 'inbus');
     if (opts.off) opts.off();
+    // an admin pause belonged to the party being left
+    if (this.adminClient) this.adminClient.partyChanged();
     // (a handler may swap the party again while replaying, e.g. a version mismatch)
     if (opts.replay) for (const m of opts.replay) { if (game.disposed) break; game.onMessage(m); }
     if (game.disposed) return this.game;
@@ -470,6 +484,8 @@ class App {
   onPartyLost(net, msg) {
     const g = this.game;
     if (!g || g.net !== net) return;
+    // the admin was watching that party: back to a party of one (nothing to rejoin)
+    if (g.observer && this.adminWatch) { this.later(g, () => this.adminWatch.stop('The party you were watching is gone.', 'bad')); return; }
     this.later(g, () => {
       const code = g.code, kind = net.kind, host = this.hostName(g);
       this.soloParty();
@@ -560,6 +576,8 @@ class App {
     this.updateWake();
     // the news banner moves between the lobby's top bar and the match's top middle
     if (this.announce) requestAnimationFrame(() => { this.announce.render(); this.announce.place(); });
+    // (and the toasts' column, with the admin's chips and cards in it: right of the party cards, or the top middle)
+    requestAnimationFrame(() => { if (this.lobby.placeToasts) this.lobby.placeToasts(); });
     // lobby <-> match for the player count
     if (this.presence) this.presence.update();
   }
@@ -568,6 +586,8 @@ class App {
   play() {
     const g = this.game;
     if (!g || g.phase !== 'lobby' || g.leader !== g.myId) return;
+    // maintenance (Philip is working on the game) or a ban: no new matches
+    if (this.adminClient && this.adminClient.blocking()) return;
     g.send({ t: 'start', cd: 1 });
   }
 
@@ -593,6 +613,8 @@ class App {
   backToLobby() {
     const g = this.game;
     if (!g) return;
+    // the admin watching a party: 'lobby' means stop watching (not that party's lobby as if a member)
+    if (g.observer && this.adminWatch) { this.adminWatch.stop(); return; }
     // solo: nobody to wait for, so end the match
     if (g.solo && g.phase !== 'lobby') g.send({ t: 'end' });
     this.showStage(true);
@@ -625,6 +647,8 @@ class App {
 
   unpause() {
     const g = this.game;
+    // the admin paused the match: only the admin resumes it (js/admin/client.js setPaused)
+    if (this.adminPaused) return;
     this.paused = false;
     if (!g || !g.net.resume) return;
     const d = g.net.resume();
@@ -677,7 +701,8 @@ class App {
   }
 
   resume() {
-    if (!this.input.touchMode && !this.stageOn) this.input.requestLock();
+    // (the admin watching keeps the mouse for the ◀ ▶ LEAVE bar: a click on the island locks it)
+    if (!this.input.touchMode && !this.stageOn && !(this.game && this.game.observer)) this.input.requestLock();
   }
 
   // ------------------------------------------------------------------ loop

@@ -521,7 +521,7 @@ test('FakeCtx: a small game runs through every hook', () => {
 // ------------------------------------------------------------------ client stubs (importable in Node too)
 test('client plugin points: game plugins, Discover, grade, bench, tree species, layer textures', async () => {
   const { GAME_PLUGINS } = await import('../public/js/game/plugins.js');
-  assert.deepEqual(GAME_PLUGINS.map((P) => P.name), ['PartyBridge', 'ModeClient', 'MapClient', 'BuildClient']);
+  assert.deepEqual(GAME_PLUGINS.map((P) => P.name), ['PartyBridge', 'ModeClient', 'MapClient', 'BuildClient', 'AdminNotes']);
   const game = {};
   for (const P of GAME_PLUGINS) assert.equal(new P(game).game, game);
   const { openDiscover, openCreator } = await import('../public/js/ui/discover.js');

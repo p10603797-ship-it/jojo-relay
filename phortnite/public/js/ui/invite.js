@@ -104,7 +104,9 @@ export class Invite {
         net = new WsNet(app.wsUrl());
         res = await awaitWelcome(net, async () => { await net.connect(); net.send({ t: 'create', hello: app.hello(), settings }); });
       } else {
-        net = new P2PHost(app.hello(), { settings });
+        // the admin's signature check for observer hellos (no admin.json: every observer is refused)
+        const verifyObserver = async (env, code) => !!app.adminClient && app.adminClient.observerCheck(env, code);
+        net = new P2PHost(app.hello(), { settings, verifyObserver });
         res = await awaitWelcome(net, () => net.connect(), 25000);
       }
     } catch (e) {

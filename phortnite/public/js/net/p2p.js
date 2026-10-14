@@ -9,6 +9,10 @@
 // room clock pauses while the host's page is hidden during a match (an iPad app switch) instead of
 // the party ending. Friends wait up to 45 s for a silent host ('Waiting for the host…' after 4 s)
 // and get back into the same match after a dropped link (see net.js for the '_net' events).
+//
+// The admin can watch a party (js/admin, stage E): a hello with an 'observer' envelope is let in
+// as an observer only when opts.verifyObserver (the admin's signature check) says yes; the check is
+// async, so the room only sees the hello once it is done. Without a verifier every observer is refused.
 import { Room } from '../../shared/room.js';
 import { TICK_HZ } from '../../shared/constants.js';
 import { cleanSettings } from '../../shared/plugins/party.js';
@@ -188,6 +192,8 @@ export class P2PHost extends Emitter {
     this.dcById = new Map(); // room connection id -> data channel
     this.closed = false;
     this.clock = new PausableClock();
+    // async (env, code) => bool: is this observer hello really signed by the admin? (js/admin/commands.js)
+    this.verifyObserver = typeof opts.verifyObserver === 'function' ? opts.verifyObserver : null;
   }
 
   async connect() {
@@ -273,7 +279,7 @@ export class P2PHost extends Emitter {
   }
 
   accept(dc) {
-    let joined = false;
+    let joined = false, checking = false;
     const conn = {
       id: `p${Math.random().toString(36).slice(2, 10)}`,
       ip: 'p2p',
@@ -288,7 +294,20 @@ export class P2PHost extends Emitter {
       if (now - flood.t0 > 1000) { flood.t0 = now; flood.n = 0; }
       if (++flood.n > FLOOD_MAX) return;
       if (msg.t === 'join') {
-        if (!joined) joined = this.room.join(conn, msg.hello && typeof msg.hello === 'object' ? msg.hello : {});
+        if (joined || checking) return;
+        const hello = msg.hello && typeof msg.hello === 'object' ? msg.hello : {};
+        if (hello.observer !== undefined && hello.observer !== null && hello.observer !== false) {
+          // the admin wants to watch: the signature first (async), then the room decides
+          checking = true;
+          this.checkObserver(hello).then((ok) => {
+            checking = false;
+            if (!this.room || !this.links.has(dc)) return; // gone while it was checked
+            joined = this.room.join(conn, hello, { observer: ok });
+            if (!joined) setTimeout(() => { try { dc.close(); } catch (e) { /* closing */ } }, 500);
+          });
+          return;
+        }
+        joined = this.room.join(conn, hello);
         // turned away (full, different version): let the error message reach them, then hang up
         if (!joined) setTimeout(() => { try { dc.close(); } catch (e) { /* closing */ } }, 500);
         return;
@@ -304,6 +323,12 @@ export class P2PHost extends Emitter {
     };
     dc.on('close', gone);
     dc.on('error', gone);
+  }
+
+  /** Is this observer hello signed by the admin for this party? (No verifier: never.) */
+  async checkObserver(hello) {
+    if (!this.verifyObserver) return false;
+    try { return (await this.verifyObserver(hello.observer, this.code)) === true; } catch (e) { return false; }
   }
 
   get paused() { return this.clock.paused; }
@@ -362,7 +387,8 @@ export class P2PClient extends Emitter {
     this.open = false;
     this.onClose = null;
     this.closed = false;
-    // set once in the party: () => the join message that gets this page back in (resume token, keep)
+    // set once in the party: () => the join message that gets this page back in (resume token, keep),
+    // or a Promise of it
     this.rejoin = null;
     this.retrying = false;
     this.awaitRejoin = false;
@@ -549,9 +575,12 @@ export class P2PClient extends Emitter {
       if (this.closed || !this.rejoin) break;
       try {
         await this.link();
+        // (it may take a moment: the admin watching signs a fresh observe hello for every rejoin)
+        const join = await this.rejoin();
+        if (this.closed || !this.open || !join) throw new Error('rejoin');
         this.retrying = false;
         this.awaitRejoin = true;
-        this.out(this.rejoin());
+        this.out(join);
         this.emit({ t: '_net', state: 'online' });
         return;
       } catch (e) {
