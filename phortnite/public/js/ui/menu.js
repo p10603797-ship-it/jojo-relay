@@ -10,8 +10,9 @@ export class Ui {
     this.modalEl = $('#modal');
     this.modalBody = $('.modal-body', this.modalEl);
     this.onModalClose = null;
+    this.modalLocked = false; // a locked modal (the "Who's playing?" gate) has no X and ignores the backdrop
     $('.modal-x', this.modalEl).addEventListener('click', () => this.closeModal());
-    this.modalEl.addEventListener('pointerdown', (e) => { if (e.target === this.modalEl) this.closeModal(); });
+    this.modalEl.addEventListener('pointerdown', (e) => { if (e.target === this.modalEl && !this.modalLocked) this.closeModal(); });
 
     // in-game buttons
     $('#menubtn').addEventListener('click', () => this.pauseModal());
@@ -80,8 +81,9 @@ export class Ui {
     });
   }
 
-  /** Your level and totals (the level chip). */
+  /** Your level and totals (the level chip). The accounts UI, when present, shows the full panel. */
   profileModal() {
+    if (this.app.accountsUi) { this.app.accountsUi.panel(); return; }
     const pr = this.app.profile;
     if (!pr) return;
     const L = pr.levelInfo(), d = pr.data;
@@ -92,16 +94,22 @@ export class Ui {
       <p class="mem-sub">Earn XP with eliminations (50 each), a top 10 finish, damage, and 300 for every Phictory Royale.</p>`);
   }
 
-  modal(html, onMount, onClose) {
+  modal(html, onMount, onClose, opts = {}) {
     if (this.app.game) this.app.input.enabled = false;
     this.modalBody.innerHTML = html;
+    this.modalLocked = !!opts.locked;
+    this.modalEl.classList.toggle('locked', this.modalLocked);
     this.modalEl.classList.remove('hidden');
     this.onModalClose = onClose || null;
     if (onMount) onMount(this.modalBody);
   }
 
-  closeModal() {
+  /** force: close even a locked modal (the gate closes itself once a profile is chosen). */
+  closeModal(force = false) {
     if (this.modalEl.classList.contains('hidden')) return;
+    if (this.modalLocked && !force) return;
+    this.modalLocked = false;
+    this.modalEl.classList.remove('locked');
     this.modalEl.classList.add('hidden');
     if (this.app.game && this.app.game.me) this.app.input.enabled = true;
     const cb = this.onModalClose;

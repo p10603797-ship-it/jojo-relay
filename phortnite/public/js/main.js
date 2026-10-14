@@ -24,6 +24,9 @@ import { LobbyStage } from './lobby/stage.js';
 import { LobbyUi } from './ui/lobby.js';
 import { Invite, keepSettings } from './ui/invite.js';
 import { Profile } from './profile.js';
+import { defaultStats } from './accounts/stats.js';
+import { AccountStore } from './accounts/store.js';
+import { AccountsUi } from './ui/accounts.js';
 import { Music } from './music.js';
 import { Presence } from './net/presence.js';
 
@@ -94,6 +97,36 @@ class App {
 
   saveSettings() {
     try { localStorage.setItem('phortnite.settings', JSON.stringify(this.settings)); } catch (e) { /* private mode */ }
+    // keep the SIGNED-IN account's name + skin in step (rename and the locker both go through here).
+    // Only this.activeAccount — a profile still behind the sign-in gate is never written to, so a
+    // settings save can't rename or overwrite a locked profile. A guest only updates in memory.
+    const acc = this.activeAccount;
+    if (acc) { acc.name = this.settings.name; acc.skin = this.settings.skin | 0; this.accounts.persist(acc); }
+  }
+
+  /**
+   * Sign in to a profile (or the guest): the profile's stats drive XP/level, and its name + skin
+   * become the lobby look. The party is told live so friends see the switch at once.
+   */
+  setActiveProfile(account) {
+    if (!account) return;
+    this.activeAccount = account;
+    this.profile = new Profile(account.stats, () => this.accounts.persist(account));
+    if (account.name) this.settings.name = account.name;
+    if (typeof account.skin === 'number') this.settings.skin = account.skin;
+    this.saveSettings();
+    const g = this.game;
+    if (g && g.phase === 'lobby') g.send({ t: 'look', name: this.settings.name, skin: this.settings.skin, lvl: this.profile.level });
+    if (this.lobby && this.lobby.visible) this.lobby.render();
+  }
+
+  /** Sign out: nobody active, back to the "Who's playing?" screen. */
+  signOut() {
+    this.accounts.signOut();
+    this.activeAccount = null;
+    this.profile = new Profile(defaultStats());
+    if (this.lobby && this.lobby.visible) this.lobby.render();
+    this.accountsUi.whoScreen({ gate: true });
   }
 
   quality() {
@@ -170,7 +203,12 @@ class App {
 
     // the lobby: your party on a stage of its own, the lobby screen, invites, XP and music
     prewarmCharacters(); // build every skin's meshes in the background while the lobby is idle
-    this.profile = new Profile();
+    // player accounts live on this device (js/accounts): a scratch profile holds a level until the
+    // player picks one on the "Who's playing?" screen (gateIfNeeded, after the lobby is up)
+    this.accounts = new AccountStore();
+    this.activeAccount = null;
+    this.profile = new Profile(defaultStats());
+    this.accountsUi = new AccountsUi(this);
     this.music = new Music(this.sfx, this.settings);
     this.stage = new LobbyStage(this);
     this.lobby = new LobbyUi(this);
@@ -212,6 +250,12 @@ class App {
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
     window.__phortnite = this;
+    // accounts: pick a profile (or sign straight in to a saved, unprotected one). This runs even
+    // behind a #join invite link: an unprotected profile is still a seamless one-tap, and the invite
+    // is already joining the party underneath — but a PROTECTED profile must be unlocked first, so a
+    // friend's link can never open someone's locked account (its stats / move / delete) without the
+    // password.
+    this.accountsUi.gateIfNeeded();
     // the live player count in the lobby: everyone with the game open, counted over the public
     // relay brokers. 'm' on the island in a match (not warm-up); it connects a moment after the
     // first frames, never in their way

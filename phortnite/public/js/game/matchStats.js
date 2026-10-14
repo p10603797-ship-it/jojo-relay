@@ -135,6 +135,7 @@ export class MatchStats {
     else if (place > 0 && place <= 10 && n > 12) title = 'TOP 10!';
     return {
       ...s, mode: this.mode, place, players: n, won: this.won, title, top,
+      died: this.tDeath >= 0, // eliminated at some point (respawn clears it) — for the K/D stat
       mvp: mvp ? { name: mvp.name, kills: mvp.kills, me: mvp.id === me } : null,
     };
   }
