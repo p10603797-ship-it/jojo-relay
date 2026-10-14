@@ -140,6 +140,31 @@ unban* on the banned device and type the code (the box shows dots). Three wrong 
 for an hour. Running `unban-code` again (and publishing) replaces the code: do that if someone saw
 it.
 
+**Face ID.** Players can choose between typing a password and Face ID (or Touch ID). Right after
+the right password is typed, the lock screen asks *Use Face ID next time?*; **TURN ON FACE ID**
+makes a passkey for the website on the device (it shows up in the Passwords app, or Settings ›
+Passwords, as *Phortnite*), and from then on the lock screen has a big **UNLOCK WITH FACE ID**
+button above the password box (typing a password still works, and still counts towards the ban).
+No face data exists anywhere: the website never sees a face and keeps no pictures to compare
+with. Apple's Face ID checks the face inside the device, and only after a match does the device's
+passkey release a secret to the page (the WebAuthn *PRF* extension). That secret unlocks a copy of
+the game's key kept in the browser's storage on that device only (nothing is sent anywhere, and
+nothing secret is in the repository or the website). If Face ID doesn't recognise you, the device
+may ask for its passcode instead; a failed or cancelled scan is never a wrong try. It needs Safari
+on iPadOS / iOS 18 or newer (or another browser with passkeys and PRF): older devices don't get the
+offer, or say once that they can't use it (a *Phortnite* passkey they made then can be deleted in
+the Passwords app). Face ID takes the place of *Remember on this device*
+(the remembered password is forgotten when Face ID is turned on). *NOT NOW* is remembered on the
+device, and *Forget Face ID on this device* turns it off (newer Safari and Chrome then delete the
+passkey themselves; otherwise delete it in the Passwords app, listed under the website
+p10603797-ship-it.github.io as *Phortnite*). Setting Face ID up again replaces the old passkey
+instead of adding another, and if Face ID stops working (say its passkey was deleted), typing the
+password offers to set it up again. Like a remembered password, Safari may clear the Face ID
+setup after about a week without playing; the next typed password offers it again. Face ID is tied to the password typed when it was turned on: turning that
+password off (`remove`) also turns off Face ID set up with it (*That password was turned off*), and
+new passwords for everyone (`new --force`) need Face ID set up again. Clearing the website's data
+removes the Face ID setup. A ban hides Face ID; the unban brings it back.
+
 ## Run your own server (optional)
 
 You can also run Phortnite on a computer, for example to play on a Wi-Fi with no internet. You

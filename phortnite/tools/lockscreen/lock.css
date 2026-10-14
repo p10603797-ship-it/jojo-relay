@@ -1,7 +1,8 @@
     /* the lock screen (tools/lockscreen): over everything until lock.js has unlocked the game.
        States (data-state on #lockscreen, set by lock.js): ask, wait (a remembered password), error
-       (TRY AGAIN), fatal (this browser can't unlock), banned. Before lock.js runs, the page's <head>
-       sets html.ls-auto ("wait") or html.ls-banned ("banned"). */
+       (TRY AGAIN), fatal (this browser can't unlock), banned, offer (Face ID next time?). Before
+       lock.js runs, the page's <head> sets html.ls-auto ("wait"), html.ls-banned ("banned") or
+       html.ls-faceid (Face ID is set up: its button, from the first frame). */
     #lockscreen {
       position: fixed; inset: 0; z-index: 200; overflow-y: auto; -webkit-overflow-scrolling: touch;
       display: flex; flex-direction: column; align-items: center;
@@ -64,10 +65,32 @@
     /* dots, not the code: a child looking over Philip's shoulder can't read it off the box */
     .ls-code { font-size: 28px; letter-spacing: 0.12em; text-indent: 0.12em; -webkit-text-security: disc; }
     /* a 44 px tap target that looks as small as before (the negative margins take up the difference) */
-    .ls-unban-open {
+    .ls-link {
       align-self: center; min-height: 44px; padding: 4px 12px; margin: -8px 0 -10px; border: 0; background: none; cursor: pointer;
       color: rgba(255, 255, 255, 0.45); font-family: system-ui, -apple-system, sans-serif; font-size: 13px; text-decoration: underline; touch-action: manipulation;
     }
+    /* Face ID set up on this device (data-face): the big button first, "or type a password", no
+       "Remember" (the face takes its place), and "Forget Face ID" at the bottom */
+    .ls-face, .ls-face-forget, .ls-offer, .ls-t-face { display: none; }
+    #lockscreen[data-face] .ls-face, html.ls-faceid #lockscreen:not([data-state]) .ls-face { display: flex; }
+    #lockscreen[data-face] .ls-face-forget, html.ls-faceid #lockscreen:not([data-state]) .ls-face-forget { display: block; }
+    #lockscreen[data-face] .ls-remember, html.ls-faceid #lockscreen:not([data-state]) .ls-remember { display: none; }
+    .ls-face { flex-direction: column; gap: 10px; }
+    .ls-face .ls-go { font-size: 26px; }
+    .ls-or { text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 15px; opacity: 0.75; }
+    .ls-face-forget { margin-top: -10px; }
+    /* typing a password on a touch screen: the Face ID button steps aside (keyboard) */
+    #lockscreen.ls-typing .ls-face, #lockscreen.ls-typing .ls-face-forget { display: none !important; }
+    /* the offer after the right password: its own title and buttons instead of the password box */
+    #lockscreen[data-state="offer"] .ls-t-lock { display: none; }
+    #lockscreen[data-state="offer"] .ls-t-face { display: inline; }
+    #lockscreen[data-state="offer"] .ls-field, #lockscreen[data-state="offer"] .ls-ask { display: none; }
+    #lockscreen[data-state="offer"] .ls-offer { display: flex; }
+    .ls-offer { flex-direction: column; gap: 14px; }
+    .ls-offer-text { margin: 0; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 19px; font-weight: 600; line-height: 1.4; }
+    .ls-offer-note { margin: -4px 0 0; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 15px; line-height: 1.35; opacity: 0.75; }
+    #lockscreen:not([data-offer="ask"]) .ls-offer-note, #lockscreen[data-offer="unsupported"] .ls-face-no { display: none; }
+    .ls-face-no { width: 100%; min-height: 56px; font-size: 22px; text-align: center; touch-action: manipulation; }
     .ls-msg.ls-ok { color: #8ff0a4; }
     .ls-card.ls-shake { animation: ls-shake 0.42s; }
     @keyframes ls-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-12px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-7px); } 80% { transform: translateX(4px); } }
@@ -89,7 +112,12 @@
       .ls-ban, .ls-unban { gap: 9px; }
       .ls-go, .ls-retry { min-height: 56px; font-size: 24px; }
       .ls-remember { min-height: 36px; font-size: 15px; }
+      .ls-face { gap: 6px; } .ls-face .ls-go { font-size: 19px; } .ls-or { font-size: 14px; }
+      .ls-offer { gap: 9px; } .ls-offer-text { font-size: 16px; } .ls-offer-note { font-size: 13px; }
+      .ls-face-no { font-size: 20px; }
     }
     @media (max-width: 380px) { .ls-input { font-size: 28px; letter-spacing: 0.16em; text-indent: 0.16em; } .ls-card { padding: 18px 14px 14px; } }
     /* (after the rule above, which would otherwise widen the 10-character code past its box on phones) */
     @media (max-width: 420px) { .ls-code { font-size: min(24px, 6.5vw); letter-spacing: 0.06em; text-indent: 0.06em; } }
+    /* "UNLOCK WITH FACE ID" on one line on phones */
+    @media (max-width: 480px) { .ls-face .ls-go { font-size: min(22px, 5vw); padding-left: 8px; padding-right: 8px; letter-spacing: 0.5px; } }

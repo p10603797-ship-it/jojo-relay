@@ -9,6 +9,9 @@
 // encrypts K. The page (lock.js) asks for a password, unwraps K with it, decrypts the archive and
 // runs the game from blob: URLs through an import map. No password and no key is ever written to
 // the repository or the website; lock/slots.json only holds the wrapped copies of K.
+// Face ID / Touch ID needs nothing from this tool: lock.js keeps a copy of K on the device itself,
+// encrypted with a secret from the device's passkey and bound to the key slot of the password typed
+// when it was set up (so `remove` and `new --force` turn it off with that password).
 //
 //   node tools/lock.mjs new --count 10 [--slots lock/slots.json] [--force]
 //       a new key and salt, N new random passwords printed ONCE (write them down)
@@ -17,7 +20,8 @@
 //   node tools/lock.mjs add --count 2 [--slots ...]                       (needs a password)
 //       more passwords for the same key
 //   node tools/lock.mjs remove --slot 3 [--slots ...]
-//       turn one password off (takes effect once the next build is published). This is a soft
+//       turn one password off (takes effect once the next build is published; Face ID set up with
+//       that password stops working too). This is a soft
 //       revoke: the game key stays the same, and the old slot is still in git history, so someone
 //       who has that password and knows how could still open later builds. To shut a password out
 //       completely, start over with `new --force` (a new key and new passwords for everyone).
@@ -371,15 +375,24 @@ const shortHash = (s) => createHash('sha256').update(s).digest('hex').slice(0, 1
 export const STORE_EXPR = "'phortnite.pass:' + location.pathname.replace(/[^/]*$/, '')";
 
 /**
+ * Where a page keeps its Face ID record (lock.js: FACE), one per folder like the password. The
+ * record is the game key encrypted with a secret that only this device's passkey for the website
+ * gives out, after Face ID / Touch ID: no face data, no password. (lock.js, "Face ID", has the rest.)
+ */
+export const FACE_EXPR = "'phortnite.face:' + location.pathname.replace(/[^/]*$/, '')";
+
+/**
  * The page's first-frame check, in its <head>: a banned device (localStorage or the cookie say
  * STRIKES or more, the way lock.js's readSync reads them) shows the ban screen from the first
- * frame (html.ls-banned), never the prompt or "Unlocking…"; otherwise a remembered password shows
+ * frame (html.ls-banned), never the prompt or "Unlocking…"; otherwise Face ID set up (where the
+ * browser has WebAuthn) shows its button (html.ls-faceid), or a remembered password shows
  * "Unlocking…" (html.ls-auto). (IndexedDB can only answer later: lock.js asks it.)
  */
 export const HEAD_SCRIPT = '<script>(function (c) { var b = false, m;'
   + ` try { b = parseInt(localStorage.getItem('${BAN_KEY}'), 10) >= ${STRIKES}; } catch (e) {}`
   + ` try { m = /(?:^|;\\s*)${BAN_COOKIE}=(\\d+)/.exec(document.cookie); b = b || (!!m && +m[1] >= ${STRIKES}); } catch (e) {}`
-  + ` if (b) c.add('ls-banned'); else try { if (localStorage.getItem(${STORE_EXPR})) c.add('ls-auto'); } catch (e) {}`
+  + ` if (b) c.add('ls-banned'); else try { if (typeof PublicKeyCredential === 'function' && localStorage.getItem(${FACE_EXPR})) c.add('ls-faceid');`
+  + ` else if (localStorage.getItem(${STORE_EXPR})) c.add('ls-auto'); } catch (e) {}`
   + ' })(document.documentElement.classList);</script>';
 
 /** index.html without its import map and main.js, with the lock screen and lock.js instead. */

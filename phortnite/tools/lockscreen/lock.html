@@ -4,8 +4,13 @@
     <div class="ls-wrap">
       <div class="logo ls-logo"><div class="logo-main">PHORTNITE</div></div>
       <form id="ls-card" class="ls-card" autocomplete="off" novalidate onsubmit="return false">
-        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span></h1>
+        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span><span class="ls-t-face"><span aria-hidden="true">🙂</span> Use Face ID next time?</span></h1>
         <div class="ls-field">
+          <!-- Face ID set up on this device (lock.js: data-face): the face first, the password box still works -->
+          <div class="ls-face">
+            <button id="ls-face-go" class="btn yellow ls-go" type="button"><span aria-hidden="true">🙂</span> <span id="ls-face-label">UNLOCK WITH FACE ID</span></button>
+            <div class="ls-or">or type a password</div>
+          </div>
           <input id="ls-pass" class="ls-input" type="text" aria-label="Password" placeholder="••••••••"
             autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"
             inputmode="text" enterkeyhint="go" maxlength="12">
@@ -13,6 +18,14 @@
           <div id="ls-msg" class="ls-msg" role="alert" aria-live="assertive"></div>
           <button id="ls-go" class="btn yellow ls-go" type="submit">UNLOCK</button>
           <label class="ls-remember"><input id="ls-remember" type="checkbox" checked> Remember on this device</label>
+          <button id="ls-face-forget" class="ls-link ls-face-forget" type="button">Forget Face ID on this device</button>
+        </div>
+        <!-- after the right password, once: Face ID next time? (lock.js: data-state="offer") -->
+        <div class="ls-offer">
+          <p id="ls-offer-text" class="ls-offer-text" aria-live="polite">Scan your face instead of typing the password. (Touch ID works too.)</p>
+          <p class="ls-offer-note">Then this device forgets the password and asks for your face instead.</p>
+          <button id="ls-face-on" class="btn yellow ls-go" type="button">TURN ON FACE ID</button>
+          <button id="ls-face-no" class="btn ls-face-no" type="button">NOT NOW</button>
         </div>
         <!-- 3 wrong passwords in a row ban this device (lock.js); Philip's unban code lifts it -->
         <div class="ls-ban">
@@ -24,7 +37,7 @@
             <div id="ls-umsg" class="ls-msg" role="alert" aria-live="assertive"></div>
             <button id="ls-unban-go" class="btn yellow ls-go" type="button">UNBAN</button>
           </div>
-          <button id="ls-unban-open" class="ls-unban-open" type="button">Philip: unban</button>
+          <button id="ls-unban-open" class="ls-link ls-unban-open" type="button">Philip: unban</button>
         </div>
         <button id="ls-retry" class="btn yellow ls-retry" type="button">TRY AGAIN</button>
         <div class="ls-ask">Ask Philip for a password.</div>
