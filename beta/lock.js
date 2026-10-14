@@ -15,6 +15,9 @@
  * stops working (Philip turned it off) it is forgotten.
  * Three wrong passwords in a row ban the device (see "the ban" below); Philip's unban code (made by
  * `lock.mjs unban-code`; lock.json only has a PBKDF2 verifier of it) lifts the ban.
+ * Face ID / Touch ID (see "Face ID" below) is the other way in: after the right password the page
+ * offers it, and from then on the device's own passkey for this website opens the game key. No face
+ * (or anything about one) ever reaches this script; the device checks the face itself.
  *
  * Plain ES2017 (no ?. ?? ... in objects, or catch without a binding): even an old browser must
  * at least get to show a message.
@@ -23,6 +26,12 @@
   'use strict';
   // (the same expression as STORE_EXPR in tools/lock.mjs, which reads it in the page's <head>)
   var STORE = 'phortnite.pass:' + location.pathname.replace(/[^/]*$/, '');
+  // this folder's Face ID record (FACE_EXPR there), and "Not now" / "this device can't" for it
+  var FACE = 'phortnite.face:' + location.pathname.replace(/[^/]*$/, '');
+  var NOFACE = 'phortnite.noface:' + location.pathname.replace(/[^/]*$/, '');
+  // the passkey's user id for this folder, kept: setting Face ID up again replaces the old passkey
+  // (same website + same user id) instead of piling up 'Phortnite' passkeys in the Passwords app
+  var FACEUSER = 'phortnite.faceuser:' + location.pathname.replace(/[^/]*$/, '');
   var PREFIX = '@phortnite/';
   // Does the browser itself do import maps? (Safari before 16.4 doesn't: es-module-shims runs the
   // game there.) Read before es-module-shims can swap in its own HTMLScriptElement.supports, and
@@ -32,6 +41,8 @@
   var root = $('lockscreen'), card = $('ls-card'), input = $('ls-pass'), go = $('ls-go');
   var remember = $('ls-remember'), msg = $('ls-msg'), retry = $('ls-retry');
   var unbanOpen = $('ls-unban-open'), code = $('ls-code'), unbanGo = $('ls-unban-go'), umsg = $('ls-umsg');
+  var faceGo = $('ls-face-go'), faceLabel = $('ls-face-label'), faceForget = $('ls-face-forget');
+  var offerText = $('ls-offer-text'), faceOn = $('ls-face-on'), faceNo = $('ls-face-no');
   if (!root || !card) return;
 
   var meta = null;      // Promise of lock.json
@@ -44,6 +55,9 @@
   var useGz = typeof DecompressionStream === 'function' && typeof Blob === 'function' && !!Blob.prototype.stream;
   var checking = false; // an unban code is being checked
   var unbanTimer = 0;
+  var face = null;      // this folder's Face ID record (only where the browser does WebAuthn)
+  var faceFailed = false; // Face ID didn't work on this page (its passkey may have been deleted)
+  var offer = null;     // the Face ID offer on screen: { m, doc, K, slot, salt, id, busy }
 
   // ------------------------------------------------------------------ helpers
   // (test/lock.test.mjs runs everything from here to "end of helpers" in Node: only plain functions
@@ -121,19 +135,122 @@
    *  locking starts the tries again, and a clock put back shortens the lock-out.) */
   function idbRecord(b, old) { return { strikes: Math.max(b.strikes, old.strikes), tries: b.tries, until: b.until }; }
 
+  // Face ID (see "Face ID" below for how the page uses these)
+
+  var FACE_INFO = 'phortnite face unlock v1'; // HKDF "info": what the passkey's secret is turned into a key for
+
+  function b64(u8) {
+    var s = '';
+    for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return btoa(s);
+  }
+
+  /** base64url (no padding): how WebAuthn writes credential ids */
+  function b64url(u8) { return b64(u8).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+
+  function unb64url(s) {
+    s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    return unb64(s);
+  }
+
+  /** The key slot numbered n in lock.json (or the slots file), or null: that password was turned off. */
+  function findSlot(m, n) {
+    var list = (m && m.slots) || [];
+    for (var i = 0; i < list.length; i++) if (list[i] && list[i].n === n) return list[i];
+    return null;
+  }
+
+  /** What the Face ID copy of the game key is bound to: Face ID, the passkey (its credential id) and
+   *  the very key slot of the password typed when it was set up (its number, IV and wrapped key). A
+   *  slot that was turned off is gone, and one written anew (`new --force`: a new game key) no longer
+   *  matches, so the copy doesn't open any more: Face ID never outlives the password it came with. */
+  function faceAad(n, id, slot) {
+    return new TextEncoder().encode('phortnite-faceid:' + n + ':' + id + ':' + slot.iv + ':' + slot.wk);
+  }
+
+  /** HKDF-SHA256(the secret the passkey releases after Face ID, the record's salt, FACE_INFO) -> an AES-256-GCM key. */
+  async function faceKey(secret, salt, use) {
+    var base = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: salt, info: new TextEncoder().encode(FACE_INFO) },
+      base, { name: 'AES-GCM', length: 256 }, false, [use]);
+  }
+
+  /** The Face ID record: the game key K encrypted (AES-256-GCM, a fresh IV) with the key made from
+   *  the passkey's secret. `salt` is the PRF input the secret came from; id the passkey's id
+   *  (base64url); slot the key slot the typed password opened; rp the website's host name. */
+  async function faceWrap(secret, salt, K, slot, id, rp) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    var wk = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv, additionalData: faceAad(slot.n, id, slot) }, await faceKey(secret, salt, 'encrypt'), K);
+    return { v: 1, id: id, salt: b64(salt), iv: b64(iv), wk: b64(new Uint8Array(wk)), n: slot.n, rp: rp };
+  }
+
+  /** K from a Face ID record, the passkey's secret and the record's key slot as lock.json has it now;
+   *  null when they don't fit (another secret, another slot or passkey, a new game key). */
+  async function faceUnwrap(secret, rec, slot) {
+    try {
+      var key = await faceKey(secret, unb64(rec.salt), 'decrypt');
+      var K = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(rec.iv), additionalData: faceAad(rec.n, rec.id, slot) }, key, unb64(rec.wk));
+      return K.byteLength === 32 ? new Uint8Array(K) : null;
+    } catch (e) { return null; }
+  }
+
+  /** A Face ID record as localStorage keeps it (JSON), or null for anything else. */
+  function parseFace(s) {
+    var r = null;
+    try { r = JSON.parse(s); } catch (e) { return null; }
+    var str = function (v) { return typeof v === 'string' && v.length > 0 && v.length < 4096; };
+    return r && r.v === 1 && str(r.id) && str(r.salt) && str(r.iv) && str(r.wk) && str(r.rp) && Number.isInteger(r.n) ? r : null;
+  }
+
+  /** The secret a passkey released (the PRF extension's first result), or null. */
+  function prfFirst(cred) {
+    var ext = null;
+    try { ext = cred && typeof cred.getClientExtensionResults === 'function' ? cred.getClientExtensionResults() : null; } catch (e) { ext = null; }
+    var r = ext && ext.prf && ext.prf.results, f = r && r.first;
+    if (!f) return null;
+    var u8 = f instanceof ArrayBuffer ? new Uint8Array(f) : ArrayBuffer.isView(f) ? new Uint8Array(f.buffer, f.byteOffset, f.byteLength) : null;
+    return u8 && u8.length >= 16 ? u8 : null;
+  }
+
+  /** Did the passkey just made say it can give a secret later (PRF on, but no result at once)? */
+  function prfEnabled(cred) {
+    try { var ext = cred.getClientExtensionResults(); return !!(ext && ext.prf && ext.prf.enabled === true); } catch (e) { return false; }
+  }
+
+  /** Does this device say it can do Face ID / Touch ID with the PRF extension? (P: PublicKeyCredential)
+   *  Never fails; no answer within 3 s is a no. A device can still turn out not to (the offer says so then). */
+  function faceAvailable(P) {
+    return new Promise(function (resolve) {
+      var t = 0, over = false;
+      var done = function (v) { if (!over) { over = true; clearTimeout(t); resolve(v); } };
+      t = setTimeout(function () { done(false); }, 3000);
+      try {
+        if (!P || typeof P.isUserVerifyingPlatformAuthenticatorAvailable !== 'function') { done(false); return; }
+        Promise.resolve(P.isUserVerifyingPlatformAuthenticatorAvailable()).then(function (uv) {
+          if (uv !== true) { done(false); return; }
+          if (typeof P.getClientCapabilities !== 'function') { done(true); return; }
+          return Promise.resolve(P.getClientCapabilities()).then(function (c) { done(!(c && c['extension:prf'] === false)); }, function () { done(true); });
+        }).then(null, function () { done(false); });
+      } catch (e) { done(false); }
+    });
+  }
+
   // ------------------------------------------------------------------ end of helpers
 
   // ------------------------------------------------------------------ screen
 
-  /** ask | working (ask, with the button busy) | wait | error (TRY AGAIN) | fatal | banned */
+  /** ask | working (ask, with UNLOCK busy) | scanning (ask, with the Face ID button busy) | wait |
+   *  error (TRY AGAIN) | fatal | banned | offer (Face ID next time?) */
   function state(s, text) {
-    var working = s === 'working';
-    root.setAttribute('data-state', working ? 'ask' : s);
+    var working = s === 'working', scanning = s === 'scanning';
+    root.setAttribute('data-state', working || scanning ? 'ask' : s);
     msg.textContent = text || '';
     msg.classList.remove('ls-ok');
-    go.disabled = working;
-    input.readOnly = working; // (not disabled: that would drop the iPad keyboard mid-try)
+    go.disabled = faceGo.disabled = working || scanning;
+    input.readOnly = working || scanning; // (not disabled: that would drop the iPad keyboard mid-try)
     go.textContent = working ? 'Unlocking…' : 'UNLOCK';
+    faceLabel.textContent = scanning ? 'Unlocking…' : 'UNLOCK WITH FACE ID';
   }
 
   function focusBox(el) {
@@ -183,6 +300,35 @@
   function stored() { try { return localStorage.getItem(STORE) || ''; } catch (e) { return ''; } }
   function store(p) { try { localStorage.setItem(STORE, p); } catch (e) { /* private mode */ } }
   function forget() { try { localStorage.removeItem(STORE); } catch (e) { /* private mode */ } }
+
+  function readFace() { try { return parseFace(localStorage.getItem(FACE)); } catch (e) { return null; } }
+  /** Keep a Face ID record; true when it was really kept (read back). */
+  function saveFace(rec) {
+    try { localStorage.setItem(FACE, JSON.stringify(rec)); return !!parseFace(localStorage.getItem(FACE)); } catch (e) { return false; }
+  }
+  function dropFace() { try { localStorage.removeItem(FACE); } catch (e) { /* private mode */ } }
+  /** Tell the device a passkey of ours opens nothing any more, so it can delete it (Safari 26+,
+   *  Chrome 132+; elsewhere it just stays in the Passwords app). */
+  function unknownPasskey(rp, id) {
+    try {
+      if (id && window.PublicKeyCredential && typeof PublicKeyCredential.signalUnknownCredential === 'function') {
+        PublicKeyCredential.signalUnknownCredential({ rpId: rp, credentialId: id }).then(null, function () { /* fine */ });
+      }
+    } catch (e) { /* fine */ }
+  }
+  /** This folder's passkey user id (16 random bytes, made once). */
+  function faceUser() {
+    try {
+      var u = localStorage.getItem(FACEUSER);
+      if (u && /^[A-Za-z0-9_-]{22}$/.test(u)) return unb64url(u);
+      var id = random(16);
+      localStorage.setItem(FACEUSER, b64url(id));
+      return id;
+    } catch (e) { return random(16); }
+  }
+  /** 'later' (Not now), 'unsupported' (this device can't), or '' */
+  function noFace() { try { return localStorage.getItem(NOFACE) || ''; } catch (e) { return 'blocked'; } }
+  function setNoFace(why) { try { localStorage.setItem(NOFACE, why); } catch (e) { /* private mode */ } }
 
   /** Every remembered password on this website (main site and beta/ each keep their own). */
   function forgetAll() {
@@ -407,7 +553,9 @@
 
   var enc = typeof TextEncoder === 'function' ? new TextEncoder() : null;
 
-  /** The game key from whichever slot this password opens, or null. One PBKDF2 for all slots. */
+  /** The game key from whichever slot this password opens, { raw, n, slot }, or null. One PBKDF2 for
+   *  all slots. (The raw key stays in memory only: Face ID, when it is turned on, keeps a copy
+   *  encrypted with the passkey's secret.) */
   async function unwrap(m, password) {
     var subtle = crypto.subtle;
     var base = await subtle.importKey('raw', enc.encode(normalize(password)), 'PBKDF2', false, ['deriveKey']);
@@ -418,10 +566,12 @@
       try {
         raw = await subtle.decrypt({ name: 'AES-GCM', iv: unb64(s.iv), additionalData: enc.encode('phortnite-slot:' + s.n) }, kek, unb64(s.wk));
       } catch (e) { raw = null; } // not this slot
-      if (raw && raw.byteLength === 32) return subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+      if (raw && raw.byteLength === 32) return { raw: new Uint8Array(raw), n: s.n, slot: s };
     }
     return null;
   }
+
+  function gameKey(raw) { return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']); }
 
   function gunzip(bytes) {
     var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
@@ -499,10 +649,10 @@
       // (the right password in another tab may have reset them)
       var now = readAll();
       var m = await meta;
-      var key = await unwrap(m, password);
+      var got = await unwrap(m, password);
       useStores(await now);
       if (isBanned(ban)) { banned(); return; }
-      if (!key) {
+      if (!got) {
         busy = false;
         last = null;
         // (a remembered password that was turned off is not a strike: nobody typed it)
@@ -523,32 +673,225 @@
         }
         return;
       }
-      // the right password: no strikes any more, in any store (whatever this page knew)
-      lastWrong = '';
-      ban = parseBan('');
-      saveBan(ban);
-      // remember it (or forget an old one) as the box says
-      if (auto || remember.checked) store(normalize(password)); else forget();
-      var doc;
-      try {
-        doc = await open(key);
-      } catch (e) {
-        if (e.kind !== 'corrupt' || reloaded) throw e;
-        // an old copy in a cache, or a half download: once more, straight from the website
-        reloaded = true;
-        download(true);
-        m = await meta;
-        key = await unwrap(m, password);
-        if (!key) throw failure('corrupt');
-        doc = await open(key);
-      }
-      busy = false;
-      last = null;
-      meta = archive = null; // (the encrypted copy is not needed any more)
-      start(m, doc);
+      // the right password: remember it (or forget an old one) as the box says. With Face ID on
+      // this device the box isn't there: the face takes the place of a remembered password.
+      if (!face && (auto || remember.checked)) store(normalize(password)); else forget();
+      await opened(m, got, function (m2) { return unwrap(m2, password); }, !auto);
     } catch (e) {
       failed(e);
     }
+  }
+
+  /** The game key is known (the right password, or Face ID): no strikes any more, decrypt the game and
+   *  start it. `again(m)` gets the key again from a fresh lock.json (for a second download); `typed`:
+   *  a password was typed just now, so Face ID may be offered first. */
+  async function opened(m, got, again, typed) {
+    // no strikes any more, in any store (whatever this page knew)
+    lastWrong = '';
+    ban = parseBan('');
+    saveBan(ban);
+    var doc;
+    try {
+      doc = await open(await gameKey(got.raw));
+    } catch (e) {
+      if (e.kind !== 'corrupt' || reloaded) throw e;
+      // an old copy in a cache, or a half download: once more, straight from the website
+      reloaded = true;
+      download(true);
+      m = await meta;
+      got = await again(m);
+      if (!got) throw failure('corrupt');
+      doc = await open(await gameKey(got.raw));
+    }
+    busy = false;
+    last = null;
+    meta = archive = null; // (the encrypted copy is not needed any more)
+    // (Face ID didn't work on this page, then the right password: its passkey may be gone, so offer
+    // to set it up again; NOT NOW keeps the old setup)
+    if (typed && await offerFace(m, doc, got, !!face && faceFailed)) return;
+    start(m, doc);
+  }
+
+  // ------------------------------------------------------------------ Face ID
+  // Philip: "choose to use a password or Face ID". The website never sees a face, and keeps no
+  // pictures to compare with (they would be public, and a photo could fool them). The iPad does it:
+  // after the right password the page makes a passkey for this website on the device (WebAuthn),
+  // which only opens after Face ID (or Touch ID, or the device's passcode) has said yes, and then
+  // gives the page a secret of its own (the PRF extension; iPadOS / iOS 18 and newer). A copy of the
+  // game key, encrypted with that secret (faceWrap), is the Face ID record in localStorage
+  // ('phortnite.face:<folder>'); it is bound to the key slot of the password typed then, so turning
+  // that password off (or new passwords for everyone) turns this Face ID off too. Face ID takes the
+  // place of "Remember on this device" (a remembered password would unlock without asking for the
+  // face). Failed or cancelled scans are never strikes. A ban hides Face ID but keeps the record:
+  // the face belongs to the device's owner, and Philip's unban code brings it back.
+
+  var webauthn = false;
+  try {
+    webauthn = typeof PublicKeyCredential === 'function' && !!navigator.credentials
+      && typeof navigator.credentials.get === 'function' && typeof navigator.credentials.create === 'function';
+  } catch (e) { webauthn = false; }
+
+  function random(n) { return crypto.getRandomValues(new Uint8Array(n)); }
+
+  /** Show (rec) or hide (null) the Face ID button for this folder. */
+  function setFace(rec) {
+    face = rec;
+    if (rec) { root.setAttribute('data-face', ''); return; }
+    root.removeAttribute('data-face');
+    document.documentElement.classList.remove('ls-faceid');
+  }
+
+  /** The Face ID record can't open the game any more: it goes, and the password box says why. */
+  function lostFace(text) {
+    var rec = face;
+    dropFace();
+    setFace(null);
+    if (rec) unknownPasskey(rec.rp, rec.id);
+    busy = false;
+    ask(text);
+  }
+
+  /** Ask the passkey `id` for its secret (Face ID first). Called from a tap: Safari asks for the face only then. */
+  function faceGet(id, salt, rp) {
+    return navigator.credentials.get({ publicKey: {
+      challenge: random(32), rpId: rp, allowCredentials: [{ type: 'public-key', id: unb64url(id) }],
+      userVerification: 'required', timeout: 60000, extensions: { prf: { eval: { first: salt } } },
+    } });
+  }
+
+  /** UNLOCK WITH FACE ID (in the tap itself, before anything that waits). */
+  function faceUnlock() {
+    if (busy || !face) return;
+    var rec = face, req;
+    // banned meanwhile (another tab)? localStorage and the cookie say so at once; IndexedDB is asked after the scan
+    var now = mergeBan(ban, readSync());
+    if (isBanned(now)) { ban = now; banned(); return; }
+    busy = true;
+    last = null;
+    state('scanning');
+    try { req = faceGet(rec.id, unb64(rec.salt), rec.rp); } catch (e) { req = Promise.reject(e); }
+    if (broken) download(true);
+    faceOpen(rec, req);
+  }
+
+  async function faceOpen(rec, req) {
+    var secret = null, err = null;
+    try { secret = prfFirst(await req); } catch (e) { err = e || new Error('failed'); }
+    try {
+      // like a password: never before IndexedDB has had its say, and nothing opens on a banned device
+      await checked;
+      useStores(await readAll());
+      if (isBanned(ban)) { banned(); return; }
+      // cancelled, or not the right face: not a strike, and Face ID stays on
+      if (err) { busy = false; faceFailed = true; ask('Face ID didn’t work — try again or type a password.'); return; }
+      var m = await meta;
+      var slot = findSlot(m, rec.n);
+      if (!slot) { lostFace('That password was turned off — ask Philip for a new one'); return; }
+      // no secret (the browser left it out), or it doesn't open the copy (a new game key: new passwords for everyone)
+      var raw = secret ? await faceUnwrap(secret, rec, slot) : null;
+      secret = null;
+      if (!raw) { lostFace('Face ID needs setting up again — type a password'); return; }
+      var got = { raw: raw, n: rec.n, slot: slot };
+      await opened(m, got, function (m2) { return findSlot(m2, rec.n) ? got : null; }, false);
+    } catch (e) {
+      failed(e);
+    }
+  }
+
+  // The offer, after the right typed password: TURN ON FACE ID or NOT NOW, before the game starts.
+  var OFFER = {
+    ask: ['Scan your face instead of typing the password. (Touch ID works too.)', 'TURN ON FACE ID'],
+    finish: ['One more scan to finish', 'SCAN TO FINISH'],
+    retry: ['Face ID didn’t turn on. Try again?', 'TRY AGAIN'],
+    again: ['Face ID didn’t work just now. Set it up again?', 'SET UP AGAIN'],
+    unsupported: ['This device can’t use Face ID for Phortnite — keep using your password.', 'OK'],
+  };
+
+  function offerUi(phase) {
+    root.setAttribute('data-offer', phase);
+    offerText.textContent = OFFER[phase][0];
+    faceOn.textContent = OFFER[phase][1];
+    faceOn.disabled = faceNo.disabled = false;
+  }
+
+  /** Offer Face ID (true: the offer is up, and starts the game itself), or not (false). */
+  async function offerFace(m, doc, got, again) {
+    // only once per folder: not with Face ID already on (unless it just failed), after Not now, or where it can't work
+    if (!webauthn || (face && !again) || noFace()) return false;
+    var can = false;
+    try { can = await capable; } catch (e) { can = false; }
+    if (!can) return false;
+    offer = { m: m, doc: doc, K: got.raw, slot: got.slot, salt: null, id: '', busy: false, again: !!again };
+    try { input.blur(); } catch (e) { /* fine */ } // (the iPad keyboard would cover the offer)
+    state('offer');
+    offerUi(again ? 'again' : 'ask');
+    return true;
+  }
+
+  /** Leave the offer and start the game. */
+  function letsGo() {
+    var o = offer;
+    if (!o) return;
+    offer = null;
+    o.K = null;
+    root.removeAttribute('data-offer');
+    start(o.m, o.doc);
+  }
+
+  function cantFace(o) {
+    setNoFace('unsupported');
+    if (o.id) unknownPasskey(location.hostname, o.id); // (made, but it can't open anything)
+    o.busy = false;
+    offerUi('unsupported');
+  }
+
+  /** TURN ON FACE ID / SCAN TO FINISH / TRY AGAIN / OK (in the tap itself: Safari asks for the face only then). */
+  function faceTap() {
+    var o = offer, req;
+    if (!o || o.busy) return;
+    if (root.getAttribute('data-offer') === 'unsupported') { letsGo(); return; }
+    o.busy = true;
+    try {
+      // the passkey is made already (no secret came with it): one more scan reads it
+      if (o.id) req = faceGet(o.id, o.salt, location.hostname);
+      else {
+        o.salt = random(32);
+        req = navigator.credentials.create({ publicKey: {
+          rp: { id: location.hostname, name: 'Phortnite' },
+          user: { id: faceUser(), name: 'Phortnite', displayName: 'Phortnite' },
+          challenge: random(32),
+          pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+          authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'preferred', userVerification: 'required' },
+          timeout: 60000, extensions: { prf: { eval: { first: o.salt } } },
+        } });
+      }
+    } catch (e) { req = Promise.reject(e); }
+    faceOn.disabled = faceNo.disabled = true;
+    faceOn.textContent = 'Scanning…';
+    req.then(function (cred) { return faceMade(o, cred); }).then(null, function (e) {
+      if (offer !== o) return;
+      o.busy = false;
+      // this website or device can't make passkeys at all; anything else (cancelled, not the right face): try again?
+      if (e && (e.name === 'NotSupportedError' || e.name === 'SecurityError')) cantFace(o); else offerUi('retry');
+    });
+  }
+
+  async function faceMade(o, cred) {
+    if (offer !== o) return;
+    var secret = prfFirst(cred);
+    if (!o.id) {
+      o.id = b64url(new Uint8Array(cred.rawId));
+      // some devices give the secret only when the passkey is used, not when it is made
+      if (!secret && prfEnabled(cred)) { o.busy = false; offerUi('finish'); return; }
+    }
+    if (!secret) { cantFace(o); return; }
+    var rec = null;
+    try { rec = await faceWrap(secret, o.salt, o.K, o.slot, o.id, location.hostname); } catch (e) { rec = null; }
+    secret = null;
+    if (!rec) { cantFace(o); return; } // (no HKDF in this browser)
+    // Face ID instead of a remembered password from now on
+    if (saveFace(rec)) { forget(); setFace(rec); }
+    letsGo();
   }
 
   // ------------------------------------------------------------------ go
@@ -567,6 +910,12 @@
   // screen then: html.ls-banned); IndexedDB answers a moment later. Until it has, nothing is
   // unlocked and no remembered password is tried (the screen stays on "Unlocking…" meanwhile).
   useStores(readSync());
+  // Face ID on for this folder: its button, and no remembered password (that would skip the face)
+  try { if (localStorage.getItem(FACE) && !readFace()) dropFace(); } catch (e) { /* (only a broken record goes) */ }
+  setFace(webauthn ? readFace() : null);
+  if (face) forget();
+  // can this device do Face ID? (asked now, so the offer after the right password doesn't wait)
+  var capable = webauthn && !noFace() ? faceAvailable(PublicKeyCredential) : Promise.resolve(false);
   var saved = stored();
   if (isBanned(ban)) { getMeta(); banned(true); } else download(false);
   var checked = readAll().then(function (now) { useStores(mergeBan(ban, now)); });
@@ -575,7 +924,7 @@
     if (e) e.preventDefault();
     // (Enter in the unban box submits the form too)
     if (root.getAttribute('data-state') === 'banned') { tryUnban(); return false; }
-    if (busy) return false;
+    if (busy || offer) return false;
     var p = normalize(input.value);
     if (!p) { ask('Type your password'); return false; }
     // only a real password counts towards the ban: these never reach the key slots
@@ -607,7 +956,35 @@
     if (!code.readOnly) { try { code.focus(); } catch (e) { /* fine */ } }
   };
   unbanGo.onclick = function () { tryUnban(); };
+  faceGo.onclick = function () { faceUnlock(); };
+  faceOn.onclick = function () { faceTap(); };
+  faceNo.onclick = function () {
+    if (!offer || offer.busy) return;
+    // not asked again on this device: the password still works (after 'set up again', the old setup stays)
+    if (!offer.again) setNoFace('later');
+    letsGo();
+  };
+  faceForget.onclick = function () {
+    if (busy || !face) return;
+    var rec = face;
+    dropFace();
+    setFace(null);
+    unknownPasskey(rec.rp, rec.id);
+    ask('Face ID is off on this device. Its passkey can be deleted in the Passwords app (or Settings › Passwords).');
+    msg.classList.add('ls-ok');
+  };
   code.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); tryUnban(); } });
+  // typing on an iPad: the Face ID button steps aside so the keyboard doesn't cover UNLOCK. It comes
+  // back a moment after the box loses focus: tapping UNLOCK takes the focus first, and the button
+  // must not jump down under the finger before the tap lands
+  if ('ontouchstart' in window) {
+    var typing = 0;
+    input.addEventListener('focus', function () { clearTimeout(typing); root.classList.add('ls-typing'); });
+    input.addEventListener('blur', function () {
+      clearTimeout(typing);
+      typing = setTimeout(function () { root.classList.remove('ls-typing'); }, 400);
+    });
+  }
   code.addEventListener('input', function () { if (!checking && !code.readOnly) umsg.textContent = ''; });
 
   if (!isBanned(ban) && !saved) ask(ban.strikes ? triesLeft(ban.strikes) : '');

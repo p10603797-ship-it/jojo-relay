@@ -25,12 +25,13 @@
   <!-- import maps polyfill for older Safari / iPadOS (only kicks in when needed) -->
   <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@2.8.4/dist/es-module-shims.js"></script>
   <!-- the lock screen (tools/lock.mjs): the game is encrypted; lock.js opens it with a password -->
-  <script>(function (c) { var b = false, m; try { b = parseInt(localStorage.getItem('phortnite.ban'), 10) >= 3; } catch (e) {} try { m = /(?:^|;\s*)phortnite_ban=(\d+)/.exec(document.cookie); b = b || (!!m && +m[1] >= 3); } catch (e) {} if (b) c.add('ls-banned'); else try { if (localStorage.getItem('phortnite.pass:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-auto'); } catch (e) {} })(document.documentElement.classList);</script>
+  <script>(function (c) { var b = false, m; try { b = parseInt(localStorage.getItem('phortnite.ban'), 10) >= 3; } catch (e) {} try { m = /(?:^|;\s*)phortnite_ban=(\d+)/.exec(document.cookie); b = b || (!!m && +m[1] >= 3); } catch (e) {} if (b) c.add('ls-banned'); else try { if (typeof PublicKeyCredential === 'function' && localStorage.getItem('phortnite.face:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-faceid'); else if (localStorage.getItem('phortnite.pass:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-auto'); } catch (e) {} })(document.documentElement.classList);</script>
   <style>
     /* the lock screen (tools/lockscreen): over everything until lock.js has unlocked the game.
        States (data-state on #lockscreen, set by lock.js): ask, wait (a remembered password), error
-       (TRY AGAIN), fatal (this browser can't unlock), banned. Before lock.js runs, the page's <head>
-       sets html.ls-auto ("wait") or html.ls-banned ("banned"). */
+       (TRY AGAIN), fatal (this browser can't unlock), banned, offer (Face ID next time?). Before
+       lock.js runs, the page's <head> sets html.ls-auto ("wait"), html.ls-banned ("banned") or
+       html.ls-faceid (Face ID is set up: its button, from the first frame). */
     #lockscreen {
       position: fixed; inset: 0; z-index: 200; overflow-y: auto; -webkit-overflow-scrolling: touch;
       display: flex; flex-direction: column; align-items: center;
@@ -93,10 +94,32 @@
     /* dots, not the code: a child looking over Philip's shoulder can't read it off the box */
     .ls-code { font-size: 28px; letter-spacing: 0.12em; text-indent: 0.12em; -webkit-text-security: disc; }
     /* a 44 px tap target that looks as small as before (the negative margins take up the difference) */
-    .ls-unban-open {
+    .ls-link {
       align-self: center; min-height: 44px; padding: 4px 12px; margin: -8px 0 -10px; border: 0; background: none; cursor: pointer;
       color: rgba(255, 255, 255, 0.45); font-family: system-ui, -apple-system, sans-serif; font-size: 13px; text-decoration: underline; touch-action: manipulation;
     }
+    /* Face ID set up on this device (data-face): the big button first, "or type a password", no
+       "Remember" (the face takes its place), and "Forget Face ID" at the bottom */
+    .ls-face, .ls-face-forget, .ls-offer, .ls-t-face { display: none; }
+    #lockscreen[data-face] .ls-face, html.ls-faceid #lockscreen:not([data-state]) .ls-face { display: flex; }
+    #lockscreen[data-face] .ls-face-forget, html.ls-faceid #lockscreen:not([data-state]) .ls-face-forget { display: block; }
+    #lockscreen[data-face] .ls-remember, html.ls-faceid #lockscreen:not([data-state]) .ls-remember { display: none; }
+    .ls-face { flex-direction: column; gap: 10px; }
+    .ls-face .ls-go { font-size: 26px; }
+    .ls-or { text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 15px; opacity: 0.75; }
+    .ls-face-forget { margin-top: -10px; }
+    /* typing a password on a touch screen: the Face ID button steps aside (keyboard) */
+    #lockscreen.ls-typing .ls-face, #lockscreen.ls-typing .ls-face-forget { display: none !important; }
+    /* the offer after the right password: its own title and buttons instead of the password box */
+    #lockscreen[data-state="offer"] .ls-t-lock { display: none; }
+    #lockscreen[data-state="offer"] .ls-t-face { display: inline; }
+    #lockscreen[data-state="offer"] .ls-field, #lockscreen[data-state="offer"] .ls-ask { display: none; }
+    #lockscreen[data-state="offer"] .ls-offer { display: flex; }
+    .ls-offer { flex-direction: column; gap: 14px; }
+    .ls-offer-text { margin: 0; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 19px; font-weight: 600; line-height: 1.4; }
+    .ls-offer-note { margin: -4px 0 0; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 15px; line-height: 1.35; opacity: 0.75; }
+    #lockscreen:not([data-offer="ask"]) .ls-offer-note, #lockscreen[data-offer="unsupported"] .ls-face-no { display: none; }
+    .ls-face-no { width: 100%; min-height: 56px; font-size: 22px; text-align: center; touch-action: manipulation; }
     .ls-msg.ls-ok { color: #8ff0a4; }
     .ls-card.ls-shake { animation: ls-shake 0.42s; }
     @keyframes ls-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-12px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-7px); } 80% { transform: translateX(4px); } }
@@ -118,10 +141,15 @@
       .ls-ban, .ls-unban { gap: 9px; }
       .ls-go, .ls-retry { min-height: 56px; font-size: 24px; }
       .ls-remember { min-height: 36px; font-size: 15px; }
+      .ls-face { gap: 6px; } .ls-face .ls-go { font-size: 19px; } .ls-or { font-size: 14px; }
+      .ls-offer { gap: 9px; } .ls-offer-text { font-size: 16px; } .ls-offer-note { font-size: 13px; }
+      .ls-face-no { font-size: 20px; }
     }
     @media (max-width: 380px) { .ls-input { font-size: 28px; letter-spacing: 0.16em; text-indent: 0.16em; } .ls-card { padding: 18px 14px 14px; } }
     /* (after the rule above, which would otherwise widen the 10-character code past its box on phones) */
     @media (max-width: 420px) { .ls-code { font-size: min(24px, 6.5vw); letter-spacing: 0.06em; text-indent: 0.06em; } }
+    /* "UNLOCK WITH FACE ID" on one line on phones */
+    @media (max-width: 480px) { .ls-face .ls-go { font-size: min(22px, 5vw); padding-left: 8px; padding-right: 8px; letter-spacing: 0.5px; } }
   </style>
 </head>
 <body>
@@ -214,8 +242,13 @@
     <div class="ls-wrap">
       <div class="logo ls-logo"><div class="logo-main">PHORTNITE</div></div>
       <form id="ls-card" class="ls-card" autocomplete="off" novalidate onsubmit="return false">
-        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span></h1>
+        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span><span class="ls-t-face"><span aria-hidden="true">🙂</span> Use Face ID next time?</span></h1>
         <div class="ls-field">
+          <!-- Face ID set up on this device (lock.js: data-face): the face first, the password box still works -->
+          <div class="ls-face">
+            <button id="ls-face-go" class="btn yellow ls-go" type="button"><span aria-hidden="true">🙂</span> <span id="ls-face-label">UNLOCK WITH FACE ID</span></button>
+            <div class="ls-or">or type a password</div>
+          </div>
           <input id="ls-pass" class="ls-input" type="text" aria-label="Password" placeholder="••••••••"
             autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"
             inputmode="text" enterkeyhint="go" maxlength="12">
@@ -223,6 +256,14 @@
           <div id="ls-msg" class="ls-msg" role="alert" aria-live="assertive"></div>
           <button id="ls-go" class="btn yellow ls-go" type="submit">UNLOCK</button>
           <label class="ls-remember"><input id="ls-remember" type="checkbox" checked> Remember on this device</label>
+          <button id="ls-face-forget" class="ls-link ls-face-forget" type="button">Forget Face ID on this device</button>
+        </div>
+        <!-- after the right password, once: Face ID next time? (lock.js: data-state="offer") -->
+        <div class="ls-offer">
+          <p id="ls-offer-text" class="ls-offer-text" aria-live="polite">Scan your face instead of typing the password. (Touch ID works too.)</p>
+          <p class="ls-offer-note">Then this device forgets the password and asks for your face instead.</p>
+          <button id="ls-face-on" class="btn yellow ls-go" type="button">TURN ON FACE ID</button>
+          <button id="ls-face-no" class="btn ls-face-no" type="button">NOT NOW</button>
         </div>
         <!-- 3 wrong passwords in a row ban this device (lock.js); Philip's unban code lifts it -->
         <div class="ls-ban">
@@ -234,7 +275,7 @@
             <div id="ls-umsg" class="ls-msg" role="alert" aria-live="assertive"></div>
             <button id="ls-unban-go" class="btn yellow ls-go" type="button">UNBAN</button>
           </div>
-          <button id="ls-unban-open" class="ls-unban-open" type="button">Philip: unban</button>
+          <button id="ls-unban-open" class="ls-link ls-unban-open" type="button">Philip: unban</button>
         </div>
         <button id="ls-retry" class="btn yellow ls-retry" type="button">TRY AGAIN</button>
         <div class="ls-ask">Ask Philip for a password.</div>
@@ -246,6 +287,6 @@
     </div>
     <noscript><p class="ls-msg">Turn on JavaScript to play Phortnite.</p></noscript>
   </div>
-  <script src="lock.js?h=03f8dac14e"></script>
+  <script src="lock.js?h=24e6624f0e"></script>
 </body>
 </html>
