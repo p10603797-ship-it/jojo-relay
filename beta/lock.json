@@ -1,6 +1,6 @@
 {
  "v": 1,
- "version": "2.3.0",
+ "version": "2.4.0",
  "kdf": "PBKDF2-SHA256",
  "iter": 600000,
  "salt": "0UF3J2wETCCl4Znr8T56zg==",
@@ -65,15 +65,16 @@
  "files": {
   "gz": {
    "path": "game.lock",
-   "iv": "AYjT8B4NgtIXmOa2"
+   "iv": "Q3GHuG2lUderEZhp"
   },
   "raw": {
    "path": "game.raw.lock",
-   "iv": "YCQ01gCKgznQlC7E"
+   "iv": "ouqrkwcITEzm4U96"
   }
  },
  "built": [
   ".nojekyll",
+  "admin.json",
   "announce.json",
   "css",
   "game.lock",

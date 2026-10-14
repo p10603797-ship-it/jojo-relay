@@ -43,6 +43,7 @@
   var unbanOpen = $('ls-unban-open'), code = $('ls-code'), unbanGo = $('ls-unban-go'), umsg = $('ls-umsg');
   var faceGo = $('ls-face-go'), faceLabel = $('ls-face-label'), faceForget = $('ls-face-forget');
   var offerText = $('ls-offer-text'), faceOn = $('ls-face-on'), faceNo = $('ls-face-no');
+  var banText = document.querySelector('#lockscreen .ls-ban-text');
   if (!root || !card) return;
 
   var meta = null;      // Promise of lock.json
@@ -68,6 +69,7 @@
   var UNBAN_WAIT = 3600000;        // ...for an hour
   var BAN = 'phortnite.ban';       // localStorage key (tools/lock.mjs BAN_KEY, which the page's <head> reads)
   var COOKIE = 'phortnite_ban';    // the cookie (BAN_COOKIE there)
+  var BANBY = 'phortnite.banby';   // who banned the device, when the game's admin did (public/js/admin/ban.js BAN_BY)
   var CHARS = /^[A-HJ-NP-Z2-9]+$/; // the password alphabet (ALPHABET there): no 0/O, 1/I
 
   function normalize(p) {
@@ -95,6 +97,20 @@
   }
 
   function isBanned(b) { return b.strikes >= STRIKES; }
+
+  /** The game's admin banned this device: { reason } (his reason, maybe ''), else null (wrong passwords). */
+  function banBy() {
+    try {
+      var v = JSON.parse(localStorage.getItem(BANBY) || 'null');
+      return v && v.by === 'admin' ? { reason: typeof v.reason === 'string' ? v.reason.slice(0, 120) : '' } : null;
+    } catch (e) { return null; }
+  }
+
+  /** The ban screen's line: the truth about who banned the device and why. */
+  function banLine(by) {
+    if (!by) return 'Too many wrong passwords. This device can\u2019t open Phortnite any more.';
+    return 'The admin banned this device' + (by.reason ? ' (\u201c' + by.reason + '\u201d)' : '') + '. Ask Philip if you think it\u2019s a mistake.';
+  }
 
   /** The site's top folder (the cookie's path): the main site and its beta/ copy are one site. */
   function siteFolder(pathname) { return pathname.replace(/[^/]*$/, '').replace(/\/beta\/$/, '/'); }
@@ -384,6 +400,8 @@
   function saveBan(b) {
     var clear = !b.strikes && !b.tries && !b.until, v = formatBan(b), w = parseBan(v);
     try { if (clear) localStorage.removeItem(BAN); else localStorage.setItem(BAN, v); } catch (e) { /* private mode */ }
+    // (lifted: whoever banned it, that is over too)
+    try { if (clear) localStorage.removeItem(BANBY); } catch (e) { /* private mode */ }
     try {
       // ~10 years (Safari keeps a script's cookie a week at most: every visit writes it again)
       document.cookie = COOKIE + '=' + (clear ? '' : v) + '; Max-Age=' + (clear ? 0 : 315360000) + '; Path=' + SITE
@@ -427,6 +445,7 @@
     forgetAll();
     input.value = '';
     try { input.blur(); } catch (e) { /* fine */ }
+    if (banText) banText.textContent = banLine(banBy());
     unhide();
     state('banned');
     root.classList.remove('ls-unbanning');
