@@ -31,6 +31,15 @@
 //       Philip's unban code, printed ONCE. Three wrong passwords in a row ban a device (lock.js keeps
 //       that in the device's own storage); on the ban screen this code lifts it. slots.json (and so
 //       lock.json) only gets a PBKDF2 verifier of it. Works from the next published build on.
+//   node tools/lock.mjs closed [--text "message"] [--slots lock/closed.json] [--force]
+//       CLOSE the game for everyone: a separate slots file (default lock/closed.json) with its own new
+//       game key and ONE new code for Philip (printed ONCE), his unban code's verifier copied from
+//       lock/slots.json, and "closed": { text }. Publish `build --slots lock/closed.json` (with that
+//       code in PHORTNITE_PASSWORD): the lock screen says "Closed for now" with the message, and only
+//       the code opens it. The usual passwords can't (another key), but a wrong one is not a strike
+//       there, and remembered passwords and Face ID are kept, so OPENING again is just publishing a
+//       normal build (`build` with lock/slots.json): everyone's passwords, remembered devices and
+//       Face ID work again as before.
 //
 // The password comes from the PHORTNITE_PASSWORD environment variable (or is typed, hidden, when
 // run in a terminal), never from the command line (that would land in the shell history).
@@ -133,10 +142,14 @@ async function wrapSlot(kek, K, n) {
 }
 
 const isUnban = (u) => !!u && typeof u.salt === 'string' && Number.isInteger(u.iter) && u.iter >= 1 && typeof u.hash === 'string';
+const isClosed = (c) => !!c && typeof c === 'object' && !Array.isArray(c) && (c.text === undefined || typeof c.text === 'string');
+export const CLOSED_FILE = path.join(ROOT, 'lock', 'closed.json');
+export const CLOSED_TEXT_MAX = 300;
 
 function checkSlotsDoc(doc) {
   if (!doc || doc.v !== 1 || typeof doc.salt !== 'string' || !Number.isInteger(doc.iter) || doc.iter < 1 || !Array.isArray(doc.slots)
     || (doc.next !== undefined && !Number.isInteger(doc.next)) || (doc.unban !== undefined && !isUnban(doc.unban))
+    || (doc.closed !== undefined && !isClosed(doc.closed))
     || doc.slots.some((s) => !s || !Number.isInteger(s.n) || typeof s.iv !== 'string' || typeof s.wk !== 'string')) {
     throw new LockError('the slots file is not a Phortnite key slots file (v 1)');
   }
@@ -259,6 +272,19 @@ export async function makeUnban(code, { iter = ITERATIONS, salt = randomBytes(16
 export async function checkUnban(unban, code) {
   const want = unb64(unban.hash), got = await unbanHash(code, unb64(unban.salt), unban.iter);
   return got.length === want.length && timingSafeEqual(got, want);
+}
+
+/**
+ * The slots for a CLOSED website: a new game key and one new code (for Philip), marked closed with
+ * `text` (Philip's message on the lock screen; '' = lock.js's own). `unban`: the unban code's
+ * verifier to keep (from the normal slots file). Returns { doc, code } (the code: show it once).
+ */
+export async function closedSlots({ text = '', unban, iter = ITERATIONS } = {}) {
+  const { doc, passwords } = await newSlots({ count: 1, iter });
+  doc.about = 'Key slots for the CLOSED Phortnite website (tools/lock.mjs closed): its own game key, opened only by Philip\'s code. No password or key is stored here.';
+  doc.closed = { text: String(text || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, CLOSED_TEXT_MAX) };
+  if (unban) doc.unban = unban;
+  return { doc, code: passwords[0].password };
 }
 
 /** A new unban code for the slots document (replacing any earlier one): { doc, code }. */
@@ -512,6 +538,8 @@ export async function buildLocked({ slots, password, outDir, publicDir = PUBLIC_
   };
   // Philip's unban code: only its verifier (lock.js hides "Philip: unban" without one)
   if (slots.unban) lock.unban = { salt: slots.unban.salt, iter: slots.unban.iter, hash: slots.unban.hash };
+  // closed (`closed` slots): lock.js says so, takes only Philip's code, and never strikes
+  if (slots.closed) lock.closed = { text: String(slots.closed.text || '').slice(0, CLOSED_TEXT_MAX) };
 
   const out = prepareOut(outDir, publicDir, built);
   const copied = [];
@@ -552,7 +580,7 @@ function parseArgs(argv) {
     const k = a.slice(2);
     if (k === 'force' || k === 'help' || k === 'allow-weak') { opts[k] = true; continue; }
     if (k === 'password' || k.startsWith('password=')) throw new LockError('give the password in PHORTNITE_PASSWORD, never on the command line');
-    if (!['count', 'slots', 'out', 'slot', 'iter'].includes(k)) throw new LockError(`unknown option ${a}`);
+    if (!['count', 'slots', 'out', 'slot', 'iter', 'text'].includes(k)) throw new LockError(`unknown option ${a}`);
     if (i + 1 >= rest.length) throw new LockError(`${a} needs a value`);
     opts[k] = rest[++i];
   }
@@ -572,6 +600,7 @@ const USAGE = `usage:
   node tools/lock.mjs remove --slot 3 [--slots lock/slots.json]
   node tools/lock.mjs list [--slots lock/slots.json]
   node tools/lock.mjs unban-code [--slots lock/slots.json]
+  node tools/lock.mjs closed [--text "message"] [--slots lock/closed.json] [--force]   (close the game: one code for Philip)
 tests only: new/unban-code --iter <rounds below ${ITERATIONS}> --allow-weak; build/add --allow-weak take such slots`;
 
 function printPasswords(list, log) {
@@ -621,7 +650,7 @@ function askPassword(prompt) {
 export async function main(argv = process.argv.slice(2), { env = process.env, log = console.log } = {}) {
   const { cmd, opts } = parseArgs(argv);
   if (!cmd || opts.help || cmd === 'help') { log(USAGE); return 0; }
-  const slotsFile = path.resolve(opts.slots || DEFAULT_SLOTS);
+  const slotsFile = path.resolve(opts.slots || (cmd === 'closed' ? CLOSED_FILE : DEFAULT_SLOTS));
   // (asked for only once the slots file has been read and checked)
   const getPassword = async () => env.PHORTNITE_PASSWORD || askPassword('Phortnite password (not shown): ');
   if (cmd === 'new') {
@@ -637,6 +666,25 @@ export async function main(argv = process.argv.slice(2), { env = process.env, lo
     writeSlots(slotsFile, doc);
     printPasswords(passwords, log);
     log(`  ${passwords.length} key slots written to ${slotsFile} (no passwords in it).${unban ? ' The unban code stays the same.' : ''}`);
+    return 0;
+  }
+  if (cmd === 'closed') {
+    if (path.resolve(slotsFile) === path.resolve(DEFAULT_SLOTS)) throw new LockError('closed slots go in their own file (default lock/closed.json), never over lock/slots.json');
+    if (fs.existsSync(slotsFile) && !opts.force) throw new LockError(`${slotsFile} exists: --force makes a new closed key and code (the old code stops working)`);
+    const iter = iterOption(opts, log);
+    // the unban code stays Philip's: its verifier comes from the normal slots file (if it has one)
+    let unban;
+    try { unban = fs.existsSync(DEFAULT_SLOTS) ? readSlots(DEFAULT_SLOTS).unban : undefined; } catch (e) { /* none to keep */ }
+    const { doc, code } = await closedSlots({ text: opts.text || '', unban, iter });
+    writeSlots(slotsFile, doc);
+    log('');
+    log('  Philip\'s code for the CLOSED game (shown only this once: write it down, it is not saved anywhere):');
+    log('');
+    log(`    ${code}`);
+    log('');
+    log(`  Written to ${slotsFile}.${unban ? ' The unban code stays the same.' : ''}`);
+    log(`  Close the website: PHORTNITE_PASSWORD=<that code> node tools/lock.mjs build --slots ${path.relative(process.cwd(), slotsFile) || slotsFile} --out <dir>, then publish it.`);
+    log('  Open it again: publish a normal build (lock/slots.json) — everyone\'s passwords work as before.');
     return 0;
   }
   if (cmd === 'add') {

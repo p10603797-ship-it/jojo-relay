@@ -693,7 +693,7 @@ test('lock: a strike counts on from the stores (not a page left open), the same 
   // the right password (or Face ID) clears every store, whatever the page knew: both go on in opened()
   const openedFn = /async function opened\(m, got, again, typed\) \{[\s\S]*?\n {2}\}\n/.exec(code)[0];
   assert.match(openedFn, /^[^{]*\{\s*(?:\/\/.*\n\s*)*lastWrong = '';\s*ban = parseBan\(''\);\s*saveBan\(ban\);/);
-  assert.match(unlockFn, /await opened\(m, got, function \(m2\) \{ return unwrap\(m2, password\); \}, !auto\);/);
+  assert.match(unlockFn, /await opened\(m, got, function \(m2\) \{ return unwrap\(m2, password\); \}, !auto && !m\.closed\);/);
   assert.ok(unlockFn.indexOf('ban.strikes++') < unlockFn.indexOf('await opened('));
   // Go again with the same wrong password (a double tap): the same message, no new check, no strike
   const submit = /card\.onsubmit = function \(e\) \{[\s\S]*?\n {2}\};/.exec(code)[0];
@@ -898,4 +898,63 @@ test('lock: Face ID in lock.js: asked for only from a tap, never a strike, never
     for (const m of uses) assert.equal(m[1], 'html', `.${c} only as html.${c}`);
     assert.ok(!new RegExp(`class="[^"]*\\b${c}\\b`).test(markup), c);
   }
+});
+
+test('lock: closed — its own key and ONE code for Philip, the unban code kept; the build says closed; lock.js never strikes or forgets while closed', async () => {
+  const dir = tmp('closed');
+  const file = path.join(dir, 'closed.json');
+  // never over the normal slots file, never over an earlier closed file without --force
+  const over = cli(['closed', '--slots', path.join(ROOT, 'lock', 'slots.json'), '--iter', String(ITER), '--allow-weak']);
+  assert.equal(over.status, 1);
+  assert.match(over.stderr, /never over lock\/slots\.json/);
+  const r = cli(['closed', '--slots', file, '--text', 'Back on Friday!\nSee you', '--iter', String(ITER), '--allow-weak']);
+  assert.equal(r.status, 0, r.stderr);
+  const codes = [...r.stdout.matchAll(/^\s+([A-Z0-9]{8})$/gm)].map((m) => m[1]);
+  assert.equal(codes.length, 1, 'one code, printed once');
+  const code = codes[0];
+  assert.ok(isValidPassword(code));
+  assert.match(r.stdout, /shown only this once/);
+  const again = cli(['closed', '--slots', file, '--iter', String(ITER), '--allow-weak']);
+  assert.equal(again.status, 1);
+  assert.match(again.stderr, /--force/);
+  const text = fs.readFileSync(file, 'utf8');
+  assert.ok(!text.includes(code), 'no code in the file');
+  const doc = JSON.parse(text);
+  assert.equal(doc.slots.length, 1);
+  assert.deepEqual(doc.closed, { text: 'Back on Friday! See you' });
+  const normal = JSON.parse(fs.readFileSync(path.join(ROOT, 'lock', 'slots.json'), 'utf8'));
+  if (normal.unban) assert.deepEqual(doc.unban, normal.unban, 'the unban code stays the same');
+  assert.ok(await unlockSlots(doc, code), 'the code opens it');
+  assert.equal(await unlockSlots(doc, PASSWORDS[0]), null);
+  // the build: lock.json says closed (with the message), and only the code builds it
+  const out = path.join(dir, 'site');
+  const built = cli(['build', '--slots', file, '--out', out, '--allow-weak'], { PHORTNITE_PASSWORD: code });
+  assert.equal(built.status, 0, built.stderr);
+  const lock = JSON.parse(fs.readFileSync(path.join(out, 'lock.json'), 'utf8'));
+  assert.deepEqual(lock.closed, { text: 'Back on Friday! See you' });
+  assert.equal(lock.slots.length, 1);
+  for (const f of walkFiles(out)) assert.ok(!fs.readFileSync(path.join(out, f)).toString('latin1').includes(code), `${f} contains the code`);
+  // a normal build has no "closed"
+  const site2 = path.join(dir, 'open');
+  await buildLocked({ slots: await shared.then((s) => s.doc), password: PASSWORDS[1], outDir: site2 });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(site2, 'lock.json'), 'utf8')).closed, undefined);
+
+  // lock.js: while closed a wrong password is not a strike, a remembered password is not forgotten,
+  // Face ID is not dropped, Philip's code is not remembered and offers no Face ID
+  const js = fs.readFileSync(LOADER, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  const fn = (name) => new RegExp(`(?:async )?function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n {2}\\}\\n`).exec(js)[0];
+  const unlock = fn('unlock');
+  const closedPart = /if \(!got && m\.closed\) \{[\s\S]*?\n {6}\}/.exec(unlock)[0];
+  assert.ok(unlock.indexOf(closedPart) < unlock.indexOf('ban.strikes++'), 'closed is handled before any strike');
+  assert.ok(unlock.indexOf('if (isBanned(ban)) { banned(); return; }') < unlock.indexOf(closedPart), 'a banned device stays banned');
+  assert.doesNotMatch(closedPart, /strikes|saveBan|forget\(|store\(|dropFace|lostFace/);
+  assert.match(unlock, /if \(!m\.closed\) \{ if \(!face && \(auto \|\| remember\.checked\)\) store\(normalize\(password\)\); else forget\(\); \}/);
+  assert.match(unlock, /await opened\(m, got, function \(m2\) \{ return unwrap\(m2, password\); \}, !auto && !m\.closed\);/);
+  const faceOpen = fn('faceOpen');
+  assert.ok(faceOpen.indexOf('if (m.closed)') > 0 && faceOpen.indexOf('if (m.closed)') < faceOpen.indexOf('lostFace('), 'Face ID is kept while closed');
+  assert.doesNotMatch(fn('closeUp'), /dropFace|forget\(|saveBan|strikes\+\+/);
+  assert.match(js, /if \(m && m\.closed\) closeUp\(m\.closed\);/);
+  const markup = fs.readFileSync(path.join(ROOT, 'tools', 'lockscreen', 'lock.html'), 'utf8');
+  assert.ok(markup.includes('id="ls-closed"') && markup.includes('Closed for now'));
+  fs.rmSync(dir, { recursive: true, force: true });
 });

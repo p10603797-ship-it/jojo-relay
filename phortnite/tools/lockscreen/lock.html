@@ -4,7 +4,9 @@
     <div class="ls-wrap">
       <div class="logo ls-logo"><div class="logo-main">PHORTNITE</div></div>
       <form id="ls-card" class="ls-card" autocomplete="off" novalidate onsubmit="return false">
-        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span><span class="ls-t-face"><span aria-hidden="true">🙂</span> Use Face ID next time?</span></h1>
+        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span><span class="ls-t-face"><span aria-hidden="true">🙂</span> Use Face ID next time?</span><span class="ls-t-closed"><span aria-hidden="true">🚧</span> Closed for now</span></h1>
+        <!-- the game is closed (lock.json "closed", lock.js: data-closed): only Philip's code opens it -->
+        <p id="ls-closed" class="ls-closed"></p>
         <div class="ls-field">
           <!-- Face ID set up on this device (lock.js: data-face): the face first, the password box still works -->
           <div class="ls-face">

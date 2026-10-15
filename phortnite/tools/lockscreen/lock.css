@@ -56,6 +56,14 @@
     #lockscreen[data-state="banned"] .ls-field, html.ls-banned #lockscreen:not([data-state]) .ls-field,
     #lockscreen[data-state="banned"] .ls-ask, html.ls-banned #lockscreen:not([data-state]) .ls-ask { display: none; }
     #lockscreen[data-state="banned"][data-unban]:not(.ls-unbanning) .ls-unban-open { display: block; }
+    /* closed (data-closed): "Closed for now" and Philip's message instead of "This game is locked";
+       no "Remember" box (the code isn't kept). A ban still shows as a ban. */
+    .ls-t-closed, .ls-closed { display: none; }
+    #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="offer"]) .ls-t-lock { display: none; }
+    #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="offer"]) .ls-t-closed { display: inline; }
+    #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="wait"]) .ls-closed { display: block; }
+    #lockscreen[data-closed] .ls-remember, #lockscreen[data-closed] .ls-ask { display: none; }
+    .ls-closed { margin: 0 0 14px; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 17px; line-height: 1.4; }
     #lockscreen[data-state="banned"].ls-unbanning .ls-unban { display: flex; }
     /* the code box (and its message) where the password box was: above the iPad keyboard */
     #lockscreen.ls-unbanning .ls-ban-text { display: none; }
