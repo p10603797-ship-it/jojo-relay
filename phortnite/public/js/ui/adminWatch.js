@@ -7,7 +7,9 @@
 // for as long as the admin is there (js/admin/notes.js).
 //   app.adminWatch.start(code)   join party `code` to watch -> Promise<bool>
 //   app.adminWatch.stop(note)    back to a party of one (LEAVE)
-// The bar at the bottom: "👁 SPECTATING <name>" with ◀ ▶ (who to watch) and LEAVE.
+// The bar at the bottom: "👁 SPECTATING <name>" with ◀ ▶ (who to watch), 💬 (the party chat:
+// app.chat.open(), js/ui/chat.js; the admin's lines go out as an observer's, so everyone in the
+// party sees them as 🛡 Admin) and LEAVE.
 // A dropped link (a Wi-Fi blip, an iPad that froze) comes back like a player's does: the link
 // rejoins with a freshly signed observe hello (the host takes each one once, and at most 2 minutes
 // old, so one copied off the relay is worth nothing), and the room's fresh welcome rebuilds the view.
@@ -165,7 +167,7 @@ export class AdminWatch {
     el.id = 'adminwatch';
     el.className = 'hidden';
     el.innerHTML = `<div class="aw-info"><div class="aw-top"><span class="aw-tag">👁 SPECTATING</span><b class="aw-name">—</b></div><div class="aw-sub"></div></div>
-      <div class="aw-btns"><button class="aw-prev" aria-label="Watch the previous player">◀</button><button class="aw-next" aria-label="Watch the next player">▶</button><button class="aw-leave">LEAVE</button></div>`;
+      <div class="aw-btns"><button class="aw-prev" aria-label="Watch the previous player">◀</button><button class="aw-next" aria-label="Watch the next player">▶</button><button class="aw-chat" aria-label="Chat with this party (everyone sees you as the admin)">💬</button><button class="aw-leave">LEAVE</button></div>`;
     for (const ev of ['pointerdown', 'touchstart']) el.addEventListener(ev, (e) => e.stopPropagation());
     const step = (dir) => {
       const g = this.game;
@@ -177,6 +179,15 @@ export class AdminWatch {
     $('.aw-prev', el).addEventListener('click', () => step(-1));
     $('.aw-next', el).addEventListener('click', () => step(1));
     $('.aw-leave', el).addEventListener('click', () => { if (this.app.sfx) this.app.sfx.ui(); this.stop(); });
+    // the party chat, as the admin (an older build without app.chat: the button stays hidden)
+    const chat = $('.aw-chat', el);
+    chat.classList.toggle('hidden', !(this.app.chat && typeof this.app.chat.open === 'function'));
+    chat.addEventListener('click', () => {
+      const c = this.app.chat;
+      if (!c || typeof c.open !== 'function') return;
+      if (this.app.sfx) this.app.sfx.ui();
+      if (typeof c.isOpen === 'function' && c.isOpen() && typeof c.close === 'function') c.close(); else c.open();
+    });
     document.body.appendChild(el);
     this.el = el;
     return el;

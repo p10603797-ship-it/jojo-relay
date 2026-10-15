@@ -20,8 +20,12 @@
 //   onLobby(room)              back in the lobby: players are reset, before the 'lobby' broadcast
 //   onElim(room, victim, killer, info)  after the 'elim' broadcast and the siphon, before checkWin
 //   pieceMsg(b)                extra fields for a build piece message (b+ and welcome builds)
+//   observerMessage(room, ob, msg)  a message from an observer (the admin watching, ob = { conn, id
+//                              (negative), watch }), before the Room's own observer handling (ping,
+//                              watch): return true when the plugin handled it
 // A hook that throws is logged ('plugin error') and the Room carries on.
 import { party } from './party.js';
 import { edits } from './edits.js';
+import { chat } from './chat.js';
 
-export const ROOM_PLUGINS = [party, edits];
+export const ROOM_PLUGINS = [party, edits, chat];

@@ -30,15 +30,50 @@
 //                                         for stage E's observer hello (good for 2 minutes)
 //   app.admin.remembered               true when the keys are kept on this iPad (for REMEMBER_DAYS)
 //   app.admin.signOut()                -> Promise: admin mode off here, remembered keys forgotten
+// Party chat moderation (stage 3; players are told in the chat drawer that the admin can read
+// chats, and every mute / chat log is announced on their screen):
+//   app.admin.chats(max)               -> [{ code, host (the host's name, from its card), from,
+//                                         ok, lines, last }] the parties' live chat as their host's
+//                                         page sent it, newest party first; lines oldest first (the
+//                                         last `max` of each, default all): {id, name, text, ts, q?,
+//                                         admin?, at?, got (when it got here), ok}
+//   app.admin.onChats(fn)              -> off(); fn() when chats or reports changed
+//   app.admin.reports()                -> [{ n, from, name (the reporter, from its card), ok, code,
+//                                         line, context, reason, at }] newest first (50 kept)
+//   app.admin.unseenReports() / .seenReports()   the CHAT tab's badge
+//   app.admin.requestLog(id)           -> Promise<{ id, name, code, lines, at } | null> sends
+//                                         'chatlog' to that page and waits (LOG_WAIT_MS) for its
+//                                         sealed answer (null: no answer, offline, an older version)
+//   app.admin.mute(id, minutes, reason) / .unmute(id)   -> Promise<envelope | null> (send())
+// Uploads come in on UP_TOPIC (js/admin/commands.js), opened here only: a budget of UP_RATE per
+// UP_RATE_MS, a size cap before anything is parsed, junk dropped, and nothing kept but PARTIES
+// parties x PARTY_LINES lines, REPORTS reports and LOGS chat logs (memory only: a reload forgets
+// them). Anyone can seal something to the admin's public key, so an upload is only "as reported by
+// that page": ok is true when it was sealed with the key in the card of the page it names (and for
+// live chat, that page's card says it hosts that party). The panel shows the rest marked.
 // Nothing here logs the password or a key; the keys are non-extractable CryptoKeys.
-import { CMD_TOPIC, STATE_PREFIX, PARTY_CMDS, PUBLIC_ARGS, makeEnvelope, cleanCard, Lru } from './commands.js';
-import { openSealed, keysMatch, importBoxPub } from './keys.js';
+import {
+  CMD_TOPIC, STATE_PREFIX, PARTY_CMDS, PUBLIC_ARGS, ALL_OK, makeEnvelope, cleanCard, Lru, Budget, UP_TOPIC, UP_MAX, upShape, cleanUpload,
+} from './commands.js';
+import { openSealed, keysMatch, importBoxPub, SEAL_UP } from './keys.js';
 
 const IDB = 'phortnite-admin'; // IndexedDB: object store 'kv', the remembered keys under 'keys'
 const MAX_OPENS = 300; // cards opened per refresh at most (a flood of junk can't stall the iPad)
 // remembered keys are forgotten after this long: any page on the same website (origin) could use
 // them (not read them) while they are kept, so not for ever
 export const REMEMBER_DAYS = 30;
+// uploads (party chat moderation): opened at most UP_RATE per UP_RATE_MS (a flood of junk can't
+// stall the iPad: the newest wait for room, older ones are dropped), and what is kept, at most
+export const UP_RATE = 30;
+export const UP_RATE_MS = 10000;
+export const PARTY_LINES = 500;
+export const PARTIES = 30;
+export const REPORTS = 50;
+const LOGS = 20;
+export const LOG_WAIT_MS = 10000; // requestLog gives up after this long
+const REPORT_TOAST_MS = 10000; // "🚩 New chat report" on the admin's screen at most this often
+const lineKey = (code, l) => `${code}|${l.ts}|${l.id}|${l.text}`;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /**
  * One IndexedDB request on the admin database; resolves its result (undefined when it fails).
@@ -102,6 +137,18 @@ export class AdminSession {
     this.offCards = app.presence ? app.presence.onCards(() => this.refresh()) : null;
     // (the 'online for' times, and this page's own card, move on without anyone's message)
     this.timer = setInterval(() => this.refresh(), 5000);
+    // party chat moderation: what pages upload (only the admin's page listens to it)
+    this.parties = new Map(); // code -> { code, from, ok, last, lines: [], keys: Map(lineKey -> line) }
+    this.reportList = []; // newest first
+    this.reportSeq = 0;
+    this.unseen = 0;
+    this.logs = new Map(); // chatlog nonce -> { id, name, code, lines, at }
+    this.waiting = new Map(); // chatlog nonce -> { id, resolve, timer }
+    this.chatFns = [];
+    this.upSeen = new Lru(500); // seals already opened (a replay costs nothing)
+    this.upBudget = new Budget({ rate: UP_RATE, ms: UP_RATE_MS, queue: 8 });
+    this.toastAt = 0;
+    this.offUp = app.presence && app.presence.listen ? app.presence.listen(UP_TOPIC, (text) => { this.onUpload(text); }) : null;
     this.refresh();
   }
 
@@ -109,6 +156,8 @@ export class AdminSession {
 
   async send(cmd, args = {}, to = '*') {
     if (this.closed) return null;
+    // (only a reload or a message may go to everyone: pages refuse the rest anyway)
+    if (to === '*' && !ALL_OK.includes(cmd)) throw new Error(`${cmd} goes to one player at a time.`);
     let env;
     if (to === '*') env = await makeEnvelope(this.keys.sign, cmd, args, to);
     else {
@@ -199,7 +248,7 @@ export class AdminSession {
       if (mine) out.push({ ...mine, me: true, s: mine.phase === 'match' ? 'm' : 'l', seen: Date.now() });
       out.sort((a, b) => (b.me - a.me) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
       this.list = out;
-      const key = JSON.stringify(out.map((p) => [p.id, p.name, p.level, p.account, p.mode, p.phase, p.party, p.v, p.admin, p.s, p.pk, p.suspect]));
+      const key = JSON.stringify(out.map((p) => [p.id, p.name, p.level, p.account, p.mode, p.phase, p.party, p.v, p.admin, p.s, p.pk, p.suspect, p.muted]));
       if (key !== this.listKey) {
         this.listKey = key;
         for (const fn of this.fns) {
@@ -209,6 +258,153 @@ export class AdminSession {
     } finally {
       this.busy = false;
       if (this.again && !this.closed) { this.again = false; setTimeout(() => this.refresh(), 0); }
+    }
+  }
+
+  // ------------------------------------------------------------------ party chat moderation
+  mute(id, minutes, reason = '') { return this.send('mute', { minutes, reason }, id); }
+
+  unmute(id) { return this.send('unmute', {}, id); }
+
+  /**
+   * Ask player `id`'s page for its chat log: Promise<{ id, name, code, lines, at } | null> (null:
+   * not sent, or no answer within ms). The page is told the admin looked (js/admin/client.js).
+   */
+  async requestLog(id, ms = LOG_WAIT_MS) {
+    if (this.closed) return null;
+    let env = null;
+    try { env = await this.send('chatlog', {}, id); } catch (e) { env = null; }
+    if (!env || this.closed) return null;
+    const have = this.logs.get(env.n);
+    if (have) return copyLog(have);
+    return new Promise((resolve) => {
+      const w = { id, resolve: (v) => { clearTimeout(w.timer); this.waiting.delete(env.n); resolve(v); } };
+      w.timer = setTimeout(() => w.resolve(null), ms);
+      this.waiting.set(env.n, w);
+    });
+  }
+
+  /** The parties' live chat, newest party first (each party's last `max` lines, oldest first). */
+  chats(max = PARTY_LINES) {
+    return [...this.parties.values()].sort((a, b) => b.last - a.last).map((p) => ({
+      code: p.code, host: this.hostName(p), from: p.from, ok: p.ok, last: p.last,
+      count: p.lines.length, lines: p.lines.slice(-Math.max(1, max)).map((l) => ({ ...l })),
+    }));
+  }
+
+  onChats(fn) {
+    this.chatFns.push(fn);
+    return () => { this.chatFns = this.chatFns.filter((f) => f !== fn); };
+  }
+
+  reports() {
+    return this.reportList.map((r) => ({ ...r, line: { ...r.line }, context: r.context.map((l) => ({ ...l })) }));
+  }
+
+  unseenReports() { return this.unseen; }
+
+  seenReports() {
+    if (!this.unseen) return;
+    this.unseen = 0;
+    this.chatsChanged();
+  }
+
+  /** The host's name for a party's chat (from the card of the page that sent it, or the party's host). */
+  hostName(p) {
+    const c = this.list.find((x) => x.id === p.from) || this.list.find((x) => x.party && x.party.code === p.code && x.party.kind === 'host');
+    return c ? c.name : '';
+  }
+
+  chatsChanged() {
+    for (const fn of this.chatFns) {
+      try { fn(); } catch (e) { console.error('admin chats', e); }
+    }
+  }
+
+  /** An upload on UP_TOPIC (as it came off the broker): opened within the budget. -> the clean upload | null */
+  async onUpload(text) {
+    if (this.closed || typeof text !== 'string' || !text || text.length > UP_MAX) return null;
+    let sealed;
+    try { sealed = JSON.parse(text); } catch (e) { return null; }
+    if (!upShape(sealed)) return null;
+    const seal = `${sealed.e}|${sealed.iv}`;
+    if (this.upSeen.has(seal)) return null;
+    this.upSeen.add(seal);
+    if (!(await this.upBudget.slot()) || this.closed) return null;
+    const u = cleanUpload(await openSealed(this.keys.box, sealed, SEAL_UP, { max: UP_MAX }));
+    if (!u || this.closed) return null;
+    // which page really sealed it: e is the key in that page's card (js/admin/keys.js `from`)
+    const card = this.list.find((c) => c.id === u.from) || null;
+    u.ok = !!(card && card.pk && card.pk === sealed.e);
+    u.name = card ? card.name : '';
+    u.at = Date.now();
+    if (u.k === 'chat') this.addChat(u, card);
+    else if (u.k === 'log') this.addLog(u);
+    else this.addReport(u);
+    return u;
+  }
+
+  /** A host's page sent its party's new lines. */
+  addChat(u, card) {
+    // (the page it names hosts that party: as far as the admin can tell, the party's real chat)
+    const ok = u.ok && !!card && !!card.party && card.party.code === u.code && card.party.kind === 'host';
+    let p = this.parties.get(u.code);
+    if (!p) {
+      if (this.parties.size >= PARTIES) {
+        let old = null;
+        for (const x of this.parties.values()) if (!old || x.last < old.last) old = x;
+        this.parties.delete(old.code);
+      }
+      p = { code: u.code, from: u.from, ok, last: 0, lines: [], keys: new Map() };
+      this.parties.set(u.code, p);
+    }
+    let added = 0;
+    for (const l of u.lines) {
+      const k = lineKey(u.code, l);
+      const had = p.keys.get(k);
+      if (had) { if (ok) had.ok = true; continue; }
+      const line = { ...l, got: u.at, ok };
+      p.keys.set(k, line);
+      p.lines.push(line);
+      added++;
+    }
+    while (p.lines.length > PARTY_LINES) p.keys.delete(lineKey(u.code, p.lines.shift()));
+    if (!added) return;
+    // (a junk upload can't take a party over from its real host: only a checked one moves 'from')
+    if (ok || !p.ok) { p.from = u.from; p.ok = ok; }
+    p.last = u.at;
+    this.chatsChanged();
+  }
+
+  /** A page's answer to 'chatlog': only from the page it was asked of, sealed with its own key. */
+  addLog(u) {
+    if (!this.sent.has(u.re)) return;
+    const w = this.waiting.get(u.re);
+    if (!u.ok || (w && u.from !== w.id)) return;
+    const log = { id: u.from, name: u.name, code: u.code, lines: u.lines, at: u.at };
+    this.logs.set(u.re, log);
+    while (this.logs.size > LOGS) this.logs.delete(this.logs.keys().next().value);
+    if (w) w.resolve(copyLog(log));
+  }
+
+  /** A player's 🚩 report. */
+  addReport(u) {
+    const line = u.line;
+    const dup = this.reportList.find((r) => r.from === u.from && lineKey(r.code, r.line) === lineKey(line.code, line));
+    if (dup) return;
+    this.reportList.unshift({
+      n: ++this.reportSeq, from: u.from, name: u.name, ok: u.ok, code: line.code, line, context: u.context, reason: u.reason, at: u.at,
+    });
+    if (this.reportList.length > REPORTS) this.reportList.length = REPORTS;
+    this.unseen = Math.min(99, this.unseen + 1);
+    this.chatsChanged();
+    const t = Date.now(), ac = this.app.adminClient, panel = this.app.adminPanel;
+    // (the panel open: its CHAT tab's badge says it; a toast would sit over its tabs)
+    const looking = !!(panel && panel.root && panel.root.isConnected);
+    if (!looking && t - this.toastAt > REPORT_TOAST_MS && ac && ac.notify) {
+      this.toastAt = t;
+      // (kind adm-report: the panel takes it away when it opens, js/ui/admin.js)
+      try { ac.notify(`🚩 New chat report from <b>${esc(u.name || 'a player')}</b>: 🛡 ADMIN → 💬 CHAT`, 'adm-report', 7000); } catch (e) { /* the panel has it */ }
     }
   }
 
@@ -223,6 +419,14 @@ export class AdminSession {
     this.closed = true;
     clearInterval(this.timer);
     if (this.offCards) this.offCards();
+    if (this.offUp) this.offUp();
+    this.offUp = null;
+    clearTimeout(this.upBudget.timer);
+    for (const w of [...this.waiting.values()]) w.resolve(null);
+    this.chatFns = [];
+    this.parties.clear();
+    this.reportList = [];
+    this.logs.clear();
     this.fns = [];
     this.keys = null;
     this.opened.clear();
@@ -234,3 +438,5 @@ export class AdminSession {
     await forgetKeys();
   }
 }
+
+function copyLog(l) { return { ...l, lines: l.lines.map((x) => ({ ...x })) }; }

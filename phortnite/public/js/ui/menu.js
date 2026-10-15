@@ -169,6 +169,7 @@ export class Ui {
       <div class="setting"><span>Touch button opacity</span><input id="s-tba" type="range" min="0.3" max="1" step="0.05" value="${st.tbAlpha}"></div>
       <div class="setting"><span>Music volume</span><input id="s-music" type="range" min="0" max="1" step="0.05" value="${st.music}"></div>
       <div class="setting"><span>Default bot difficulty</span><select id="s-bot">${['easy', 'normal', 'hard', 'mixed'].map((x) => `<option ${x === st.botLevel ? 'selected' : ''} value="${x}">${x[0].toUpperCase() + x.slice(1)}</option>`).join('')}</select></div>
+      <div class="setting"><span>Chat<small class="s-note">🛡 The admin (Philip) can read party chats to keep everyone safe.</small></span><select id="s-chat">${[['on', 'On'], ['quick', 'Quick chat only'], ['off', 'Off']].map(([v, l]) => `<option ${v === (st.chat || 'on') ? 'selected' : ''} value="${v}">${l}</option>`).join('')}</select></div>
       <p style="font-size:13px;opacity:.7">"Auto" picks Medium on iPad and High on computers, then the game lowers its resolution on the fly to hold a steady frame rate.</p>`;
     this.modal(html, (b) => {
       const bind = (id, key, conv, after) => {
@@ -200,6 +201,7 @@ export class Ui {
       bind('#s-tba', 'tbAlpha', Number, tb);
       bind('#s-music', 'music', Number, () => this.app.music && this.app.music.setVolume(st.music));
       bind('#s-bot', 'botLevel', String, () => this.app.tweakBots());
+      bind('#s-chat', 'chat', String, () => this.app.chat && this.app.chat.applySettings());
     }, onClose);
   }
 
@@ -234,7 +236,9 @@ export class Ui {
       <h3>Controllers</h3>
       <p>Bluetooth game controllers work too: sticks move & look, triggers aim & shoot, A jump, B crouch, X reload / interact, Y build mode, bumpers change weapon. D-pad up / down / left / right builds a wall / floor / ramp / cone; R3 (or LT in build mode) changes material. Hold B to edit: the D-pad picks the edit and Y resets it.</p>
       <h3>Playing with friends</h3>
-      <p>Play with friends anywhere: tap <b>+ INVITE</b> in the lobby and send the 4-letter party code, the QR code or the link (SHARE / COPY LINK). Friends tap <b>JOIN A FRIEND</b> and type the code, or just open the link. The party leader (♛) picks the mode with <b>CHANGE</b> and presses <b>PLAY</b>; everyone else taps <b>READY</b>. After a match everybody comes back to the lobby together. On the website the party runs on the host's device, so the host should keep the game open; if the Wi-Fi blips you get back into the same match within a minute.</p>`;
+      <p>Play with friends anywhere: tap <b>+ INVITE</b> in the lobby and send the 4-letter party code, the QR code or the link (SHARE / COPY LINK). Friends tap <b>JOIN A FRIEND</b> and type the code, or just open the link. The party leader (♛) picks the mode with <b>CHANGE</b> and presses <b>PLAY</b>; everyone else taps <b>READY</b>. After a match everybody comes back to the lobby together. On the website the party runs on the host's device, so the host should keep the game open; if the Wi-Fi blips you get back into the same match within a minute.</p>
+      <h3>Party chat</h3>
+      <p>Tap <b>💬 CHAT</b> in the lobby (or 💬 next to ☰ in a match, <kbd>Enter</kbd> on a keyboard) to chat with your party, or tap a quick message like "GG!". Be kind! Bad words, links and phone numbers are hidden. 🛡 The admin (Philip) can read chats to keep everyone safe, and you can tap someone's message to hide them or report it to the admin. Settings → Chat: On, Quick chat only, or Off.</p>`;
     this.modal(html, null, onClose);
   }
 
@@ -266,6 +270,7 @@ export class Ui {
       <p style="opacity:.75;font-size:14px">${sub}</p>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
         <button class="btn yellow p-resume">${adminPaused ? 'BACK TO THE MATCH' : 'RESUME'}</button>
+        ${app.chat && app.settings.chat !== 'off' ? '<button class="btn p-chat">💬 PARTY CHAT</button>' : ''}
         <button class="btn p-settings">SETTINGS</button>
         <button class="btn p-help">HOW TO PLAY</button>
         ${solo && live ? '<button class="btn p-restart">RESTART MATCH</button>' : ''}
@@ -277,6 +282,9 @@ export class Ui {
     const resume = () => { this.closeModal(); app.resume(); };
     this.modal(html, (b) => {
       $('.p-resume', b).addEventListener('click', resume);
+      const ch = $('.p-chat', b);
+      // (the chat opens over the match, which goes on: a solo match un-pauses)
+      if (ch) ch.addEventListener('click', () => { this.closeModal(); app.chat.open(); });
       $('.p-settings', b).addEventListener('click', () => { this.onModalClose = null; this.settingsModal(() => this.pauseModal()); });
       $('.p-help', b).addEventListener('click', () => { this.onModalClose = null; this.helpModal(() => this.pauseModal()); });
       const rs = $('.p-restart', b);

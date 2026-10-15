@@ -9,7 +9,8 @@
 // (shared/loot.js), loadouts and mutators.
 //
 // Room plugins (shared/plugins/index.js) hook into joins, leaves, roster rows, the welcome,
-// ticks, match start / lobby / eliminations, build piece messages and client messages.
+// ticks, match start / lobby / eliminations, build piece messages, client messages and observers'
+// messages (party chat: shared/plugins/chat.js).
 //
 // Observers: the admin watching a party (js/admin, stage E). join(conn, hello, {observer: true})
 // with hello.observer set, only after the transport checked the admin's signature on that hello
@@ -413,8 +414,12 @@ export class Room {
     this.log('observer leave', { room: this.code, id: ob.id });
   }
 
-  /** What an observer may say: ping, whom it watches, bye. Nothing that touches the match. */
+  /**
+   * What an observer may say: ping, whom it watches, bye, and what a room plugin takes first
+   * (observerMessage hook: party chat, as the admin). Nothing that touches the match.
+   */
   observerMessage(ob, msg) {
+    if (this.plugAnswer('observerMessage', this, ob, msg) === true) return;
     if (msg.t === 'ping') this.send(ob.conn, { t: 'pong', c: msg.c, ts: this.now() });
     else if (msg.t === 'watch') {
       let id = num(msg.id) | 0;

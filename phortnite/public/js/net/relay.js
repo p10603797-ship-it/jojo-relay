@@ -5,16 +5,39 @@
 //
 // The host listens on every broker it can reach. A friend knocks on each one, and the first
 // broker the host answers on carries the link. A link looks like a PeerJS data channel to
-// p2p.js: open, send(text), close(), on('data' | 'close' | 'error', fn).
+// p2p.js: open, send(text), close(), on('data' | 'close' | 'error', fn), plus relay: true and
+// plain (see Encryption).
 //
 // Wire format: every MQTT message is <link id: 10 chars><kind: 1 char><body>.
 //   friend -> host  (topic <base>/h):        k knock, d data, x close
 //   host -> friend  (topic <base>/c/<link>): a answer, d data, x close
-// d bodies are text frames joined by '\n' (JSON text never holds a raw line break). Public brokers
+// d bodies carry text frames joined by '\n' (JSON text never holds a raw line break). Public brokers
 // allow about 100 messages a second from one network (both iPads on the same Wi-Fi count
 // together), so a friend sends at most 8 a second and the host at most 10 a second to each
 // friend, fewer when many friends are on the relay; each carries everything since the last.
-// (Unlike a direct link, relayed messages are not encrypted: the relay is only a fallback.)
+//
+// Encryption (end to end, against anyone listening on the public brokers: everything on them is
+// readable by whoever subscribes to phortnite/p1/#, chat included):
+//   - the friend's knock body is its ephemeral ECDH P-256 public key for this link (raw, base64);
+//     the host's answer body is the host's own ephemeral key for this link
+//   - both ends derive one AES-GCM-256 key: HKDF-SHA256 over the ECDH secret, salt = the link id,
+//     info 'phortnite relay v1'
+//   - every d body is base64(iv (12 random bytes) | ciphertext) of the batched text, with the link
+//     id and the direction ('h' to the host, 'c' to the friend) as additional data, so a message
+//     can't be bounced back to the end that sent it. Async crypto keeps the order: each link seals
+//     (and opens) its messages one after another. A d body that does not open is ignored.
+//   - a sealed batch holds at most SEALED_BATCH bytes of UTF-8, so the base64 stays within BATCH
+//     characters (a single frame is never split: p2p.js cuts messages into frames of at most 5000
+//     characters); x (close) carries nothing and needs no secret
+//   - compatibility: a knock without a key (an older page) is answered without one, and that link
+//     stays plain (link.plain) so the Room's "everyone should reload" message can still reach it.
+//     p2p.js only ever lets 'err' messages through a plain link: the host turns away a join on one,
+//     and a friend whose answer came without a key (an older host page) refuses any welcome on it.
+//     A page without WebCrypto (not https) can't encrypt, so it gets no party over the relay.
+//   - What this does NOT stop: an active man-in-the-middle. Anyone on a broker can knock or answer
+//     with their own key (the keys are not signed: there is no account or secret both pages share),
+//     and anyone who learns a link id can close it ('x'). Encryption stops eavesdroppers on the
+//     public brokers, which is the realistic risk; direct WebRTC links are encrypted by DTLS.
 import { Mqtt } from './mqtt.js';
 
 export const BROKERS = [
@@ -23,12 +46,15 @@ export const BROKERS = [
   { url: 'wss://broker.hivemq.com:8884/mqtt' },
 ];
 const BATCH = 16000; // characters per MQTT message
+// UTF-8 bytes of text per sealed message: base64(12 iv + text + 16 tag) <= BATCH characters
+export const SEALED_BATCH = Math.floor(BATCH * 3 / 4) - 12 - 16 - 12;
 const FLUSH_MS = 100; // host -> friend, with up to 3 friends on the relay
 const FRIEND_FLUSH_MS = 125;
 const KNOCK_MS = 1500;
 const IDLE_MS = 20000; // a friend's link that has been silent this long is gone (they ping every 2 s)
 const MAX_LINKS = 32;
 const ID_RE = /^[a-z0-9]{10}$/;
+const RELAY_INFO = 'phortnite relay v1';
 
 let override = null;
 /** Tests: relay through these brokers ([] turns the relay off; null goes back to the default). */
@@ -73,9 +99,89 @@ function linkId() {
   return s.slice(0, 10);
 }
 
+// ------------------------------------------------------------------ encryption
+const EC = { name: 'ECDH', namedCurve: 'P-256' };
+const te = new TextEncoder();
+const td = new TextDecoder();
+const subtle = () => (globalThis.crypto && globalThis.crypto.subtle) || null;
+
+let noCrypto = false;
+/** Tests: act like a page without WebCrypto (true), or as usual (false). */
+export function useCrypto(on) { noCrypto = !on; }
+
+/** Can this page encrypt relay links? (WebCrypto: every browser over https, and Node.) */
+export function canEncrypt() {
+  return !noCrypto && !!subtle() && typeof globalThis.crypto.getRandomValues === 'function';
+}
+
+function b64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+function unb64(s) {
+  try {
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch (e) { return null; }
+}
+
+/** UTF-8 length of a string, without encoding it. */
+function utf8Len(s) {
+  let n = s.length;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0x80) n += c >= 0x800 && (c < 0xd800 || c > 0xdfff) ? 2 : 1;
+  }
+  return n;
+}
+
+/** A fresh ECDH key pair for one link: { priv, pub (raw public key, base64) }. */
+async function newKeyPair() {
+  const k = await subtle().generateKey(EC, false, ['deriveBits']);
+  return { priv: k.privateKey, pub: b64(new Uint8Array(await subtle().exportKey('raw', k.publicKey))) };
+}
+
+/** The link's AES-GCM key from our private key and the other end's public key (rejects on a bad key). */
+async function linkKey(priv, theirs, id) {
+  const raw = typeof theirs === 'string' && theirs.length < 200 ? unb64(theirs) : null;
+  if (!raw || raw.length !== 65 || raw[0] !== 4) throw new Error('Not a relay key');
+  const pub = await subtle().importKey('raw', raw, EC, false, []);
+  const bits = await subtle().deriveBits({ name: 'ECDH', public: pub }, priv, 256);
+  const ikm = await subtle().importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+  return subtle().deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: te.encode(id), info: te.encode(RELAY_INFO) },
+    ikm, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
+  );
+}
+
+async function seal(key, text, aad) {
+  const iv = new Uint8Array(12);
+  globalThis.crypto.getRandomValues(iv);
+  const ct = new Uint8Array(await subtle().encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, te.encode(text)));
+  const out = new Uint8Array(12 + ct.length);
+  out.set(iv);
+  out.set(ct, 12);
+  return b64(out);
+}
+
+/** The text of a sealed body, or null when it does not open (not from the other end). */
+async function unseal(key, body, aad) {
+  const raw = body.length <= BATCH * 4 ? unb64(body) : null;
+  if (!raw || raw.length < 12 + 16) return null;
+  try {
+    return td.decode(await subtle().decrypt({ name: 'AES-GCM', iv: raw.subarray(0, 12), additionalData: aad }, key, raw.subarray(12)));
+  } catch (e) { return null; }
+}
+
+// ------------------------------------------------------------------ links
 /** One end of a relayed link (looks like a PeerJS data channel). */
 export class RelayLink {
-  constructor(mqtt, out, id) {
+  /** txDir: the direction this end sends in, 'h' (a friend, to the host) or 'c' (the host, to a friend). */
+  constructor(mqtt, out, id, txDir = 'h') {
     this.mqtt = mqtt;
     this.out = out;
     this.id = id;
@@ -91,6 +197,23 @@ export class RelayLink {
     this.lastRx = Date.now();
     this.heardData = false;
     this.onDrop = null;
+    this.txDir = txDir;
+    // not encrypted (yet): an older page on the other end. p2p.js lets only 'err' messages through.
+    this.plain = true;
+    this.key = null; // Promise of the AES-GCM CryptoKey once sealed
+    this.cap = BATCH;
+    this.txChain = Promise.resolve();
+    this.rxChain = Promise.resolve();
+  }
+
+  /** Seal this link from now on with key (a CryptoKey, or a Promise of one). */
+  encrypt(key) {
+    this.plain = false;
+    this.key = Promise.resolve(key);
+    this.key.catch(() => {}); // a bad key: nothing opens, nothing goes out
+    this.cap = SEALED_BATCH;
+    this.txAad = te.encode(this.id + this.txDir);
+    this.rxAad = te.encode(this.id + (this.txDir === 'h' ? 'c' : 'h'));
   }
 
   on(ev, fn) { (this.h[ev] || (this.h[ev] = [])).push(fn); }
@@ -103,11 +226,14 @@ export class RelayLink {
 
   say(kind, body) { return this.mqtt.publish(this.out, this.id + kind + body); }
 
+  /** How much of a batch a frame takes: characters on a plain link, UTF-8 bytes on a sealed one. */
+  size(s) { return this.plain ? s.length : utf8Len(s); }
+
   send(text) {
     if (!this.open) return;
     this.q.push(text);
-    this.qn += text.length + 1;
-    if (this.qn >= BATCH) this.flush();
+    this.qn += this.size(text) + 1;
+    if (this.qn >= this.cap) this.flush();
     else if (!this.queued) {
       // right away after a quiet spell, else with whatever else comes in the next moment
       this.queued = true;
@@ -122,29 +248,62 @@ export class RelayLink {
     if (!this.open || !this.q.length) { this.q = []; this.qn = 0; return; }
     let batch = [], n = 0;
     for (const s of this.q) {
-      if (batch.length && n + s.length > BATCH) { this.say('d', batch.join('\n')); batch = []; n = 0; }
+      const len = this.size(s);
+      if (batch.length && n + len > this.cap) { this.data(batch.join('\n')); batch = []; n = 0; }
       batch.push(s);
-      n += s.length + 1;
+      n += len + 1;
     }
     this.q = [];
     this.qn = 0;
-    if (batch.length) this.say('d', batch.join('\n'));
+    if (batch.length) this.data(batch.join('\n'));
+  }
+
+  /** One batch out: as it is on a plain link, else sealed, after every batch before it. */
+  data(text) {
+    if (this.plain) { this.say('d', text); return; }
+    const key = this.key, aad = this.txAad;
+    this.txChain = this.txChain
+      .then(async () => { this.say('d', await seal(await key, text, aad)); })
+      .catch(() => { /* a bad key: nothing goes out */ });
   }
 
   heard(kind, body) {
-    if (!this.open) return;
-    this.lastRx = Date.now();
-    if (kind === 'd') {
+    if (!this.open || (kind !== 'd' && kind !== 'x')) return;
+    if (this.plain) {
+      this.lastRx = Date.now();
+      if (kind === 'x') { this.drop(); return; }
       this.heardData = true;
-      for (const f of body.split('\n')) if (f && this.open) this.fire('data', f);
-    } else if (kind === 'x') this.drop();
+      this.deliver(body);
+      return;
+    }
+    // sealed: opened one after another, in the order they came (a close after the data before it)
+    const key = this.key, aad = this.rxAad;
+    this.rxChain = this.rxChain.then(async () => {
+      if (!this.open) return;
+      if (kind === 'x') { this.drop(); return; }
+      const text = await unseal(await key, body, aad);
+      if (text === null || !this.open) return; // not sealed by the other end: ignored
+      this.lastRx = Date.now();
+      this.heardData = true;
+      this.deliver(text);
+    }).catch(() => { /* a bad key: nothing opens */ });
   }
 
-  /** Hang up (the other end hears it). */
-  close() {
+  deliver(text) {
+    for (const f of text.split('\n')) if (f && this.open) this.fire('data', f);
+  }
+
+  /**
+   * Hang up: the other end hears it after any data still being sealed. now: at once, without what
+   * is still queued (the page is going away: there may be no later for async crypto).
+   */
+  close(now = false) {
     if (!this.open) return;
-    this.flush();
-    this.say('x', '');
+    if (now) { this.q = []; this.say('x', ''); } else {
+      this.flush();
+      if (this.plain) this.say('x', '');
+      else this.txChain = this.txChain.then(() => { this.say('x', ''); });
+    }
     this.drop();
   }
 
@@ -224,21 +383,40 @@ export class RelayHost {
     const link = this.links.get(id);
     if (kind === 'k') {
       if (link) {
-        // a knock repeated: answer again on the broker the link uses (knocks on others go unanswered)
-        if (link.mqtt === m && !link.heardData) link.say('a', '');
+        // a knock repeated: answer again on the broker the link uses (knocks on others go unanswered);
+        // a link whose key is still being made answers when it is ready
+        if (link.mqtt === m && !link.heardData && typeof link.answer === 'string') link.say('a', link.answer);
         return;
       }
       if (this.links.size >= MAX_LINKS) return;
-      const nl = new RelayLink(m, `${this.base}/c/${id}`, id);
+      const nl = new RelayLink(m, `${this.base}/c/${id}`, id, 'c');
       nl.onDrop = () => { if (this.links.get(id) === nl) this.links.delete(id); this.pace(); };
       this.links.set(id, nl);
       this.pace();
-      nl.say('a', '');
-      this.onLink(nl);
+      const theirs = text.slice(11);
+      if (!theirs || !canEncrypt()) {
+        // an older page (no key in its knock): a plain link, so the Room's version message reaches it
+        nl.answer = '';
+        nl.say('a', '');
+        this.onLink(nl);
+        return;
+      }
+      nl.answer = null;
+      newKeyPair()
+        .then(async (pair) => ({ pair, key: await linkKey(pair.priv, theirs, id) }))
+        .then(({ pair, key }) => {
+          if (!nl.open || this.closed || this.links.get(id) !== nl) return;
+          nl.encrypt(key);
+          nl.answer = pair.pub;
+          nl.say('a', pair.pub);
+          this.onLink(nl);
+        }, () => nl.drop()); // not a key: forget the knock
       return;
     }
-    if (link && link.mqtt === m) link.heard(kind, text.slice(11));
-    else if (!link && kind === 'd') m.publish(`${this.base}/c/${id}`, `${id}x`); // a link from before a reload: hang up so they knock again
+    if (link && link.mqtt === m) {
+      // (nothing can come before the answer: its key is still being made)
+      if (typeof link.answer === 'string') link.heard(kind, text.slice(11));
+    } else if (!link && kind === 'd') m.publish(`${this.base}/c/${id}`, `${id}x`); // a link from before a reload: hang up so they knock again
   }
 
   /** Many friends on the relay: each hears from the host less often, so the party stays under the brokers' limit. */
@@ -249,7 +427,7 @@ export class RelayHost {
 
   /** The host's page is going away: friends hear it at once instead of waiting for the silence. */
   hangUpAll() {
-    for (const link of [...this.links.values()]) link.close();
+    for (const link of [...this.links.values()]) link.close(true);
   }
 
   /** Drop links that went silent. After the page slept (timers frozen) everyone gets a fresh start. */
@@ -278,17 +456,20 @@ export class RelayHost {
 
 /**
  * A friend's side: reach the host of this party through any broker. Resolves with an open
- * RelayLink. Rejects with type 'relay-offline' (no broker reachable from here) or 'relay-nohost'
- * (brokers reached, but no host answered).
+ * RelayLink (sealed, or plain when the host's page is older: link.plain). Rejects with type
+ * 'relay-offline' (no broker reachable from here) or 'relay-nohost' (brokers reached, but no host
+ * answered).
  */
 export function relayDial(code, ms = 9000) {
   const base = topicFor(code);
   const id = linkId();
   const list = brokers();
+  // this link's own key pair (none where the page can't encrypt: the knock goes without one)
+  const pairP = canEncrypt() ? newKeyPair().catch(() => null) : Promise.resolve(null);
   return new Promise((resolve, reject) => {
     const conns = new Set();
     const timers = [];
-    let done = false, reached = 0, failed = 0, link = null;
+    let done = false, reached = 0, failed = 0, link = null, pair = null;
     const finish = (err, winner) => {
       if (done) return;
       done = true;
@@ -299,6 +480,25 @@ export function relayDial(code, ms = 9000) {
     const fail = (type) => finish(Object.assign(new Error(type === 'relay-offline' ? 'Could not reach a relay' : 'No host answered on the relay'), { type }));
     if (!list.length) { fail('relay-offline'); return; }
     timers.push(setTimeout(() => fail(reached ? 'relay-nohost' : 'relay-offline'), ms));
+    /** The host answered on broker m: the link is ours once its key is made. */
+    const answered = (m, theirs) => {
+      const nl = new RelayLink(m, `${base}/h`, id, 'h');
+      nl.flushMs = FRIEND_FLUSH_MS;
+      link = nl; // what else comes on this broker goes to it (a repeated answer is ignored)
+      const won = () => {
+        if (done || m.dead || link !== nl) return;
+        m.onClose = () => nl.drop();
+        // the link is this broker connection's only use: hang up with it (once the 'x' is out)
+        nl.onDrop = () => setTimeout(() => m.close(), 200);
+        finish(null, nl);
+      };
+      // an answer without a key: an older host page. The link stays plain (p2p.js only lets its
+      // 'err' messages through, so the Room's "everyone should reload" still shows).
+      if (!pair || !theirs) { won(); return; }
+      const key = linkKey(pair.priv, theirs, id);
+      nl.encrypt(key);
+      key.then(won, () => { if (link === nl) link = null; }); // not a key: wait for a real answer
+    };
     for (const server of list) {
       const m = new Mqtt(server);
       conns.add(m);
@@ -307,17 +507,14 @@ export function relayDial(code, ms = 9000) {
           if (text.slice(0, 10) !== id) return;
           if (link) { if (link.mqtt === m) link.heard(text[10], text.slice(11)); return; }
           if (done || text[10] !== 'a') return;
-          link = new RelayLink(m, `${base}/h`, id);
-          link.flushMs = FRIEND_FLUSH_MS;
-          m.onClose = () => link.drop();
-          // the link is this broker connection's only use: hang up with it (once the 'x' is out)
-          link.onDrop = () => setTimeout(() => m.close(), 200);
-          finish(null, link);
+          answered(m, text.slice(11));
         }))
-        .then(() => {
+        .then(() => pairP)
+        .then((p) => {
           if (done) return;
+          pair = p;
           reached++;
-          const knock = () => { if (!done) m.publish(`${base}/h`, `${id}k`); };
+          const knock = () => { if (!done) m.publish(`${base}/h`, `${id}k${pair ? pair.pub : ''}`); };
           knock();
           timers.push(setInterval(knock, KNOCK_MS));
         })

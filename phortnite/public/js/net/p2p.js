@@ -13,11 +13,17 @@
 // The admin can watch a party (js/admin, stage E): a hello with an 'observer' envelope is let in
 // as an observer only when opts.verifyObserver (the admin's signature check) says yes; the check is
 // async, so the room only sees the hello once it is done. Without a verifier every observer is refused.
+//
+// Relay links are end-to-end encrypted (relay.js) unless the other end's page is older: such a
+// plain link (link.plain) only ever carries 'err' messages. The host never lets one join (a
+// different version hears the Room's "everyone should reload"; the same version is told the link
+// can't be private), and a friend on one sends a bare hello (no name, no resume token) and turns
+// away any welcome that comes over it: names, chat and the match never cross the brokers in clear.
 import { Room } from '../../shared/room.js';
-import { TICK_HZ } from '../../shared/constants.js';
+import { TICK_HZ, PROTOCOL } from '../../shared/constants.js';
 import { cleanSettings } from '../../shared/plugins/party.js';
 import { PausableClock, RETRY_MS, REJOIN_WINDOW } from './net.js';
-import { RelayHost, relayDial, brokers } from './relay.js';
+import { RelayHost, RelayLink, relayDial, brokers } from './relay.js';
 
 const PEERJS_URL = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/+esm';
 const PREFIX = 'phortnite-v1-';
@@ -30,6 +36,11 @@ const SILENT_MS = 45000;
 const DIRECT_MS = 15000; // a direct link that has not opened by now never will
 const RELAY_AFTER_MS = 4000; // on the same Wi-Fi a direct link opens in 1-2 s
 const RELAY_MS = 10000;
+// a plain relay link (an older page on the other end) can't carry the party
+const PLAIN_OLD_HOST = 'This party\'s page is on an older version of Phortnite, so the link through the relay can\'t be kept private. Everyone should reload the page, then try again.';
+const PLAIN_NO_CRYPTO = 'The link through the relay can\'t be kept private on this page. Everyone should reload the page (open it from its usual https address), then try again.';
+/** What a friend says over a plain relay link: just enough for the Room's version check. */
+const bareJoin = (join) => ({ t: 'join', hello: { v: join && join.hello && typeof join.hello === 'object' ? join.hello.v : undefined } });
 // introduction-service errors that mean it is out of reach (not that the party is missing)
 const OFFLINE_TYPES = new Set(['load', 'network', 'server-error', 'socket-error', 'socket-closed', 'timeout', 'browser-incompatible']);
 
@@ -296,6 +307,14 @@ export class P2PHost extends Emitter {
       if (msg.t === 'join') {
         if (joined || checking) return;
         const hello = msg.hello && typeof msg.hello === 'object' ? msg.hello : {};
+        if (dc instanceof RelayLink && dc.plain) {
+          // an older page (its knock had no key): it hears why, never a welcome in clear
+          checking = true;
+          if ((hello.v | 0) !== PROTOCOL) this.room.join(conn, hello); // the Room's version message (and no)
+          else conn.send({ t: 'err', ver: true, msg: PLAIN_NO_CRYPTO });
+          setTimeout(() => { try { dc.close(); } catch (e) { /* closing */ } }, 500);
+          return;
+        }
         if (hello.observer !== undefined && hello.observer !== null && hello.observer !== false) {
           // the admin wants to watch: the signature first (async), then the room decides
           checking = true;
@@ -403,7 +422,8 @@ export class P2PClient extends Emitter {
 
   async connect() {
     await this.link();
-    this.out({ t: 'join', hello: this.hello });
+    const join = { t: 'join', hello: this.hello };
+    this.out(this.plainRelay ? bareJoin(join) : join);
     this.pingTimer = setInterval(() => this.watch(), Math.min(1000, this.stallMs / 2));
     // coming back to the page after a while: allow the host a moment to answer again
     this.onVisible = () => { if (!pageHidden()) this.lastRx = Math.max(this.lastRx, performance.now() - 5000); };
@@ -422,8 +442,14 @@ export class P2PClient extends Emitter {
     this.out = sender(dc);
     this.open = true;
     this.lastRx = performance.now();
+    // a relay link the host's page could not encrypt (an older version): only its 'err' gets through
+    const plain = this.plainRelay = res.via === 'relay' && dc.plain === true;
     dc.on('data', receiver((msg) => {
       if (this.dc !== dc) return;
+      if (plain && msg.t !== 'err') {
+        if (msg.t === 'welcome' || msg.t === 'resumed') this.refusePlain();
+        return;
+      }
       this.lastRx = performance.now();
       if (this.stalled) { this.stalled = false; this.emit({ t: '_net', state: 'online' }); }
       if (msg.t === 'pong' && typeof msg.c === 'number') {
@@ -450,6 +476,19 @@ export class P2PClient extends Emitter {
   }
 
   say(text) { if (this.onStatus) this.onStatus(text); }
+
+  /**
+   * The party's welcome came over a plain relay link (the host's page is older): turned away, so
+   * nothing about the party crosses the public brokers in clear. Like the Room's version error:
+   * {t:'err', ver: true} (an alert while joining), then the link closes.
+   */
+  refusePlain() {
+    if (this.closed) return;
+    const err = { t: 'err', ver: true, msg: PLAIN_OLD_HOST };
+    this.rejoin = null;
+    this.emit(err);
+    this.giveUp(err);
+  }
 
   /**
    * The direct way first; the relay after RELAY_AFTER_MS (at once when the direct way fails, or
@@ -580,7 +619,7 @@ export class P2PClient extends Emitter {
         if (this.closed || !this.open || !join) throw new Error('rejoin');
         this.retrying = false;
         this.awaitRejoin = true;
-        this.out(join);
+        this.out(this.plainRelay ? bareJoin(join) : join);
         this.emit({ t: '_net', state: 'online' });
         return;
       } catch (e) {

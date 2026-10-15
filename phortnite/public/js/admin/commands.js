@@ -6,8 +6,9 @@
 //   CMD_TOPIC                   'phortnite/admin/v1/cmd'           live commands (not retained)
 //   STATE_PREFIX + 'banner'     'phortnite/admin/v1/state/banner'   retained: the admin's banner
 //   STATE_PREFIX + 'maintenance'                                    retained: maintenance on/off
+//   UP_TOPIC                    'phortnite/admin/v1/up'            uploads from pages (not retained)
 // (pages subscribe to those two exact topics, never a wildcard: junk parked under made-up state
-// topics never reaches an iPad)
+// topics never reaches an iPad; only the admin's page subscribes to UP_TOPIC)
 // Envelope (js/admin/keys.js signs it): { v: 1, cmd, args, to, ts, n, sig }
 //   to   a page's presence id (random per page load), or '*' (only for ALL_OK commands)
 //   ts   ms since 1970 when it was signed; n 12 random bytes (base64), never used twice
@@ -25,6 +26,25 @@
 // from its signing too), and a page only ever moves forward (js/admin/client.js keeps the newest it
 // accepted, across reloads).
 //
+// Party chat moderation (stage 3), always open: the player is told every time.
+//   mute {minutes 1..MAX_MUTE_MIN, reason}   that page's chat is muted ("🔇 The admin muted your chat")
+//   unmute {}                                and unmuted again
+//   chatlog {}                               that page uploads its chat lines (the last 100 it saw this
+//                                            page load) to the admin, and says so in its chat list
+// (one page only, never '*': like every command for one page their args are sealed to that page.)
+// Uploads: what pages send the admin, on UP_TOPIC: sealToAdmin(boxPub, payload, SEAL_UP), sealed
+// with the page's own key (js/admin/keys.js `from`) so the admin can tell which page it really
+// came from (e = the pk in that page's card); anyone can still seal SOMETHING to the admin's public
+// key, so the admin's panel says whose page reported it and never trusts more than that.
+//   payload { k, from: presence id, code: party code | 'SOLO', v: VERSION, ... }
+//     k 'chat'    { lines }           new lines of the party this page hosts (the host's page only,
+//                                     at most one upload per 3 s)
+//     k 'log'     { re, lines }       the answer to a chatlog command (re: its nonce)
+//     k 'report'  { line, context, reason? }  a player reported a line (context: up to 10 before it)
+//   a line: { id, name, text, ts, q?, admin?, sys?, code?, at? } (js/chat/chatLog.js), cleaned again
+//   on the admin's side (shared/chatFilter.js) and capped; a sealed upload is at most UP_MAX
+//   characters (the oldest lines are left out to fit).
+//
 // API
 //   CMD_TOPIC, STATE_PREFIX, STATE_TOPICS, STATE_KINDS, LIVE_CMDS, PARTY_CMDS, ALL_OK, MAX_AGE
 //   cleanArgs(cmd, args)                 -> the args a page acts on (clamped, trimmed) | null
@@ -41,20 +61,27 @@
 //   cleanCard(obj)                       -> the player card fields the admin's panel shows | null
 //   makeObserverCheck(signPub, opts)     -> async (env, code) => bool (stage E: a party host
 //                                           checks an observer's signed 'observe' hello with it)
-import { signCommand, verifyCommand, randomNonce, sealToAdmin, openSealed, SEAL_PAGE } from './keys.js';
+//   UP_TOPIC, UP_MAX, UP_LINES, UP_CONTEXT, UP_KINDS, MAX_MUTE_MIN
+//   sealUpload(boxPub, payload, { from }) -> the text to publish on UP_TOPIC (<= UP_MAX) | null
+//   upShape(obj)                          -> is it a sealed upload's shape ({e, iv, ct}, capped)?
+//   cleanUpload(obj)                      -> an opened upload's fields, cleaned and capped | null
+//   cleanChatLine(obj)                    -> one chat line, cleaned and capped | null
+import { signCommand, verifyCommand, randomNonce, sealToAdmin, openSealed, SEAL_PAGE, SEAL_UP } from './keys.js';
+import { cleanChat, quickText, QUICK_CHAT, MAX_CHAT } from '../../shared/chatFilter.js';
 
 export const CMD_TOPIC = 'phortnite/admin/v1/cmd';
 export const STATE_PREFIX = 'phortnite/admin/v1/state/';
 export const STATE_KINDS = Object.freeze(['banner', 'maintenance']);
 export const STATE_TOPICS = Object.freeze(STATE_KINDS.map((k) => STATE_PREFIX + k));
 /** Commands sent live on CMD_TOPIC (every page; party ones only on the party host's page). */
-export const LIVE_CMDS = Object.freeze(['reload', 'message', 'kick', 'ban', 'rename', 'grant', 'resetStats', 'end', 'pause', 'mode']);
+export const LIVE_CMDS = Object.freeze(['reload', 'message', 'kick', 'ban', 'rename', 'grant', 'resetStats', 'end', 'pause', 'mode', 'mute', 'unmute', 'chatlog']);
 /** Commands for a party host's page (the room runs there). */
 export const PARTY_CMDS = Object.freeze(['end', 'pause', 'mode']);
 /** Commands that may go to everyone at once ('*'). The rest name one page: a slip can't ban everyone. */
 export const ALL_OK = Object.freeze(['reload', 'message']);
 export const MAX_AGE = 120000; // a live command older (or further in the future) than this: ignored
 export const MAX_XP = 100000;
+export const MAX_MUTE_MIN = 10080; // the longest chat mute: a week
 /**
  * Longest a maintenance state or a banner ("until cleared" too) can last from when it was signed:
  * a recorded old one that someone replays on the broker runs out by itself.
@@ -78,7 +105,7 @@ const partyCode = (a) => (typeof a.code === 'string' && CODE_RE.test(a.code) ? {
 export function cleanArgs(cmd, args) {
   const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   switch (cmd) {
-    case 'reload': case 'resetStats': return {};
+    case 'reload': case 'resetStats': case 'unmute': case 'chatlog': return {};
     case 'end': return partyCode(a);
     case 'kick': return { reason: cleanText(a.reason, 120), ...partyCode(a) };
     case 'ban': return { reason: cleanText(a.reason, 120), ...partyCode(a) };
@@ -86,6 +113,11 @@ export function cleanArgs(cmd, args) {
     case 'rename': { const name = cleanName(a.name); return name ? { name } : null; }
     case 'grant': { const xp = int(a.xp, 0, MAX_XP); return xp === null || a.xp < 0 || a.xp > MAX_XP ? null : { xp }; }
     case 'pause': return typeof a.on === 'boolean' ? { on: a.on, ...partyCode(a) } : null;
+    case 'mute': {
+      const m = typeof a.minutes === 'number' ? a.minutes : NaN;
+      if (!(m >= 1 && m <= MAX_MUTE_MIN)) return null; // (NaN too)
+      return { minutes: Math.floor(m), reason: cleanText(a.reason, 120) };
+    }
     case 'mode': { const modeId = cleanText(a.modeId, 40); return /^[a-z0-9_-]+$/i.test(modeId) ? { modeId, ...partyCode(a) } : null; }
     case 'banner': {
       const until = int(a.until, 0, 8.64e15);
@@ -305,6 +337,8 @@ export function cleanCard(c) {
     admin: c.admin === true, // that page is in admin mode
     // that page's own public key (raw P-256, base64): the admin seals its commands' args to it
     pk: typeof c.pk === 'string' && /^[A-Za-z0-9+/]{87}=$/.test(c.pk) ? c.pk : null,
+    // that page's chat is muted until then (ms since 1970; only while it is)
+    ...(int(c.muted, 1, 8.64e15) ? { muted: int(c.muted, 1, 8.64e15) } : {}),
   };
 }
 
@@ -327,4 +361,99 @@ export function makeObserverCheck(signPub, { now = () => Date.now(), maxAge = MA
     used.add(env.n);
     return true;
   };
+}
+
+// ------------------------------------------------------------------ uploads (party chat moderation)
+export const UP_TOPIC = 'phortnite/admin/v1/up';
+/**
+ * A sealed upload's published text, at most (the oldest lines are left out to fit). The same size
+ * as the relay's messages (js/net/relay.js BATCH), which all three public brokers are known to
+ * carry: a broker that refuses a bigger message would drop the page's whole presence connection.
+ * (100 chat lines of everyday length fit: about 90 bytes each.)
+ */
+export const UP_MAX = 16000;
+export const UP_LINES = 100; // lines in a chat log or a live batch
+export const UP_CONTEXT = 10; // lines before a reported one
+export const UP_KINDS = Object.freeze(['chat', 'log', 'report']);
+const SEAL_WRAP = 160; // the sealed JSON around its ct: {"e":"<88>","iv":"<16>","ct":""} and slack
+const LINE_CODE_RE = /^([A-Z]{4}|SOLO)$/;
+const utf8 = new TextEncoder();
+
+/** One chat line from an upload, cleaned again and capped (a page could send anything), or null. */
+export function cleanChatLine(l) {
+  if (!l || typeof l !== 'object' || Array.isArray(l)) return null;
+  const sys = l.sys === true;
+  const q = !sys && Number.isInteger(l.q) && l.q >= 0 && l.q < QUICK_CHAT.length ? l.q : null;
+  const text = q !== null ? quickText(q) : cleanChat(typeof l.text === 'string' ? l.text.slice(0, MAX_CHAT * 4) : '').text;
+  if (!text) return null;
+  const id = Number.isFinite(l.id) ? Math.max(-1e6, Math.min(1e6, Math.trunc(l.id))) : 0;
+  const admin = !sys && l.admin === true && id < 0; // (an observer's line: the admin's own)
+  const name = sys ? '' : admin ? 'Admin' : cleanChat(typeof l.name === 'string' ? l.name.slice(0, 64) : '').text.slice(0, 16) || 'Player';
+  const out = { id, name, text, ts: Number.isFinite(l.ts) ? Math.max(0, Math.min(8.64e15, l.ts)) : 0 };
+  if (q !== null) out.q = q;
+  if (admin) out.admin = true;
+  if (sys) out.sys = true;
+  if (typeof l.code === 'string' && LINE_CODE_RE.test(l.code)) out.code = l.code;
+  const at = int(l.at, 1, 8.64e15);
+  if (at) out.at = at;
+  return out;
+}
+
+/** Is x a sealed upload ({e, iv, ct}) of a size worth opening? */
+export function upShape(x) {
+  return !!x && typeof x === 'object' && !Array.isArray(x) && typeof x.e === 'string' && x.e.length <= 120
+    && typeof x.iv === 'string' && x.iv.length <= 24 && typeof x.ct === 'string' && x.ct.length <= UP_MAX;
+}
+
+/**
+ * An opened upload (see the top), cleaned: { k, from, code, v, ... } with lines / re / line,
+ * context, reason; null when it isn't one. Never throws.
+ */
+export function cleanUpload(o) {
+  if (!o || typeof o !== 'object' || Array.isArray(o) || !UP_KINDS.includes(o.k)) return null;
+  if (typeof o.from !== 'string' || !ID_RE.test(o.from)) return null;
+  const code = typeof o.code === 'string' && LINE_CODE_RE.test(o.code) ? o.code : '';
+  const base = { k: o.k, from: o.from, code, v: cleanText(o.v, 16) };
+  const list = (a, n) => (Array.isArray(a) ? a.slice(-n).map(cleanChatLine).filter(Boolean) : []);
+  if (o.k === 'chat') {
+    // (a live party: its 4-letter code, never 'SOLO' (no O or I in a real code); its players' lines, no system notes)
+    if (!CODE_RE.test(code) || code === 'SOLO') return null;
+    const lines = list(o.lines, UP_LINES).filter((l) => !l.sys).map((l) => ({ ...l, code }));
+    return lines.length ? { ...base, lines } : null;
+  }
+  if (o.k === 'log') {
+    if (typeof o.re !== 'string' || !NONCE_RE.test(o.re)) return null;
+    return { ...base, re: o.re, lines: list(o.lines, UP_LINES) };
+  }
+  const line = cleanChatLine(o.line);
+  if (!line || line.sys) return null;
+  return { ...base, line: { ...line, code: line.code || code || 'SOLO' }, context: list(o.context, UP_CONTEXT), reason: cleanText(o.reason, 120) };
+}
+
+/**
+ * Seal an upload for the admin (SEAL_UP; from: this page's own key, js/admin/keys.js): the text to
+ * publish on UP_TOPIC, at most max characters: the oldest lines (a report: the oldest context
+ * lines) are left out until it fits. null when it can't be made to fit.
+ */
+export async function sealUpload(boxPub, payload, { from = null, max = UP_MAX } = {}) {
+  const p = { ...payload };
+  const key = p.k === 'report' ? 'context' : 'lines';
+  const list = Array.isArray(p[key]) ? p[key].slice(-(p.k === 'report' ? UP_CONTEXT : UP_LINES)) : [];
+  // what the plain text may weigh: base64 of (text + the 16-byte tag), inside the sealed JSON
+  const room = Math.floor(((max - SEAL_WRAP) * 3) / 4) - 16;
+  const bytes = (v) => utf8.encode(JSON.stringify(v)).length;
+  p[key] = [];
+  let total = bytes(p);
+  const sizes = list.map((l) => bytes(l) + 1);
+  for (const n of sizes) total += n;
+  let i = 0;
+  while (i < list.length && total > room) total -= sizes[i++];
+  p[key] = list.slice(i);
+  for (let tries = 0; tries < 8; tries++) {
+    const text = JSON.stringify(await sealToAdmin(boxPub, p, SEAL_UP, { from }));
+    if (text.length <= max) return text;
+    if (!p[key].length) return null;
+    p[key] = p[key].slice(Math.max(1, p[key].length >> 3));
+  }
+  return null;
 }

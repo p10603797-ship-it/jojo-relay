@@ -50,6 +50,39 @@ only ever see scrambled data.
 Tip for iPad: in Safari tap *Share → Add to Home Screen* and launch Phortnite from the home
 screen for a true full-screen game.
 
+## Party chat
+
+Chat with your party in the lobby and in matches:
+
+* **In the lobby** tap **💬 CHAT** (next to EMOTE / WARM UP; a red badge counts new messages).
+  The chat opens on the left, over the stage, and never covers PLAY or the mode card. **In a
+  match** tap **💬** next to ☰ (or ☰ → 💬 PARTY CHAT); the game keeps running while it is open.
+  The last few lines also float bottom left for a few seconds, clear of the touch buttons. On a
+  keyboard, `Enter` opens the chat (`T` too in the lobby), `Enter` sends and `Esc` closes it.
+* **Quick chat**: one tap on *Let's go!*, *GG!*, *Ready?*, *Nice shot!*, *Help me!*, *One more
+  game?*, *Follow me!*, *Thanks!*, 👍 or 😂.
+* **Kept kid-safe**: bad words turn into ★★★, and links, e-mail addresses, phone numbers and
+  @names into *[hidden]*, on your own iPad before a line is sent, again in the party's room and
+  again on every iPad that shows it. Nobody can flood the chat (a few lines at a time, at most 20
+  a minute). Tap someone's message to **hide** their messages (this party, until you reload) or
+  **🚩 report** it to the admin.
+* **Open moderation**: the chat always says so at the top: *🛡 The admin (Philip) can read chats
+  to keep everyone safe. Never share your real name, address, school or phone number.* The admin
+  can see party chats, look at a player's chat log (their chat then says *🛡 The admin looked at
+  this chat*), mute someone's chat for a while (they see *🔇 The admin muted your chat until …*
+  and can still play), and talk in a party while spectating it (his lines are tagged
+  **🛡 ADMIN**). See [Admin](#admin).
+* **Settings → Chat**: *On* (default), *Quick chat only* (you send only quick chat, and other
+  players' typed messages show as *💬 (message hidden: quick chat only)*), or *Off* (no chat
+  button, no messages).
+* **Private on the relay**: chat travels inside the party's own link. Direct links between iPads
+  are always encrypted (WebRTC); when the party has to go through the free public relay (Wi-Fi
+  that blocks direct links), every link is now end-to-end encrypted too (a fresh ECDH P-256 key
+  pair per link, AES-GCM-256), so people listening on the public relay can't read chat, names or
+  the match. (It stops eavesdroppers, not someone actively pretending to be the host on the
+  relay; see `public/js/net/relay.js`.) Pages from before 2.5.0 can't join a 2.5.0 party:
+  everyone should reload.
+
 ## Publishing the locked website
 
 On the website the game's code is **encrypted**: anyone can download the files, but they are
@@ -204,7 +237,24 @@ wrong passwords".
   LEAVE. Everyone in that party sees **👁 Admin is watching** for as long as the admin is there. The
   host's game lets an observer in only with a hello signed by the admin key for that party, and
   each signed hello only once (the admin's game signs a new one for every join), so nobody else
-  can watch unseen. (Parties on the `npm start` server can't be watched.)
+  can watch unseen. (Parties on the `npm start` server can't be watched.) The **💬** button on the
+  spectating bar opens that party's chat: the admin can talk there, and everyone sees his lines
+  tagged **🛡 ADMIN**.
+* **🛡 ADMIN → CHAT** (chat moderation, open like everything else: the chat drawer always says
+  that the admin can read chats). **🚩 Reports**: when a player taps a chat line and *Report to
+  admin*, the line and up to 10 lines before it show up here (the tab's red badge counts new ones,
+  and the admin's screen says "🚩 New chat report"). **Party chats**: every party's chat, live, as
+  its host's game sends it in (only parties with 2 or more people, newest party first, the last
+  500 lines each; the admin's page keeps them in memory only, a reload forgets them). Tap a line
+  for what to do about who said it: **🔇 mute** their chat for 10 minutes, 1 hour or 1 day (with
+  an optional reason; they see "🔇 The admin muted your chat for 1 hour" and can still play and
+  read the chat), **🔈 unmute**, **✉ message** them, or fetch their **💬 chat log**. The PLAYERS
+  buttons have **💬 CHAT LOG**, **🔇 MUTE CHAT** and **🔈 UNMUTE CHAT** too. A chat log is the
+  last 100 lines that player's game has seen since it was opened (all parties), shown in a sheet;
+  their chat says "🛡 The admin looked at this chat". Chats, reports and logs are sealed to the
+  admin's key on the relay; anyone *could* seal something to his public key, so the panel marks ⚠
+  whatever wasn't sealed by the game it claims to come from (each game seals its uploads with its
+  own key, the one in its player card).
 
 How it works: `public/admin.json` holds two public keys and the matching private keys *encrypted*
 with the admin password (PBKDF2-SHA256, 600,000 rounds, then AES-256-GCM), so it is safe to publish.
@@ -313,6 +363,8 @@ only trusts a proxy on the same machine; `TRUST_PROXY=0` never trusts it).
   Seek, Box Fight, Zone Wars, crazy mutators like Moon gravity and Big Heads, Playground, …),
   plus a **creator** for your own rules with a shareable mode code. The rules run in the shared
   room, so every mode works the same solo, on the server and in website parties.
+* **Party chat** — type or tap quick chat in the lobby and in matches, with a kid-safe filter,
+  hide / report, and open moderation by the admin (see [Party chat](#party-chat)).
 * **Lobby & parties** — a Fortnite-style lobby with your squad on a podium (its own little scene,
   far cheaper to draw than the island), ready-up, leader crown, kick / make leader, live skin
   changes, a 3-2-1 countdown, one invite flow for the website and the server (code, QR, share
@@ -345,6 +397,7 @@ only trusts a proxy on the same machine; `TRUST_PROXY=0` never trusts it).
 | Material | Mat | `G` (nothing to edit) or right mouse while building |
 | Reload / interact | ⟳ / yellow button | `R` / `E` |
 | Map / menu | tap minimap / ☰ | `M` / `Esc` |
+| Party chat | 💬 CHAT in the lobby, 💬 next to ☰ in a match | `Enter` (`T` in the lobby), `Esc` closes |
 | Back to the lobby | ☰ → BACK TO LOBBY (or ↩ LOBBY while warming up) | `Esc` → BACK TO LOBBY |
 
 Game controllers (via the Gamepad API) work too.
@@ -366,6 +419,11 @@ public/shared/            code shared by browser and server
 public/js/                the game client (three.js + Rapier)
 public/js/net/p2p.js      website parties over WebRTC (PeerJS)
 public/shared/plugins/party.js  party rules in the room: ready, kick, promote, countdown, rejoin
+public/shared/plugins/chat.js   party chat in the room (rate limits, history); shared/chatFilter.js
+                          the kid-safe filter every line goes through
+public/js/ui/chat.js      the chat drawer, the 💬 buttons and the in-match feed (app.chat);
+                          js/chat/chatLog.js its store; js/game/chatClient.js its game plugin
+public/js/net/relay.js    the encrypted relay fallback over public MQTT brokers (net/mqtt.js)
 public/js/lobby/          the lobby stage (3D) and the bridge between a match and the lobby
 public/js/ui/lobby.js     the lobby screen; ui/invite.js invites and joining; ui/endscreen.js
 tools/lock.mjs            builds the locked (encrypted) website; tools/lockscreen/ is its lock

@@ -1,13 +1,20 @@
 // The admin panel (Philip only): the lobby's 🛡 ADMIN button opens it (app.adminPanel.open, wired
-// in js/ui/adminLogin.js). Two tabs:
+// in js/ui/adminLogin.js). Three tabs:
 //   PLAYERS   everyone online, from their sealed player cards (js/admin/session.js), live. Tap a
 //             player for what the admin can do: SPECTATE their match (js/ui/adminWatch.js), MESSAGE,
-//             RENAME, GIVE XP, RESET STATS, RELOAD, KICK, BAN; on a party host's page also END
-//             MATCH and PAUSE / RESUME (during a match) or SET MODE (in the party's lobby): the room
-//             runs on that page. A row whose card came with two different keys is marked: someone
-//             is faking that player (commands still reach only the real page).
+//             RENAME, GIVE XP, RESET STATS, RELOAD, KICK, BAN, 💬 CHAT LOG (their game's chat lines,
+//             in a sheet), 🔇 MUTE CHAT / 🔈 UNMUTE CHAT; on a party host's page also END MATCH and
+//             PAUSE / RESUME (during a match) or SET MODE (in the party's lobby): the room runs on
+//             that page. A row whose card came with two different keys is marked: someone is faking
+//             that player (commands still reach only the real page).
 //   EVERYONE  the banner (with how long it stays), maintenance on / off, a message or a reload
 //             for everyone.
+//   CHAT      party chat moderation (stage 3): 🚩 REPORTS (the reported line, the lines before it)
+//             and every party's live chat, as its host's game sends it in (newest party first).
+//             Tap a line: its speaker (matched to a card by party code and name) can be muted for
+//             10 min / 1 hour / 1 day, unmuted, messaged, or their chat log fetched. The tab's badge
+//             counts new reports. Uploads are only "as that page reported them": one that wasn't
+//             sealed by the page it names is marked ⚠. Every text here is escaped.
 // Every command is signed with the admin key on this iPad and every player is told on screen what
 // the admin did. Commands are live: a page that is offline at that moment never gets one, so the
 // panel says "sent", never "done". Asking twice (confirm) happens right in the panel: it never
@@ -20,6 +27,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const TICK_MS = 2000; // 'online for' times and the EVERYONE tab's state, while the panel is open
 const BANNER_TIMES = [[5, '5 MIN'], [30, '30 MIN'], [120, '2 HOURS'], [0, 'UNTIL CLEARED']];
 const XP_PICKS = [100, 500, 1000, 5000];
+const MUTE_PICKS = [[10, '10 MIN'], [60, '1 HOUR'], [1440, '1 DAY']];
+const PARTY_SHOWN = 40; // a party's newest lines shown (SHOW ALL: every line kept)
+const lineKey = (code, l) => `${code}|${l.ts}|${l.id}|${l.text}`;
 const CATS = { br: 'Battle Royale', team: 'Team', party: 'Party games', mutators: 'Mutators', builders: 'Builders', practice: 'Practice', places: 'Places' };
 
 /** '12 min', '2 h 5 min', 'just now' */
@@ -32,6 +42,7 @@ function ago(ms) {
 }
 
 function clock(t) {
+  if (!(t > 0)) return '';
   try { return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; }
 }
 
@@ -49,6 +60,7 @@ function metaHtml(p, now) {
   if (p.mode) chips.push(`Mode: ${esc(p.mode)}`);
   if (p.v) chips.push(`v${esc(p.v)}`);
   if (p.since) chips.push(`online ${ago(now - p.since)}`);
+  if (p.muted > now) chips.push(`🔇 Chat muted until ${esc(clock(p.muted))}`);
   return chips.map((c) => `<span>${c}</span>`).join('');
 }
 
@@ -63,28 +75,42 @@ export class AdminPanel {
     this.banMins = 30;
     this.off = null;
     this.timer = 0;
+    // CHAT tab
+    this.offChats = null;
+    this.chatSel = ''; // the line whose actions are open
+    this.chatForm = ''; // 'msg' while its message box is open
+    this.chatWhy = ''; // the mute reason being typed
+    this.chatAll = new Set(); // parties showing every line
+    this.ctxOpen = new Set(); // reports whose earlier lines are open
+    this.chatLines = new Map(); // row key -> { code, line } (the last render)
+    this.chatDirty = false;
+    this.sheetEl = null;
   }
 
   get session() { return this.app.admin; }
 
-  /** 🛡 ADMIN: the panel (tab: 'players' | 'everyone'). */
+  /** 🛡 ADMIN: the panel (tab: 'players' | 'everyone' | 'chat'). */
   open(tab = this.tab) {
     const app = this.app, s = this.session;
     if (!s) return;
-    this.tab = tab === 'everyone' ? 'everyone' : 'players';
+    this.tab = ['everyone', 'chat'].includes(tab) ? tab : 'players';
     const html = `<div class="adm-panel">
       <div class="adm-head"><h2>🛡 ADMIN</h2><p class="adm-open-note">Every command is signed with the admin key, and players always see what the admin did.</p></div>
       <div class="adm-tabs" role="tablist">
         <button class="adm-tab" data-tab="players" role="tab">👥 PLAYERS <b class="adm-count"></b></button>
         <button class="adm-tab" data-tab="everyone" role="tab">📢 EVERYONE</button>
+        <button class="adm-tab" data-tab="chat" role="tab">💬 CHAT <b class="adm-count adm-rbadge hidden"></b></button>
       </div>
       <div class="adm-pane adm-players">
         <p class="adm-totals"></p>
         <ul class="adm-list"></ul>
       </div>
       <div class="adm-pane adm-everyone"></div>
+      <div class="adm-pane adm-chat"></div>
       <div class="adm-status" aria-live="polite"></div>
     </div>`;
+    // ("🚩 New chat report" toasts would sit over the tabs: the CHAT tab's badge says it now)
+    for (const t of document.querySelectorAll('#toasts > .toast.adm-report')) t.remove();
     app.ui.modal(html, (b) => {
       this.root = $('.adm-panel', b);
       app.ui.modalEl.classList.add('adm-wide');
@@ -92,9 +118,12 @@ export class AdminPanel {
       document.body.classList.add('adm-panel-open');
       for (const t of b.querySelectorAll('.adm-tab')) t.addEventListener('click', () => { this.ui(); this.show(t.dataset.tab); });
       this.everyone();
+      this.chatPane();
       this.show(this.tab);
       this.renderPlayers();
-      this.off = s.onPlayers(() => this.renderPlayers());
+      this.off = s.onPlayers(() => { this.renderPlayers(); if (this.tab === 'chat') this.renderChat(); });
+      this.offChats = s.onChats ? s.onChats(() => this.renderChat()) : null;
+      this.badge();
       this.timer = setInterval(() => this.tick(), TICK_MS);
     }, () => this.closed());
   }
@@ -103,6 +132,9 @@ export class AdminPanel {
   closed() {
     if (this.off) this.off();
     this.off = null;
+    if (this.offChats) this.offChats();
+    this.offChats = null;
+    this.sheetEl = null;
     clearInterval(this.timer);
     this.timer = 0;
     this.root = null;
@@ -129,13 +161,16 @@ export class AdminPanel {
     }
     $('.adm-players', this.root).classList.toggle('hidden', tab !== 'players');
     $('.adm-everyone', this.root).classList.toggle('hidden', tab !== 'everyone');
+    $('.adm-chat', this.root).classList.toggle('hidden', tab !== 'chat');
     if (tab === 'everyone') this.stateNow();
+    if (tab === 'chat') this.renderChat();
   }
 
   tick() {
     if (!this.live()) return;
     this.renderPlayers();
     this.stateNow();
+    this.badge();
   }
 
   /** What happened, under the panel: ok true (sent), false (not sent), or a plain note. */
@@ -211,7 +246,8 @@ export class AdminPanel {
     const watch = !p.me && pt && pt.code && pt.kind !== 'watch';
     const host = pt && pt.kind === 'host';
     const live = p.phase === 'match';
-    const key = `${p.id}|${p.me}|${watch ? pt.code : ''}|${host}|${p.phase}|${p.name}|${this.form}`;
+    const muted = p.muted > Date.now();
+    const key = `${p.id}|${p.me}|${watch ? pt.code : ''}|${host}|${p.phase}|${p.name}|${this.form}|${muted}`;
     if (key === this.actsKey && !box.classList.contains('hidden')) return;
     this.actsKey = key;
     box.classList.remove('hidden');
@@ -225,6 +261,12 @@ export class AdminPanel {
         ${btn('reload', '🔄 RELOAD')}
         ${p.me ? '' : btn('kick', '🚪 KICK')}
         ${p.me ? '' : btn('ban', '🚫 BAN', 'danger')}
+      </div>
+      <div class="adm-sub">💬 PARTY CHAT${muted ? ` · 🔇 MUTED UNTIL ${esc(clock(p.muted))}` : ''}</div>
+      <div class="adm-grid">
+        ${btn('chatlog', '💬 CHAT LOG')}
+        ${btn('mute', '🔇 MUTE CHAT')}
+        ${muted ? btn('unmute', '🔈 UNMUTE CHAT') : ''}
       </div>
       ${host ? `<div class="adm-sub">👑 PARTY ${esc(pt.code)} RUNS ON THIS PAGE${live ? ' · IN A MATCH' : ' · IN ITS LOBBY'}</div>
       <div class="adm-grid">
@@ -241,6 +283,8 @@ export class AdminPanel {
   /** A player's button: some send at once, the rest open a small form (text, or "are you sure?"). */
   act(what, p) {
     if (what === 'spectate') { this.spectate(p); return; }
+    if (what === 'chatlog') { this.chatLog(p); return; }
+    if (what === 'unmute') { this.send('unmute', {}, p, 'an unmute (chat)'); return; }
     if (what === 'pause' || what === 'resume') {
       this.send('pause', { on: what === 'pause' }, p, what === 'pause' ? 'pause their match' : 'resume their match');
       return;
@@ -275,6 +319,11 @@ export class AdminPanel {
       case 'resetStats':
         f.innerHTML = sure(`Reset ${name}'s level, XP, wins and eliminations to zero?`, '↺ YES, RESET', 'danger');
         break;
+      case 'mute':
+        f.innerHTML = `<input class="adm-in" maxlength="120" placeholder="Why? (optional, they see it)">
+          <div class="adm-picks adm-picks3">${MUTE_PICKS.map(([m, l]) => `<button class="btn adm-mute" data-min="${m}">🔇 ${l}</button>`).join('')}</div>
+          <p class="adm-hint">They see "🔇 The admin muted your chat" (and why). They can still play and read the chat.</p>`;
+        break;
       case 'reload':
         f.innerHTML = sure(`Reload ${name}'s game? (They see "Updating the game…".)`, '🔄 RELOAD');
         break;
@@ -307,6 +356,15 @@ export class AdminPanel {
     const no = $('.adm-no', f);
     if (no) no.addEventListener('click', () => { this.ui(); this.act(this.form, p); });
     for (const b of f.querySelectorAll('.adm-xp')) b.addEventListener('click', () => { this.ui(); this.grant(p, +b.dataset.xp); });
+    for (const b of f.querySelectorAll('.adm-mute')) {
+      b.addEventListener('click', () => {
+        this.ui();
+        this.mute(p, +b.dataset.min, input ? input.value.trim() : '');
+        this.form = '';
+        this.actsKey = '';
+        this.renderPlayers();
+      });
+    }
     const yes = $('.adm-yes', f);
     const go = () => {
       this.ui();
@@ -358,6 +416,229 @@ export class AdminPanel {
     this.status(`👁 Joining party ${code} to watch…`);
     if (await w.start(code)) return; // (the panel closed: the island is on screen)
     this.status(`✕ Couldn't watch party ${code}.`, false);
+  }
+
+  // ------------------------------------------------------------------ CHAT
+  /** The CHAT tab's badge: new reports. */
+  badge() {
+    if (!this.root || !this.session || !this.session.unseenReports) return;
+    const n = this.session.unseenReports();
+    const b = $('.adm-rbadge', this.root);
+    b.classList.toggle('hidden', !n);
+    b.textContent = n ? `🚩 ${n}` : '';
+  }
+
+  /** The CHAT pane's taps, once (its content is drawn again and again: delegated). */
+  chatPane() {
+    const pane = $('.adm-chat', this.root);
+    pane.addEventListener('click', (e) => {
+      const row = e.target.closest('.adm-clb');
+      if (row && pane.contains(row)) {
+        this.ui();
+        const k = row.parentNode.dataset.k;
+        this.chatSel = this.chatSel === k ? '' : k;
+        this.chatForm = '';
+        this.renderChat(true);
+        return;
+      }
+      const b = e.target.closest('.adm-la');
+      if (b && pane.contains(b)) { this.ui(); this.lineAct(b.dataset.act, b); return; }
+      const more = e.target.closest('.adm-more');
+      if (more) {
+        this.ui();
+        const c = more.dataset.code;
+        if (this.chatAll.has(c)) this.chatAll.delete(c); else this.chatAll.add(c);
+        this.renderChat(true);
+        return;
+      }
+      const sum = e.target.closest('summary');
+      if (sum && sum.parentNode.dataset.n) {
+        const n = sum.parentNode.dataset.n;
+        if (sum.parentNode.open) this.ctxOpen.delete(n); else this.ctxOpen.add(n);
+      }
+    });
+    pane.addEventListener('input', (e) => { if (e.target.classList.contains('adm-lwhy')) this.chatWhy = e.target.value; });
+    pane.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.classList.contains('adm-lmsg') && !e.shiftKey) { e.preventDefault(); this.lineAct('msgsend'); }
+    });
+    // (drawn again once the admin stops typing: a redraw never eats what he types)
+    pane.addEventListener('focusout', () => { setTimeout(() => { if (this.chatDirty) this.renderChat(); }, 0); });
+  }
+
+  /** The player card a chat line's speaker has (party code + name), or null. */
+  speaker(code, l) {
+    if (!l || l.sys || l.admin || !this.session) return null;
+    return this.session.players().find((c) => c.party && c.party.code === code && c.name === l.name) || null;
+  }
+
+  /** The CHAT tab, drawn from the session's chats() and reports(). force: even while typing. */
+  renderChat(force = false) {
+    if (!this.live()) return;
+    this.badge();
+    const pane = $('.adm-chat', this.root);
+    if (this.tab !== 'chat') { this.chatDirty = true; return; }
+    const a = document.activeElement;
+    if (!force && a && pane.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { this.chatDirty = true; return; }
+    if (this.drawing) return;
+    this.drawing = true;
+    try {
+      const s = this.session;
+      s.seenReports(); // (the admin is looking at them)
+      this.badge();
+      this.chatDirty = false;
+      const body = this.app.ui.modalBody;
+      const top = body ? body.scrollTop : 0;
+      // each party's box: where it was scrolled (at the bottom: stays at the newest line)
+      const boxes = new Map([...pane.querySelectorAll('.adm-cbox')].map((b) => [b.dataset.code, { top: b.scrollTop, end: b.scrollTop + b.clientHeight >= b.scrollHeight - 8 }]));
+      const lines = new Map();
+      const row = (key, l, code) => {
+        lines.set(key, { code, line: l });
+        const sel = key === this.chatSel;
+        const cls = l.sys ? ' sys' : l.admin ? ' admin' : '';
+        const who = l.sys ? '' : l.admin ? '<b class="adm-cn adm-cadmin">🛡 ADMIN</b>' : `<b class="adm-cn">${esc(l.name)}</b>`;
+        const warn = l.ok === false ? '<i class="adm-unv" title="Not checked: this did not come from the party host\'s own game">⚠</i> ' : '';
+        return `<li class="adm-cl${cls}${sel ? ' sel' : ''}" data-k="${esc(key)}"><button class="adm-clb"${l.sys || l.admin ? ' disabled' : ''}>`
+          + `<span class="adm-ct">${esc(clock(l.at || l.got))}</span>${who}<span class="adm-cx">${warn}${esc(l.text)}</span></button>`
+          + `${sel && !l.sys && !l.admin ? this.lineActs(code, l) : ''}</li>`;
+      };
+      const reps = s.reports();
+      const chats = s.chats();
+      const repHtml = (r) => {
+        const ctx = r.context.length ? `<details class="adm-ctx" data-n="${r.n}"${this.ctxOpen.has(String(r.n)) ? ' open' : ''}><summary>${r.context.length} line${r.context.length === 1 ? '' : 's'} before it</summary>`
+          + `<ul class="adm-clist">${r.context.map((l, i) => row(`rc:${r.n}:${i}`, l, r.code)).join('')}</ul></details>` : '';
+        return `<div class="adm-rep"><p class="adm-rhead">🚩 <b>${esc(r.name || 'A player')}</b> reported <b>${esc(r.line.admin ? 'Admin' : r.line.name)}</b>`
+          + ` · ${r.code === 'SOLO' ? 'not in a party' : `party ${esc(r.code)}`} · ${esc(clock(r.at))}</p>`
+          + `${r.ok ? '' : '<p class="adm-warn">⚠ Not checked: this report may not have come from that player\'s own game.</p>'}`
+          + `${r.reason ? `<p class="adm-rwhy">“${esc(r.reason)}”</p>` : ''}<ul class="adm-clist">${row(`r:${r.n}`, r.line, r.code)}</ul>${ctx}</div>`;
+      };
+      const partyHtml = (p) => {
+        const all = this.chatAll.has(p.code);
+        const shown = all ? p.lines : p.lines.slice(-PARTY_SHOWN);
+        // (a line open in it: the box grows, its buttons never hide in a scroll box of their own)
+        const open = this.chatSel.startsWith(`p:${p.code}|`);
+        return `<div class="adm-party"><p class="adm-phead"><b>🎉 ${esc(p.code)}</b><span>${p.host ? `host <b>${esc(p.host)}</b>` : 'host not online'}</span>`
+          + `<span>${p.count} line${p.count === 1 ? '' : 's'} · last at ${esc(clock(p.last))}</span></p>`
+          + `${p.ok ? '' : '<p class="adm-warn">⚠ Not checked: these lines may not have come from the party host\'s own game.</p>'}`
+          + `${p.count > PARTY_SHOWN ? `<button class="btn adm-more" data-code="${esc(p.code)}">${all ? `SHOW THE LAST ${PARTY_SHOWN}` : `SHOW ALL ${p.count} LINES`}</button>` : ''}`
+          + `<ul class="adm-clist adm-cbox${open ? ' open' : ''}" data-code="${esc(p.code)}">${shown.map((l) => row(`p:${lineKey(p.code, l)}`, l, p.code)).join('')}</ul></div>`;
+      };
+      pane.innerHTML = `<p class="adm-chatnote">Party chats as each party host's game sends them in (parties with 2 or more people, while you're in admin mode). Players see in their chat that the admin can read it. Tap a line for what you can do.</p>
+        <section class="adm-sec adm-reports"><h3>🚩 REPORTS</h3>${reps.length ? reps.map(repHtml).join('')
+          : '<p class="adm-now">No reports. When a player taps 🚩 Report to admin on a chat line, it shows up here.</p>'}</section>
+        <section class="adm-sec adm-chats"><h3>🎉 PARTY CHATS</h3>${chats.length ? chats.map(partyHtml).join('')
+          : '<p class="adm-now">No party chat yet. New lines show up here as players chat in parties of 2 or more.</p>'}</section>`;
+      this.chatLines = lines;
+      if (this.chatSel && !lines.has(this.chatSel)) { this.chatSel = ''; this.chatForm = ''; }
+      for (const b of pane.querySelectorAll('.adm-cbox')) {
+        const was = boxes.get(b.dataset.code);
+        b.scrollTop = !was || was.end ? b.scrollHeight : was.top;
+      }
+      if (body) body.scrollTop = top;
+      const msg = $('.adm-lmsg', pane);
+      if (msg && force) setTimeout(() => { try { msg.focus(); } catch (e) { /* fine */ } }, 30);
+    } finally { this.drawing = false; }
+  }
+
+  /** The open line's buttons: for its speaker's card (matched by party code + name). */
+  lineActs(code, l) {
+    const c = this.speaker(code, l);
+    if (!c) return `<div class="adm-lacts"><p class="adm-hint">${esc(l.name)} isn't online in ${code === 'SOLO' ? 'a party' : `party ${esc(code)}`} with a player card right now (they left, or changed their name).</p></div>`;
+    if (c.me) return '<div class="adm-lacts"><p class="adm-hint">That\'s you.</p></div>';
+    const muted = c.muted > Date.now();
+    const b = (act, label, extra = '', cls = '') => `<button class="btn adm-la ${cls}" data-act="${act}"${extra}>${label}</button>`;
+    return `<div class="adm-lacts" data-id="${esc(c.id)}">
+      <p class="adm-lwho"><b>${esc(c.name)}</b> · Lv ${c.level | 0}${c.party && c.party.code ? ` · ${c.party.kind === 'host' ? '👑 hosting' : '🎉 in'} ${esc(c.party.code)}` : ''}${muted ? ` · 🔇 muted until ${esc(clock(c.muted))}` : ''}</p>
+      <input class="adm-in adm-lwhy" maxlength="120" placeholder="Why? (optional, they see it)" value="${esc(this.chatWhy)}">
+      <div class="adm-grid">
+        ${MUTE_PICKS.map(([m, lb]) => b('mute', `🔇 MUTE ${lb}`, ` data-min="${m}"`)).join('')}
+        ${muted ? b('unmute', '🔈 UNMUTE') : ''}
+        ${b('msg', '✉ MESSAGE', '', this.chatForm === 'msg' ? 'on' : '')}
+        ${b('log', '💬 CHAT LOG')}
+      </div>
+      ${this.chatForm === 'msg' ? `<div class="adm-form"><textarea class="adm-in adm-lmsg" maxlength="300" rows="2" placeholder="Message for ${esc(c.name)}"></textarea>
+        <div class="adm-btns2">${b('msgsend', '✉ SEND', '', 'yellow')}${b('msgno', 'CANCEL')}</div></div>` : ''}
+    </div>`;
+  }
+
+  /** A button under an open chat line. */
+  lineAct(act, btn = null) {
+    const sel = this.chatLines.get(this.chatSel);
+    const c = sel && this.speaker(sel.code, sel.line);
+    if (!c) { this.status('That player is not online with a card right now.', false); return; }
+    const pane = $('.adm-chat', this.root);
+    switch (act) {
+      case 'mute': this.mute(c, +btn.dataset.min, this.chatWhy.trim()); this.chatWhy = ''; break;
+      case 'unmute': this.send('unmute', {}, c, 'an unmute (chat)'); break;
+      case 'log': this.chatLog(c); return;
+      case 'msg': this.chatForm = this.chatForm === 'msg' ? '' : 'msg'; break;
+      case 'msgno': this.chatForm = ''; break;
+      case 'msgsend': {
+        const box = $('.adm-lmsg', pane);
+        const text = box ? box.value.trim() : '';
+        if (!text) { if (box) box.focus(); return; }
+        this.send('message', { text }, c, 'a message');
+        this.chatForm = '';
+        break;
+      }
+      default: return;
+    }
+    this.renderChat(true);
+  }
+
+  /** Mute a player's chat for `minutes` (they're told, with the reason). */
+  mute(p, minutes, reason = '') {
+    const label = (MUTE_PICKS.find(([m]) => m === minutes) || [0, `${minutes} MIN`])[1].toLowerCase();
+    this.send('mute', { minutes, reason }, p, `a chat mute (${label})`);
+  }
+
+  /** 💬 CHAT LOG: ask the player's game for its chat lines, shown in a sheet over the panel. */
+  async chatLog(p) {
+    const s = this.session;
+    if (!s || !s.requestLog) return;
+    if (!p.pk) { this.status("✕ Not sent: that player's game is an older version (it needs a reload).", false); return; }
+    const el = this.sheet(`💬 CHAT LOG · ${p.name}`,
+      `<p class="adm-now">Asking ${esc(p.name)}'s game for its chat… They see "🛡 The admin looked at this chat".</p>`);
+    const log = await s.requestLog(p.id);
+    if (this.sheetEl !== el || !el.isConnected) return;
+    const body = $('.adm-sbody', el);
+    if (!log) {
+      body.innerHTML = `<p class="adm-now">✕ No answer from ${esc(p.name)}'s game. It may be offline right now, or on an older version.</p>`;
+      return;
+    }
+    const lines = log.lines;
+    let html = `<p class="adm-hint">${lines.length ? `The ${lines.length} chat line${lines.length === 1 ? '' : 's'} ${esc(p.name)}'s game has seen since it was opened (newest last)` : `${esc(p.name)}'s game hasn't seen any chat since it was opened`}. They were told you looked.</p>`;
+    let code = null;
+    for (const l of lines) {
+      const c = l.code || 'SOLO';
+      if (c !== code) {
+        if (code !== null) html += '</ul>';
+        code = c;
+        html += `<h4 class="adm-lgh">${c === 'SOLO' ? '👤 On their own' : `🎉 Party ${esc(c)}`}</h4><ul class="adm-clist">`;
+      }
+      const who = l.sys ? '' : l.admin ? '<b class="adm-cn adm-cadmin">🛡 ADMIN</b>' : `<b class="adm-cn">${esc(l.name)}</b>`;
+      html += `<li class="adm-cl${l.sys ? ' sys' : l.admin ? ' admin' : ''}"><div class="adm-clb"><span class="adm-ct">${esc(clock(l.at))}</span>${who}<span class="adm-cx">${esc(l.text)}</span></div></li>`;
+    }
+    if (code !== null) html += '</ul>';
+    body.innerHTML = html;
+  }
+
+  /** A sheet over the panel (its own CLOSE): title is text, html trusted markup with escaped values. */
+  sheet(title, html) {
+    this.closeSheet();
+    const el = document.createElement('div');
+    el.className = 'adm-sheet';
+    el.setAttribute('role', 'dialog');
+    el.innerHTML = `<div class="adm-shead"><h3></h3><button class="btn adm-shx">✕ CLOSE</button></div><div class="adm-sbody">${html}</div>`;
+    $('h3', el).textContent = title;
+    $('.adm-shx', el).addEventListener('click', () => { this.ui(); this.closeSheet(); });
+    this.root.appendChild(el);
+    this.sheetEl = el;
+    return el;
+  }
+
+  closeSheet() {
+    if (this.sheetEl) this.sheetEl.remove();
+    this.sheetEl = null;
   }
 
   // ------------------------------------------------------------------ EVERYONE

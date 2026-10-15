@@ -13,7 +13,7 @@ import { PARTY_GAMES } from '../public/shared/modes/games/party.js';
 import { ROOM_PLUGINS } from '../public/shared/plugins/index.js';
 import { BIOMES, SURFACES, SPECIES, SPECIES_TYPE, LOOKS, LOOK_ALIASES, PADS, TIERS, STEP_SOUND } from '../public/shared/world/keys.js';
 import * as SCALE from '../public/shared/world/scale.js';
-import { MAP, BUS, DROP, PLAYER } from '../public/shared/constants.js';
+import { MAP, BUS, DROP, PLAYER, PROTOCOL } from '../public/shared/constants.js';
 import { generateWorld } from '../public/shared/worldgen.js';
 import { parseKey } from '../public/shared/buildgrid.js';
 import { Room } from '../public/shared/room.js';
@@ -317,6 +317,39 @@ test('room plugins: a plugin in ROOM_PLUGINS gets every hook and its handler dur
   assert.equal(H.errors.length, 0, JSON.stringify(H.errors));
 });
 
+test('room plugins: the shipped list is party, edits, chat; observerMessage(room, ob, msg) answers an observer first', () => {
+  assert.deepEqual(ROOM_PLUGINS.map((p) => p.name), ['party', 'edits', 'chat']);
+  const seen = [];
+  const probe = {
+    name: 'probe',
+    observerMessage(room, ob, msg) {
+      seen.push([room, ob.id, msg.t]);
+      if (msg.t !== 'probe') return undefined; // not ours: the next plugin, then the Room
+      room.send(ob.conn, { t: 'probed', id: ob.id });
+      return true;
+    },
+  };
+  const H = makeRoom({ plugins: [...ROOM_PLUGINS, probe] });
+  const a = H.join('Ann');
+  const o = H.conn();
+  // (the transport checked the admin's signature: see shared/room.js Observers)
+  assert.equal(H.room.join(o, { name: 'Admin', v: PROTOCOL, observer: { sig: 'checked' } }, { observer: true }), true);
+  const obId = H.last(o, 'welcome').you;
+  assert.ok(obId < 0, 'an observer has a negative id');
+  assert.ok(Array.isArray(H.last(o, 'welcome').chat), 'the chat plugin\'s welcome reaches observers too');
+  H.send(o, { t: 'probe' });
+  assert.deepEqual(H.last(o, 'probed'), { t: 'probed', id: obId });
+  // the chat plugin takes an observer's chat before the probe (plugins in order): the admin's line
+  H.send(o, { t: 'chat', text: 'hello party' });
+  assert.deepEqual(H.last(a, 'chat'), { t: 'chat', id: obId, name: 'Admin', text: 'hello party', ts: H.now(), admin: true });
+  assert.equal(seen.filter((e) => e[2] === 'chat').length, 0, 'handled by chat: later plugins are not asked');
+  // nobody took it: the Room's own observer handling
+  H.send(o, { t: 'ping', c: 9 });
+  assert.equal(H.last(o, 'pong').c, 9);
+  assert.ok(seen.every((e) => e[0] === H.room && e[1] === obId));
+  assert.equal(H.errors.length, 0, JSON.stringify(H.errors));
+});
+
 test('room plugins: answers from onJoin / onLeave, handler precedence and errors', () => {
   const held = [];
   const gate = {
@@ -521,7 +554,7 @@ test('FakeCtx: a small game runs through every hook', () => {
 // ------------------------------------------------------------------ client stubs (importable in Node too)
 test('client plugin points: game plugins, Discover, grade, bench, tree species, layer textures', async () => {
   const { GAME_PLUGINS } = await import('../public/js/game/plugins.js');
-  assert.deepEqual(GAME_PLUGINS.map((P) => P.name), ['PartyBridge', 'ModeClient', 'MapClient', 'BuildClient', 'AdminNotes']);
+  assert.deepEqual(GAME_PLUGINS.map((P) => P.name), ['PartyBridge', 'ModeClient', 'MapClient', 'BuildClient', 'AdminNotes', 'ChatClient']);
   const game = {};
   for (const P of GAME_PLUGINS) assert.equal(new P(game).game, game);
   const { openDiscover, openCreator } = await import('../public/js/ui/discover.js');

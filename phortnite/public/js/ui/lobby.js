@@ -2,7 +2,8 @@
 //   top bar      PLAY tab, live player count, level chip, locker, help, settings, full screen
 //   left rail    party cards (crown, READY, level), '+' INVITE slots, JOIN A FRIEND, REJOIN, LEAVE
 //   bottom right the mode card with CHANGE (Discover), PLAY for the leader / READY for members
-//   bottom left  EMOTE, WARM UP
+//   bottom left  EMOTE, WARM UP, 💬 CHAT (the party chat drawer, js/ui/chat.js; its badge counts
+//                unread lines)
 // plus the 3-2-1 countdown, the 'match in progress' banner, the victory overlay, the results card,
 // toasts and the connection status pill. Everything is rendered from the Game's party state when
 // it changes (no per-frame work here; the stage moves the nameplates).
@@ -88,6 +89,7 @@ export class LobbyUi {
       <div class="lb-bl">
         <button class="lb-btn lb-emote">💃 EMOTE</button>
         <button class="lb-btn lb-warm">🏝️ WARM UP</button>
+        <button class="lb-btn lb-chat">💬 CHAT<b class="lb-chatn hidden"></b></button>
       </div>
       <div class="lb-br">
         <div class="lb-mode">
@@ -104,7 +106,7 @@ export class LobbyUi {
       <div class="lb-results hidden"></div>`;
     this.el = {};
     for (const k of ['code', 'cards', 'join', 'rejoin', 'leave', 'memoji', 'mname', 'mtags', 'mode', 'change', 'play', 'psub', 'banner', 'btext', 'spec',
-      'count', 'cnum', 'cancel', 'victory', 'results', 'lv', 'xp', 'emote', 'warm', 'ptitle', 'live', 'lnum']) this.el[k] = $(`.lb-${k}`, this.root);
+      'count', 'cnum', 'cancel', 'victory', 'results', 'lv', 'xp', 'emote', 'warm', 'chat', 'ptitle', 'live', 'lnum']) this.el[k] = $(`.lb-${k}`, this.root);
     this.el.xp = $('.lb-xp i', this.root);
     this.cache = {};
     const confetti = $('.lb-confetti', this.root);
@@ -136,6 +138,7 @@ export class LobbyUi {
     on(this.el.leave, () => app.leaveParty());
     on(this.el.emote, () => app.emote());
     on(this.el.warm, () => app.warmUp(true));
+    on(this.el.chat, () => app.chat && app.chat.toggle());
     on(this.el.change, () => this.changeMode());
     on(this.el.mode, () => this.changeMode());
     on(this.el.play, () => this.play());
@@ -372,16 +375,24 @@ export class LobbyUi {
   /**
    * In the lobby on a narrow screen (portrait, phones) the toasts go right of the party rail, not
    * over its cards (like Philip's news under the bar, js/ui/announce.js); else the top middle.
+   * An open chat drawer (js/ui/chat.js) pushes them right of it too, in the lobby and in a match
+   * (left of the minimap there).
    */
   placeToasts() {
     const st = this.toasts.style;
     st.left = st.width = st.transform = '';
-    if (!document.body.classList.contains('onstage')) return;
-    const rail = $('.lb-rail', this.root).getBoundingClientRect();
-    const left = rail.right + 12, right = innerWidth - 12;
-    if (!rail.width || this.toasts.getBoundingClientRect().left >= left || right - left < 200) return;
+    const onstage = document.body.classList.contains('onstage');
+    const chat = this.app.chat && this.app.chat.rect ? this.app.chat.rect() : null;
+    if (!onstage && !chat) return;
+    const rail = onstage ? $('.lb-rail', this.root).getBoundingClientRect() : null;
+    const edge = Math.max(rail && rail.width ? rail.right : 0, chat ? chat.right : 0);
+    let right = innerWidth - 12;
+    const tr = !onstage && document.getElementById('topright');
+    if (tr) { const r = tr.getBoundingClientRect(); if (r.width) right = Math.min(right, r.left - 12); }
+    const left = edge + 12;
+    if (!edge || this.toasts.getBoundingClientRect().left >= left || right - left < 200) return;
     st.left = `${left}px`;
-    st.width = `${right - left}px`;
+    st.width = `${chat ? Math.min(560, right - left) : right - left}px`;
     st.transform = 'none';
   }
 

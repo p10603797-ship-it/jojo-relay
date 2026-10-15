@@ -20,10 +20,16 @@
 //   keysMatch(cfg|pubs, keys)         -> true when the private keys belong to the public ones
 //   signCommand(signKey, body)        -> { ...body, sig } (body: { v, cmd, args, to, ts, n })
 //   verifyCommand(signPub, env)       -> true | false (never throws)
-//   sealToAdmin(boxPub, obj, info)    -> { e, iv, ct } (base64): only the admin can open it
-//   openSealed(boxPriv, sealed, info) -> obj | null
-//                                        (info: SEAL_CARD (default), the player cards for the admin, or
-//                                        SEAL_PAGE, a command's args sealed to one page's own key)
+//   sealToAdmin(boxPub, obj, info, { from }) -> { e, iv, ct } (base64): only the admin can open it
+//   openSealed(boxPriv, sealed, info, { max }) -> obj | null
+//                                        (info: SEAL_CARD (default), the player cards for the admin,
+//                                        SEAL_PAGE, a command's args sealed to one page's own key, or
+//                                        SEAL_UP, what a page uploads to the admin: chat lines, a chat
+//                                        log, a report (js/admin/commands.js sealUpload). from: seal
+//                                        with this page's own key (newBoxKey) instead of a fresh one,
+//                                        so e is that page's public key: the admin can tell an upload
+//                                        really came from the page whose card he has. max: the
+//                                        longest ct accepted, in base64 characters (default 2000))
 //   newBoxKey()                       -> { priv, pub, raw } a page's own ECDH key for this page load
 //                                        (priv non-extractable; raw: the public key, base64)
 //   importBoxPub(raw)                 -> the ECDH public CryptoKey for a raw base64 key | null
@@ -42,6 +48,7 @@ const ENC_AAD = new TextEncoder().encode('phortnite admin keys v1'); // binds th
 // HKDF info: what a seal is for (a card for the admin can't pass as a command's args, or back)
 export const SEAL_CARD = 'phortnite admin seal v1';
 export const SEAL_PAGE = 'phortnite page seal v1';
+export const SEAL_UP = 'phortnite admin up v1'; // a page's upload to the admin (never confused with a card)
 const EC_SIGN = { name: 'ECDSA', namedCurve: 'P-256' };
 const EC_BOX = { name: 'ECDH', namedCurve: 'P-256' };
 const SIG_ALG = { name: 'ECDSA', hash: 'SHA-256' };
@@ -217,22 +224,37 @@ async function sealKey(secret, ephemeralRaw, usage, info) {
  * Seal obj so that only the holder of boxPub's private key can read it (the admin's box key, or a
  * page's own key: info SEAL_PAGE): a fresh ECDH P-256 key pair per seal, its secret through
  * HKDF-SHA256 into AES-256-GCM. { e, iv, ct } in base64.
+ * from: a page's own key ({ priv, raw }: newBoxKey) to seal with instead of a fresh pair (a page's
+ * uploads, SEAL_UP). e is then that page's public key, and only that page (or the admin) can make
+ * a seal that opens with it: the admin checks e against the key in the page's card. (The same AES
+ * key for all of that page's seals, each with its own random 96-bit iv: a few hundred per page
+ * load at most.)
  */
-export async function sealToAdmin(boxPub, obj, info = SEAL_CARD) {
-  const eph = await subtle().generateKey(EC_BOX, true, ['deriveBits']);
-  const raw = new Uint8Array(await subtle().exportKey('raw', eph.publicKey));
-  const secret = await subtle().deriveBits({ name: 'ECDH', public: boxPub }, eph.privateKey, 256);
+export async function sealToAdmin(boxPub, obj, info = SEAL_CARD, { from = null } = {}) {
+  let raw, priv;
+  if (from && from.priv && typeof from.raw === 'string') {
+    raw = unb64(from.raw);
+    priv = from.priv;
+  } else {
+    const eph = await subtle().generateKey(EC_BOX, true, ['deriveBits']);
+    raw = new Uint8Array(await subtle().exportKey('raw', eph.publicKey));
+    priv = eph.privateKey;
+  }
+  const secret = await subtle().deriveBits({ name: 'ECDH', public: boxPub }, priv, 256);
   const key = await sealKey(secret, raw, ['encrypt'], info);
   const iv = rand(12);
   const ct = new Uint8Array(await subtle().encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(obj))));
   return { e: b64(raw), iv: b64(iv), ct: b64(ct) };
 }
 
-/** Open a seal with its private key: the object, or null (not for this key or job, tampered). */
-export async function openSealed(boxPriv, sealed, info = SEAL_CARD) {
+/**
+ * Open a seal with its private key: the object, or null (not for this key or job, tampered, or a
+ * ct longer than max base64 characters: 2000 fits a card or a command's args; an upload passes more).
+ */
+export async function openSealed(boxPriv, sealed, info = SEAL_CARD, { max = 2000 } = {}) {
   try {
     if (!boxPriv || !sealed || typeof sealed !== 'object') return null;
-    const raw = b64ok(sealed.e, 120), iv = b64ok(sealed.iv, 24), ct = b64ok(sealed.ct, 2000);
+    const raw = b64ok(sealed.e, 120), iv = b64ok(sealed.iv, 24), ct = b64ok(sealed.ct, max);
     if (!raw || raw.length !== 65 || !iv || iv.length !== 12 || !ct) return null;
     const pub = await subtle().importKey('raw', raw, EC_BOX, false, []);
     const secret = await subtle().deriveBits({ name: 'ECDH', public: pub }, boxPriv, 256);

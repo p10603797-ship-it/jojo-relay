@@ -19,6 +19,17 @@
 //                         party hears it as a room message {t: 'admin', env} (the signed envelope:
 //                         members check it too, and that it names their party) -> "The admin
 //                         ended the match" etc.
+//   mute / unmute         the party chat (app.chat.setMute, js/ui/chat.js): "🔇 The admin muted your
+//                         chat for 1 hour" (+ the reason) / "🔈 The admin unmuted your chat"
+//   chatlog               this page uploads the chat lines it saw this page load (app.chat.lines(),
+//                         the last 100) sealed to the admin, and its chat list says "🛡 The admin
+//                         looked at this chat" (a toast too when the chat isn't open)
+// Uploads to the admin (UP_TOPIC, js/admin/commands.js sealUpload), sealed with this page's own key:
+//   report(line, context) a player's 🚩 Report to admin (js/ui/chat.js) -> Promise<bool> (published?)
+//   the live party chat   ONLY on the page that hosts a P2P party (its room runs here), and only
+//                         while someone else is in it (a friend, or the admin watching): its new
+//                         lines (app.chat.onLine), batched, at most one upload every FEED_MS. Every
+//                         player is told in the chat drawer that the admin can read chats.
 // Every page makes its own ECDH key for this page load (js/admin/keys.js newBoxKey): its public half
 // goes in the sealed card, and the private parts of a command for this page are sealed to it, so
 // only this page can open them (js/admin/commands.js).
@@ -26,7 +37,7 @@
 // are made here too; a party this page hosts checks observer hellos with .observerCheck.
 // API used by the panel / stage E: app.adminClient.card() (this page's card),
 // .stateNow() ({banner, maintenance}), .chip(key, text|null) (a small persistent chip, e.g. stage E's
-// '👁 Admin is watching'), .notify(html, kind).
+// '👁 Admin is watching'), .notify(html, kind), .report(line, context, reason) (the chat's 🚩).
 import { VERSION } from '../../shared/constants.js';
 import { findMode } from '../../shared/modes/index.js';
 import { defaultStats, addXp } from '../accounts/stats.js';
@@ -37,6 +48,7 @@ import { AdminWatch } from '../ui/adminWatch.js';
 import { loadConfig, importPublic, sealToAdmin, newBoxKey } from './keys.js';
 import {
   CMD_TOPIC, STATE_PREFIX, STATE_TOPICS, STATE_KINDS, PARTY_CMDS, CommandGate, Lru, stateActive, makeObserverCheck, partyNote,
+  UP_TOPIC, UP_LINES, UP_CONTEXT, sealUpload,
 } from './commands.js';
 import { readBan, writeBan, isBanned, underLock, readBanBy } from './ban.js';
 import { AdminSession, rememberedKeys } from './session.js';
@@ -50,6 +62,17 @@ const MARK_KEY = 'phortnite.adminState';
 // commands for everyone ('*') this tab already carried out: a replayed 'reload everyone' can't loop
 const ALL_KEY = 'phortnite.adminAll';
 const REPUBLISH_MS = 10000; // the admin's page puts his newest state back on the broker at most this often
+// the live party chat for the admin (a host's page): one upload per party at most this often, a
+// moment after the first new line (so a burst goes in one); lines kept while offline, at most
+export const FEED_MS = 3000;
+const FEED_GATHER_MS = 400;
+const FEED_KEEP = UP_LINES;
+const FEED_TRIES = 3; // a batch that couldn't go out this many times is dropped
+// uploads a page makes on its own, per minute at most: reports (a player tapping 🚩) and chat logs
+// (only on the admin's signed chatlog, but a page never answers more than this)
+const UP_PER_MIN = { report: 5, log: 6 };
+const MUTE_KEY = 'phortnite.chatMute'; // (js/chat/chatLog.js: a page without app.chat keeps the mute here for it)
+const CODE_RE = /^[A-Z]{4}$/;
 
 /** admin.json next to the page, checked. null when there is none (or it is broken): no admin at all. */
 export async function fetchAdminConfig() {
@@ -108,6 +131,10 @@ export class AdminClient {
     this.sealing = false;
     this.chips = new Map();
     this.layer = null;
+    this.feeds = new Map(); // party code -> { code, pending: [lines], last, timer, tries }: the live chat
+    this.feedMs = FEED_MS;
+    this.offChat = null;
+    this.upTimes = { report: [], log: [] };
   }
 
   start() {
@@ -125,7 +152,9 @@ export class AdminClient {
       this.gate.pageKey = k.priv;
       this.refreshCard();
     }).catch((e) => console.error('admin page key', e));
-    this.cardTimer = setInterval(() => this.refreshCard(), CARD_MS);
+    this.cardTimer = setInterval(() => { this.refreshCard(); this.hookChat(); }, CARD_MS);
+    // the party chat's lines (the live feed a party host's page sends the admin)
+    this.hookChat();
     // a banner or maintenance whose time is up goes by itself
     this.stateTimer = setInterval(() => this.applyStates(), 5000);
     // (an iPad turned round: the chips and cards follow the toasts' column)
@@ -140,6 +169,10 @@ export class AdminClient {
     clearInterval(this.stateTimer);
     for (const off of this.offs || []) off();
     this.offs = [];
+    if (this.offChat) this.offChat();
+    this.offChat = null;
+    for (const f of this.feeds.values()) clearTimeout(f.timer);
+    this.feeds.clear();
   }
 
   // ------------------------------------------------------------------ the card
@@ -149,6 +182,7 @@ export class AdminClient {
     const kind = app.partyKind ? app.partyKind() : 'solo';
     const s = (g && g.settingsState) || {};
     const humans = g ? [...g.roster.values()].filter((r) => !r.bot).length : 1;
+    const mute = this.chatMuted();
     return {
       id: app.presence ? app.presence.id : '',
       name: app.settings.name,
@@ -166,6 +200,7 @@ export class AdminClient {
       since: this.since,
       admin: !!app.admin,
       pk: this.pageKey ? this.pageKey.raw : null,
+      muted: mute ? mute.until : 0, // (the admin's panel shows who is muted, so he can unmute them)
     };
   }
 
@@ -216,6 +251,9 @@ export class AdminClient {
       case 'rename': this.rename(a.name); break;
       case 'grant': this.grant(a.xp); break;
       case 'resetStats': this.resetStats(); break;
+      case 'mute': this.mute(a.minutes, a.reason); break;
+      case 'unmute': this.unmute(); break;
+      case 'chatlog': this.chatlog(env.n); break;
       default: if (PARTY_CMDS.includes(env.cmd)) this.partyCmd(env, raw);
     }
   }
@@ -333,6 +371,146 @@ export class AdminClient {
     if (g && g.phase === 'lobby' && app.profile) g.send({ t: 'look', lvl: app.profile.level });
     if (app.lobby) app.lobby.render();
     this.refreshCard();
+  }
+
+  // ------------------------------------------------------------------ party chat moderation
+  /** The page's chat (js/ui/chat.js), when this build has one. */
+  get chat() {
+    const c = this.app.chat;
+    return c && typeof c === 'object' ? c : null;
+  }
+
+  /** {until, reason} while the admin's mute is on here, else null. */
+  chatMuted() {
+    const c = this.chat;
+    try {
+      if (c && typeof c.muted === 'function') return c.muted();
+      const m = readJson(localStore(), MUTE_KEY);
+      return m && Number.isFinite(m.until) && m.until > Date.now() ? m : null;
+    } catch (e) { return null; }
+  }
+
+  mute(minutes, reason = '') {
+    const until = Date.now() + minutes * 60000;
+    const c = this.chat;
+    if (c && typeof c.setMute === 'function') c.setMute(until, reason);
+    else writeJson(localStore(), MUTE_KEY, { until, reason }); // (a chat made later reads it)
+    const why = reason ? ` <small>(${esc(reason)})</small>` : '';
+    this.notify(`🔇 The admin muted your chat for <b>${esc(forHow(minutes))}</b>. You can still play and read the chat.${why}`, 'bad', 9000, { keep: true });
+    this.refreshCard();
+  }
+
+  unmute() {
+    const c = this.chat;
+    if (c && typeof c.setMute === 'function') c.setMute(0);
+    else { try { const st = localStore(); if (st) st.removeItem(MUTE_KEY); } catch (e) { /* private mode */ } }
+    this.notify('🔈 The admin unmuted your chat. Be kind!', '', 7000);
+    this.refreshCard();
+  }
+
+  /** The admin asked for this page's chat log (n: his command's nonce): sent, and the player told. */
+  async chatlog(n) {
+    const c = this.chat;
+    let lines = [];
+    try { lines = c && typeof c.lines === 'function' ? c.lines().slice(-UP_LINES).map(slimLine) : []; } catch (e) { lines = []; }
+    // open moderation: the chat list says so (and a toast, when the chat isn't open to show it)
+    try {
+      if (c && typeof c.notice === 'function') c.notice('🛡 The admin looked at this chat');
+      if (!(c && typeof c.isOpen === 'function' && c.isOpen())) this.notify('🛡 The admin looked at your chat log (to keep everyone safe).', '', 6000);
+    } catch (e) { /* told as far as this build can */ }
+    if (!this.upOk('log')) return false;
+    return this.upload({ k: 'log', re: n, code: this.partyCode(), lines });
+  }
+
+  /**
+   * A player's 🚩 Report to admin (js/ui/chat.js): the line, the lines before it (up to 10) and an
+   * optional reason, sealed to the admin. -> Promise<bool>: true when it went out. Never throws.
+   */
+  async report(line, context = [], reason = '') {
+    try {
+      if (!line || typeof line !== 'object' || !this.upOk('report')) return false;
+      const ctx = Array.isArray(context) ? context.slice(-UP_CONTEXT).map(slimLine) : [];
+      const code = typeof line.code === 'string' ? line.code : this.partyCode();
+      return await this.upload({ k: 'report', code, line: slimLine(line), context: ctx, reason: String(reason || '').slice(0, 120) });
+    } catch (e) { return false; }
+  }
+
+  /** Room for one more upload of this kind (UP_PER_MIN)? Counts it when yes. */
+  upOk(kind) {
+    const t = Date.now(), list = this.upTimes[kind];
+    while (list.length && t - list[0] > 60000) list.shift();
+    if (list.length >= UP_PER_MIN[kind]) return false;
+    list.push(t);
+    return true;
+  }
+
+  /** The party this page is in ('SOLO' on its own). */
+  partyCode() {
+    const g = this.app.game;
+    return g && typeof g.code === 'string' && CODE_RE.test(g.code) && this.app.partyKind() !== 'solo' ? g.code : 'SOLO';
+  }
+
+  /** Seal payload to the admin (with this page's own key) and publish it: true when it went out. */
+  async upload(payload) {
+    const pres = this.app.presence;
+    if (!pres || !pres.id) return false;
+    try {
+      const text = await sealUpload(this.pubs.boxPub, { ...payload, from: pres.id, v: VERSION }, { from: this.pageKey });
+      return !!text && !!pres.publish(UP_TOPIC, text);
+    } catch (e) { return false; }
+  }
+
+  /** Listen to the chat's lines once app.chat exists (main.js makes it). */
+  hookChat() {
+    const c = this.chat;
+    if (this.offChat || !c || typeof c.onLine !== 'function') return;
+    this.offChat = c.onLine((line, game) => { try { this.feedLine(line, game); } catch (e) { /* the chat goes on */ } });
+  }
+
+  /**
+   * A new chat line on this page: when this page hosts a P2P party with someone else in it, it
+   * goes in the admin's live feed (batched: FEED_MS). Members' pages never send it (one copy per party).
+   */
+  feedLine(line, game) {
+    const app = this.app, g = game || app.game;
+    if (!line || line.sys || !g || g !== app.game || g.observer || !g.net || g.net.kind !== 'p2p-host') return;
+    const code = typeof g.code === 'string' ? g.code : '';
+    if (!CODE_RE.test(code) || (line.code && line.code !== code) || !this.othersIn(g)) return;
+    let f = this.feeds.get(code);
+    if (!f) {
+      // (an old party's feed that is done: forgotten)
+      for (const [k, x] of this.feeds) if (!x.pending.length && !x.timer) this.feeds.delete(k);
+      f = { code, pending: [], last: 0, timer: 0, tries: 0 };
+      this.feeds.set(code, f);
+    }
+    f.pending.push(slimLine(line));
+    if (f.pending.length > FEED_KEEP) f.pending.splice(0, f.pending.length - FEED_KEEP);
+    this.feedSoon(f);
+  }
+
+  /** Someone besides this page's player in party g: another player, or the admin watching. */
+  othersIn(g) {
+    let humans = 0;
+    for (const r of g.roster.values()) if (!r.bot) humans++;
+    const room = g.net && g.net.room;
+    return humans > 1 || !!(room && room.observers && room.observers.size);
+  }
+
+  feedSoon(f) {
+    if (f.timer || !f.pending.length) return;
+    const wait = Math.max(FEED_GATHER_MS, f.last + this.feedMs - Date.now());
+    f.timer = setTimeout(() => { f.timer = 0; this.feedFlush(f); }, wait);
+  }
+
+  async feedFlush(f) {
+    if (!f.pending.length || this.feeds.get(f.code) !== f) return;
+    const lines = f.pending.splice(0, f.pending.length);
+    f.last = Date.now();
+    const ok = await this.upload({ k: 'chat', code: f.code, lines });
+    if (ok) f.tries = 0;
+    else if (++f.tries < FEED_TRIES) f.pending = [...lines, ...f.pending].slice(-FEED_KEEP); // (offline: next time)
+    else f.tries = 0;
+    this.feedSoon(f);
   }
 
   // ------------------------------------------------------------------ party commands (the host's page)
@@ -628,6 +806,25 @@ function readJson(store, key) {
 }
 function writeJson(store, key, v) {
   try { if (store) store.setItem(key, JSON.stringify(v)); } catch (e) { /* private mode: this visit only */ }
+}
+
+/** A chat line as it goes to the admin: only its own fields. */
+function slimLine(l) {
+  const o = { id: l.id, name: l.name, text: l.text, ts: l.ts };
+  if (l.q !== undefined) o.q = l.q;
+  if (l.admin) o.admin = true;
+  if (l.sys) o.sys = true;
+  if (l.code) o.code = l.code;
+  if (l.at) o.at = l.at;
+  return o;
+}
+
+/** '10 minutes', '1 hour', '2 days' */
+function forHow(min) {
+  const n = (k, one) => `${k} ${one}${k === 1 ? '' : 's'}`;
+  if (min >= 1440 && min % 1440 === 0) return n(min / 1440, 'day');
+  if (min >= 60 && min % 60 === 0) return n(min / 60, 'hour');
+  return n(min, 'minute');
 }
 
 function modeName(id) {

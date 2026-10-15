@@ -30,6 +30,7 @@ import { AccountsUi } from './ui/accounts.js';
 import { Music } from './music.js';
 import { Presence } from './net/presence.js';
 import { fetchAdminConfig, startAdmin } from './admin/client.js';
+import { Chat } from './ui/chat.js';
 
 const TIPS = [
   'Tip: build a wall the moment someone starts shooting at you.',
@@ -57,6 +58,7 @@ const DEFAULTS = {
   tbAlpha: 1, // touch button opacity (0.3-1)
   music: 0.5, // music volume (0-1)
   botLevel: 'normal', // default bot difficulty (a rules.botSkill option)
+  chat: 'on', // party chat: 'on' | 'quick' (quick chat only) | 'off' (js/ui/chat.js)
 };
 
 function loadSettings() {
@@ -101,6 +103,8 @@ class App {
     this.admin = null;
     this.adminPaused = false; // the admin paused this party's match (only the admin resumes it)
     this.maintenance = false;
+    // party chat (js/ui/chat.js): app.chat.lines() / onLine / setMute / notice / open / send …
+    this.chat = null;
   }
 
   saveSettings() {
@@ -200,7 +204,8 @@ class App {
     this.input.forceTouch = this.settings.forceTouch;
     if (this.isTouch || this.settings.forceTouch) this.input.setTouchMode(true);
     this.input.onLockChange = (locked) => {
-      if (!locked && this.game && !this.stageOn && this.game.wantsPause() && !this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
+      // (opening the chat frees the mouse on purpose: the match goes on, no pause menu)
+      if (!locked && this.game && !this.stageOn && this.game.wantsPause() && !this.input.touchMode && !this.ui.modalOpen() && !(this.chat && this.chat.isOpen())) this.ui.pauseModal();
     };
     this.sfx = new Sfx(this.settings);
     this.hud = new Hud(this.world);
@@ -209,6 +214,8 @@ class App {
       if (me && me.alive && (i === 0 || me.inv.slots[i])) me.select(i);
     };
     this.ui = new Ui(this);
+    // party chat: the drawer, the HUD's 💬 and the feed (before the first party's welcome)
+    this.chat = new Chat(this);
     this.physics.step(1 / 60);
 
     // the lobby: your party on a stage of its own, the lobby screen, invites, XP and music
@@ -240,6 +247,8 @@ class App {
       if (g && g.phase === 'lobby' && g.net.kind !== 'solo') { g.net.send({ t: 'bye' }); this.saveResume(true); } else this.saveResume();
     });
     window.addEventListener('keydown', (e) => {
+      // (an Escape that closed the chat is used up)
+      if (e.defaultPrevented || (this.chat && this.chat.isOpen())) return;
       if ((e.code === 'Escape' || e.code === 'KeyP') && this.game && !this.stageOn && this.input.touchMode && !this.ui.modalOpen()) this.ui.pauseModal();
     });
     // click on the canvas resumes pointer lock on desktop (never on the lobby stage)
@@ -578,6 +587,8 @@ class App {
     if (this.announce) requestAnimationFrame(() => { this.announce.render(); this.announce.place(); });
     // (and the toasts' column, with the admin's chips and cards in it: right of the party cards, or the top middle)
     requestAnimationFrame(() => { if (this.lobby.placeToasts) this.lobby.placeToasts(); });
+    // an open chat drawer moves between the lobby's spot and the match's
+    if (this.chat) requestAnimationFrame(() => { this.chat.place(); this.lobby.placeToasts(); });
     // lobby <-> match for the player count
     if (this.presence) this.presence.update();
   }
