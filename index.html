@@ -87,6 +87,14 @@
     #lockscreen[data-state="banned"] .ls-field, html.ls-banned #lockscreen:not([data-state]) .ls-field,
     #lockscreen[data-state="banned"] .ls-ask, html.ls-banned #lockscreen:not([data-state]) .ls-ask { display: none; }
     #lockscreen[data-state="banned"][data-unban]:not(.ls-unbanning) .ls-unban-open { display: block; }
+    /* closed (data-closed): "Closed for now" and Philip's message instead of "This game is locked";
+       no "Remember" box (the code isn't kept). A ban still shows as a ban. */
+    .ls-t-closed, .ls-closed { display: none; }
+    #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="offer"]) .ls-t-lock { display: none; }
+    #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="offer"]) .ls-t-closed { display: inline; }
+    #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="wait"]) .ls-closed { display: block; }
+    #lockscreen[data-closed] .ls-remember, #lockscreen[data-closed] .ls-ask { display: none; }
+    .ls-closed { margin: 0 0 14px; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 17px; line-height: 1.4; }
     #lockscreen[data-state="banned"].ls-unbanning .ls-unban { display: flex; }
     /* the code box (and its message) where the password box was: above the iPad keyboard */
     #lockscreen.ls-unbanning .ls-ban-text { display: none; }
@@ -244,7 +252,9 @@
     <div class="ls-wrap">
       <div class="logo ls-logo"><div class="logo-main">PHORTNITE</div></div>
       <form id="ls-card" class="ls-card" autocomplete="off" novalidate onsubmit="return false">
-        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span><span class="ls-t-face"><span aria-hidden="true">🙂</span> Use Face ID next time?</span></h1>
+        <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span><span class="ls-t-face"><span aria-hidden="true">🙂</span> Use Face ID next time?</span><span class="ls-t-closed"><span aria-hidden="true">🚧</span> Closed for now</span></h1>
+        <!-- the game is closed (lock.json "closed", lock.js: data-closed): only Philip's code opens it -->
+        <p id="ls-closed" class="ls-closed"></p>
         <div class="ls-field">
           <!-- Face ID set up on this device (lock.js: data-face): the face first, the password box still works -->
           <div class="ls-face">
@@ -289,6 +299,6 @@
     </div>
     <noscript><p class="ls-msg">Turn on JavaScript to play Phortnite.</p></noscript>
   </div>
-  <script src="lock.js?h=4ddc78995c"></script>
+  <script src="lock.js?h=4d76ffe25d"></script>
 </body>
 </html>

@@ -18,6 +18,11 @@
  * Face ID / Touch ID (see "Face ID" below) is the other way in: after the right password the page
  * offers it, and from then on the device's own passkey for this website opens the game key. No face
  * (or anything about one) ever reaches this script; the device checks the face itself.
+ * Closed (lock.json "closed": { text }, made with `lock.mjs closed`): Philip shut the game for now.
+ * That build has its own game key and only Philip's code opens it, so the usual passwords, the
+ * remembered ones and Face ID can't. The screen says "Closed for now" with his message; a wrong code
+ * is NOT a strike (nobody gets banned for trying their old password), and a remembered password or
+ * a Face ID setup is kept, untouched, for when the game opens again (a normal build).
  *
  * Plain ES2017 (no ?. ?? ... in objects, or catch without a binding): even an old browser must
  * at least get to show a message.
@@ -44,6 +49,7 @@
   var faceGo = $('ls-face-go'), faceLabel = $('ls-face-label'), faceForget = $('ls-face-forget');
   var offerText = $('ls-offer-text'), faceOn = $('ls-face-on'), faceNo = $('ls-face-no');
   var banText = document.querySelector('#lockscreen .ls-ban-text');
+  var closedText = $('ls-closed');
   if (!root || !card) return;
 
   var meta = null;      // Promise of lock.json
@@ -59,6 +65,7 @@
   var face = null;      // this folder's Face ID record (only where the browser does WebAuthn)
   var faceFailed = false; // Face ID didn't work on this page (its passkey may have been deleted)
   var offer = null;     // the Face ID offer on screen: { m, doc, K, slot, salt, id, busy }
+  var closed = false;   // lock.json says the game is closed (closeUp): no strikes, nothing remembered or forgotten
 
   // ------------------------------------------------------------------ helpers
   // (test/lock.test.mjs runs everything from here to "end of helpers" in Node: only plain functions
@@ -311,6 +318,22 @@
     root.classList.remove('ls-gone');
   }
 
+  var CLOSED_TEXT = 'Phortnite is closed for now. Philip is getting an update ready \u2014 check back soon!';
+  var NOT_CODE = 'That\u2019s not the code. Phortnite is closed right now \u2014 check back soon!';
+
+  /** The game is closed (lock.json "closed"): its message, and Face ID out of the way for now (its
+   *  record stays: it opens the game again once Philip opens it). */
+  function closeUp(c) {
+    if (closed) return;
+    closed = true;
+    root.setAttribute('data-closed', '');
+    var t = c && typeof c.text === 'string' ? c.text.trim().slice(0, 300) : '';
+    if (closedText) closedText.textContent = (t || CLOSED_TEXT) + ' Only Philip can get in right now.';
+    if (face && !busy) setFace(null);
+    // (a "2 tries left" from before means nothing while it is closed: no strikes now)
+    if (root.getAttribute('data-state') === 'ask' && !busy) msg.textContent = '';
+  }
+
   // ------------------------------------------------------------------ storage (never throws)
 
   function stored() { try { return localStorage.getItem(STORE) || ''; } catch (e) { return ''; } }
@@ -549,6 +572,7 @@
     // the second function keeps "unhandled rejection" noise out of the console)
     meta.then(function (m) {
       if (m && m.unban && m.unban.hash) root.setAttribute('data-unban', ''); else root.removeAttribute('data-unban');
+      if (m && m.closed) closeUp(m.closed);
     }, function () {});
     return meta;
   }
@@ -671,6 +695,17 @@
       var got = await unwrap(m, password);
       useStores(await now);
       if (isBanned(ban)) { banned(); return; }
+      if (!got && m.closed) {
+        // closed: the usual passwords can't open this build. Not a strike, and a remembered
+        // password stays remembered (it works again once the game is open)
+        busy = false;
+        last = null;
+        closeUp(m.closed);
+        if (face) setFace(null);
+        ask(auto ? '' : NOT_CODE);
+        if (!auto) shake();
+        return;
+      }
       if (!got) {
         busy = false;
         last = null;
@@ -694,8 +729,9 @@
       }
       // the right password: remember it (or forget an old one) as the box says. With Face ID on
       // this device the box isn't there: the face takes the place of a remembered password.
-      if (!face && (auto || remember.checked)) store(normalize(password)); else forget();
-      await opened(m, got, function (m2) { return unwrap(m2, password); }, !auto);
+      // (closed: Philip's code is never kept, and whatever this device remembers stays as it is)
+      if (!m.closed) { if (!face && (auto || remember.checked)) store(normalize(password)); else forget(); }
+      await opened(m, got, function (m2) { return unwrap(m2, password); }, !auto && !m.closed);
     } catch (e) {
       failed(e);
     }
@@ -804,6 +840,8 @@
       // cancelled, or not the right face: not a strike, and Face ID stays on
       if (err) { busy = false; faceFailed = true; ask('Face ID didn’t work — try again or type a password.'); return; }
       var m = await meta;
+      // closed: Face ID can't open this build (another game key), but it stays set up for later
+      if (m.closed) { busy = false; closeUp(m.closed); setFace(null); ask(''); return; }
       var slot = findSlot(m, rec.n);
       if (!slot) { lostFace('That password was turned off — ask Philip for a new one'); return; }
       // no secret (the browser left it out), or it doesn't open the copy (a new game key: new passwords for everyone)
@@ -965,7 +1003,7 @@
   // typing clears a message, but not the warning of how many tries are left (that matters most now)
   input.addEventListener('input', function () {
     if (root.getAttribute('data-state') !== 'ask') return;
-    msg.textContent = ban.strikes ? triesLeft(ban.strikes) : '';
+    msg.textContent = ban.strikes && !closed ? triesLeft(ban.strikes) : '';
     msg.classList.remove('ls-ok');
   });
   unbanOpen.onclick = function () {
@@ -1014,6 +1052,6 @@
     }
     if (ban.strikes || ban.tries || ban.until) saveBan(ban); // (puts back a store that was cleared)
     if (saved) unlock(saved, true);
-    else if (!busy && root.getAttribute('data-state') === 'ask' && !msg.textContent && ban.strikes) msg.textContent = triesLeft(ban.strikes);
+    else if (!busy && !closed && root.getAttribute('data-state') === 'ask' && !msg.textContent && ban.strikes) msg.textContent = triesLeft(ban.strikes);
   });
 })();
