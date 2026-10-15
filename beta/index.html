@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="css/map.css">
   <link rel="stylesheet" href="css/accounts.css">
   <link rel="stylesheet" href="css/admin.css">
+  <link rel="stylesheet" href="css/chat.css">
   <!-- Libraries come from the jsDelivr CDN so the site works on any static host.
        The bundled Node server (npm start) rewrites these to its own local copies. -->
   <!-- import maps polyfill for older Safari / iPadOS (only kicks in when needed) -->
@@ -178,6 +179,9 @@
     <div id="dmgnums"></div>
 
     <button id="menubtn" class="hudbtn" aria-label="Menu">☰</button>
+    <!-- party chat (js/ui/chat.js): the 💬 button and the small fading feed -->
+    <button id="chatbtn" class="hudbtn" aria-label="Party chat">💬</button>
+    <div id="chatfeed" aria-hidden="true"></div>
     <div id="netinfo"></div>
     <div id="fps"></div>
 
@@ -230,6 +234,8 @@
   <!-- ===================================================== LOBBY -->
   <!-- the party lobby over the stage (js/ui/lobby.js builds it; js/lobby/stage.js adds the nameplates) -->
   <div id="lobby" class="hidden"></div>
+  <!-- the party chat drawer, lobby and matches (js/ui/chat.js) -->
+  <div id="chat" class="hidden"></div>
   <div id="toasts"></div>
   <!-- news from Philip (js/ui/announce.js, announce.json) -->
   <div id="announce" class="hidden" role="status"></div>
