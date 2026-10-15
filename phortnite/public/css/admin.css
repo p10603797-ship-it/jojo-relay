@@ -95,17 +95,24 @@ body:not(.onstage) #announce.admin.open .an-text { display: block; -webkit-line-
 #modal.adm-wide .modal-card { width: min(980px, 100%); }
 /* (the EVERYONE tab says what the banner shows; the admin password box and status: nothing over them) */
 body.adm-panel-open #announce, body.adm-login-open #announce { visibility: hidden; }
+/* the panel open: toasts (its own "Ruby is banned.") and chips at the bottom of the screen, never over
+   its tabs or a sheet's name and buttons (taps go through them: #toasts has no pointer events) */
+html body.adm-panel-open #toasts { top: auto; bottom: calc(14px + var(--sab)); }
 .adm-panel { font-family: system-ui, -apple-system, sans-serif; }
 .adm-head { padding-right: 52px; } /* (the modal's ✕) */
 .modal-body .adm-head h2 { margin: 0 0 2px; }
 .adm-open-note { margin: 0 0 10px; font-size: 14px; opacity: 0.75; }
 .adm-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+/* (a tab's word gives way, shortened with "…", before its badge does: a short tab like CHAT lends
+   its spare room to ACCOUNTS, and the NEW badge never ends up cut off or under the ✕) */
 .adm-tab {
-  flex: 1; min-height: 56px; border: 0; border-radius: 14px; cursor: pointer; color: #fff;
-  background: rgba(255, 255, 255, 0.08); font-family: var(--font-title); font-size: 20px; letter-spacing: 1px;
+  flex: 1 1 auto; min-width: 0; min-height: 56px; border: 0; border-radius: 14px; cursor: pointer; color: #fff; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.08); font-family: var(--font-title); font-size: 20px; letter-spacing: 1px; padding: 0 8px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
 }
+.adm-tab > .adm-tw { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .adm-tab.sel { background: linear-gradient(180deg, #7cc8ff, #2a7be0); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.25); }
-.adm-count { font-family: var(--font-hud); font-weight: normal; font-size: 15px; background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 2px 8px; margin-left: 4px; vertical-align: 2px; }
+.adm-count { flex: none; font-family: var(--font-hud); font-weight: normal; font-size: 15px; background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 2px 8px; }
 .adm-pane.hidden { display: none; }
 .adm-totals { margin: 0 0 8px; font-size: 15px; }
 .adm-totals b { color: var(--yellow); font-family: var(--font-hud); font-weight: normal; }
@@ -214,13 +221,65 @@ button.adm-clb:disabled { cursor: default; opacity: 1; color: #fff; }
 .adm-sbody { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .adm-sbody .adm-clb { cursor: default; }
 
+/* ACCOUNTS (the account registry): a search box, then one row per account: its name as a big
+   button (tap: the sheet with BAN / REMOVE BAN / MESSAGE / KICK) and small details. */
+.adm-nbadge { background: #ffd23f; color: #2a1a00; font-weight: 700; font-size: 13px; letter-spacing: 0.5px; white-space: nowrap; }
+/* (the search box stays put at the top while a long list scrolls under it: clear of the modal's ✕,
+   under the account sheet) */
+.adm-afindrow { position: sticky; top: 0; z-index: 1; margin: 0; padding: 4px 52px 8px 0; background: #281f6c; }
+.modal-body .adm-atotals { margin: 0 0 8px; font-size: 15px; }
+.adm-atotals b { color: var(--yellow); font-family: var(--font-hud); font-weight: normal; }
+.adm-atotals small { display: block; opacity: 0.7; font-size: 13px; }
+.adm-alist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.adm-arow {
+  display: grid; grid-template-columns: minmax(160px, 0.42fr) 1fr; align-items: center; gap: 6px 12px;
+  padding: 6px 12px 6px 6px; border-radius: 14px; background: rgba(255, 255, 255, 0.06);
+}
+.adm-arow.banned { background: rgba(255, 90, 90, 0.12); }
+/* (a long name wraps onto a second line, never cut: "SuperCoolPlayer1" and "…2" must not look the same) */
+.adm-aname {
+  min-height: 56px; min-width: 0; border: 0; border-radius: 12px; cursor: pointer; padding: 6px 14px; text-align: left;
+  background: rgba(255, 255, 255, 0.09); color: var(--yellow); font-family: var(--font-title); font-size: 22px; letter-spacing: 0.5px;
+  white-space: normal; overflow-wrap: anywhere; line-height: 1.1; box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
+}
+.adm-aname:active { transform: translateY(2px); }
+.adm-ameta { display: flex; flex-wrap: wrap; gap: 4px 6px; font-size: 13px; min-width: 0; }
+.adm-ameta span { background: rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 3px 8px; white-space: nowrap; }
+.adm-ameta .adm-anew { background: #ffd23f; color: #2a1a00; font-weight: 700; }
+.adm-ameta .adm-aon { background: rgba(80, 220, 120, 0.25); }
+.adm-ameta .adm-aban { background: rgba(255, 90, 90, 0.35); }
+.adm-ameta .adm-warn { background: rgba(255, 110, 90, 0.25); color: #ffd0c8; }
+.adm-aempty { padding: 18px 14px; text-align: center; font-size: 16px; line-height: 1.45; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+.adm-amorerow .btn { width: 100%; }
+.modal-body .adm-anote { margin-top: 10px; }
+/* the account's sheet (over the panel, like the chat log) */
+.adm-acard { display: flex; flex-direction: column; gap: 10px; }
+.adm-adet { font-size: 14px; }
+.modal-body .adm-abanned { color: #ffc0b8; }
+.modal-body .adm-ares { margin: 0; font-family: var(--font-hud); font-size: 16px; overflow-wrap: anywhere; }
+.adm-ares.ok { color: #8dffb0; }
+.adm-ares.bad { color: #ff9b9b; }
+.adm-aact.on { outline: 3px solid var(--yellow); outline-offset: 1px; }
+.adm-acard .adm-form { margin-top: 0; }
+/* its buttons: a row of big ones, never squeezed into a narrow column ("✓ REMOVE BAN" on one line) */
+.adm-aacts { display: flex; flex-wrap: wrap; gap: 8px; }
+.adm-panel .adm-aacts .btn { flex: 0 1 240px; min-width: 190px; white-space: nowrap; }
+.modal-body .adm-asheet .adm-shead h3 { font-size: 26px; white-space: normal; overflow-wrap: anywhere; line-height: 1.1; } /* (the whole name above BAN) */
+/* an iPad held upright: four tabs with their words and badges still fit */
+@media (max-width: 860px) {
+  .adm-tab { font-size: 16px; letter-spacing: 0.5px; padding: 0 6px; gap: 4px; }
+}
+
 /* a phone held sideways (844×390) or a narrow window */
 @media (max-width: 760px), (max-height: 520px) {
   #modal.adm-wide { padding: 8px; }
   #modal.adm-wide .modal-card { padding: 14px 14px 10px; max-height: calc(100% - 4px); }
   .adm-head { display: none; } /* (the tabs say where you are: room for the list) */
-  .adm-tabs { margin-bottom: 8px; padding-right: 52px; }
-  .adm-tab { font-size: 18px; }
+  .adm-tabs { margin-bottom: 8px; padding-right: 52px; gap: 6px; }
+  .adm-tab { font-size: 16px; letter-spacing: 0.5px; padding: 0 6px; }
+  .adm-tab .adm-count { padding: 2px 6px; }
+  .adm-arow { grid-template-columns: minmax(130px, 0.4fr) 1fr; padding: 5px 8px 5px 5px; }
+  .adm-aname { font-size: 20px; }
   .adm-rowhead { grid-template-columns: 1fr auto; }
   .adm-meta { grid-column: 1 / -1; grid-row: 2; }
   .adm-chev { grid-column: 2; grid-row: 1; }
@@ -232,12 +291,19 @@ button.adm-clb:disabled { cursor: default; opacity: 1; color: #fff; }
   .adm-clb { font-size: 15px; }
   .adm-cbox { max-height: none; } /* (a short screen: the panel scrolls, not a box inside it) */
 }
-/* a phone held upright: three tabs in a row still fit; a chat line's text under its name */
+/* four tabs in a narrow window: the pictures (and badges) say which is which */
+@media (max-width: 620px) {
+  .adm-tab .adm-tw { display: none; }
+  .adm-tab { font-size: 22px; }
+}
+/* a phone held upright: the tabs still fit; a chat line's text under its name; a name over its details */
 @media (max-width: 520px) {
-  .adm-tab { font-size: 14px; letter-spacing: 0; padding: 0 4px; }
+  .adm-tab { letter-spacing: 0; padding: 0 4px; }
+  .adm-arow { grid-template-columns: 1fr; }
   .adm-clb { grid-template-columns: auto 1fr; }
   .adm-clb .adm-cx { grid-column: 1 / -1; }
   .adm-picks.adm-picks3 { grid-template-columns: 1fr; }
+  .modal-body .adm-asheet .adm-shead h3 { font-size: 22px; }
 }
 
 /* ------------------------------------------------------------------ the admin watching (js/ui/adminWatch.js) */

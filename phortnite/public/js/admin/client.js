@@ -9,6 +9,19 @@
 //   banner (state)        Philip's banner box (js/ui/announce.js setAdmin), lobby and matches
 //   maintenance (state)   a full-screen "Philip is working on the game": out of any party / match,
 //                         no PLAY until it is off (the admin's own page gets a chip instead)
+//   bans (state)          the admin's ban list (account registry ids, hashed device ids): when
+//                         this device's id is on it, or ANY account made on this device (every
+//                         profile, not only the signed-in one), this device is banned exactly like
+//                         the live 'ban' below (reason "The admin banned this account"). A banned
+//                         account can't be brought over with a transfer code (js/ui/accounts.js asks
+//                         accountBanned first); one the list catches later on an iPad it was MOVED to
+//                         (its 'imported' mark, js/accounts/store.js) is taken off that iPad quietly
+//                         and the player told, never the iPad banned (a friend who imported a banned
+//                         kid's code isn't locked out of their own accounts). Checked again when the
+//                         list changes, an account is created or imported, and when admin mode goes
+//                         off (the admin's own page is never banned by the list). Philip's unban code
+//                         only lasts once the account is off the list too: while the list names this
+//                         iPad, the game bans it again as soon as it opens.
 //   reload                "Updating the game…", then freshReload()
 //   message               a "Message from the admin" card
 //   kick                  back to the solo lobby: "The admin removed you from the match / party."
@@ -30,6 +43,14 @@
 //                         while someone else is in it (a friend, or the admin watching): its new
 //                         lines (app.chat.onLine), batched, at most one upload every FEED_MS. Every
 //                         player is told in the chat drawer that the admin can read chats.
+// The account registry (js/accounts/registry.js, app.adminClient.registry): this page's signed-in
+// account (never a guest) has a sealed entry on the broker for the admin's ACCOUNTS tab: sent the
+// first time this device sees the account and after a rename, else seldom (stats every few hours,
+// 'seen' once a day), and put back when the broker lost it; an account deleted here has its entry
+// deleted. The card carries its rid and token too (sealed), so the admin can tell which online player
+// is which account (the token proves the rid). Open: every account is told once on this device
+// (tellRegistry: a long toast in the lobby) that Philip keeps a list of accounts and can ban one
+// while it's offline; an account made here was told on the create screen already (markTold).
 // Every page makes its own ECDH key for this page load (js/admin/keys.js newBoxKey): its public half
 // goes in the sealed card, and the private parts of a command for this page are sealed to it, so
 // only this page can open them (js/admin/commands.js).
@@ -37,7 +58,10 @@
 // are made here too; a party this page hosts checks observer hellos with .observerCheck.
 // API used by the panel / stage E: app.adminClient.card() (this page's card),
 // .stateNow() ({banner, maintenance}), .chip(key, text|null) (a small persistent chip, e.g. stage E's
-// '👁 Admin is watching'), .notify(html, kind), .report(line, context, reason) (the chat's 🚩).
+// '👁 Admin is watching'), .notify(html, kind), .report(line, context, reason) (the chat's 🚩),
+// .accountChanged() (main.js: a sign-in, a new account, a rename), .checkBans() -> Promise<bool>,
+// .accountBanned(accountId) -> Promise<bool> (js/ui/accounts.js: may this account be brought over?),
+// .banListReady(ms) -> Promise<bool> (the ban list heard, or ms gone by), .markTold(accountId).
 import { VERSION } from '../../shared/constants.js';
 import { findMode } from '../../shared/modes/index.js';
 import { defaultStats, addXp } from '../accounts/stats.js';
@@ -48,8 +72,9 @@ import { AdminWatch } from '../ui/adminWatch.js';
 import { loadConfig, importPublic, sealToAdmin, newBoxKey } from './keys.js';
 import {
   CMD_TOPIC, STATE_PREFIX, STATE_TOPICS, STATE_KINDS, PARTY_CMDS, CommandGate, Lru, stateActive, makeObserverCheck, partyNote,
-  UP_TOPIC, UP_LINES, UP_CONTEXT, sealUpload,
+  UP_TOPIC, UP_LINES, UP_CONTEXT, sealUpload, stateTextMax,
 } from './commands.js';
+import { Registry, accountIds, banDid } from '../accounts/registry.js';
 import { readBan, writeBan, isBanned, underLock, readBanBy } from './ban.js';
 import { AdminSession, rememberedKeys } from './session.js';
 
@@ -73,6 +98,10 @@ const FEED_TRIES = 3; // a batch that couldn't go out this many times is dropped
 const UP_PER_MIN = { report: 5, log: 6 };
 const MUTE_KEY = 'phortnite.chatMute'; // (js/chat/chatLog.js: a page without app.chat keeps the mute here for it)
 const CODE_RE = /^[A-Z]{4}$/;
+export const BAN_LIST_REASON = 'The admin banned this account'; // (what a ban from the list says on the ban screen)
+// accounts on this device already told that the admin keeps a list of accounts (tellRegistry)
+export const TOLD_KEY = 'phortnite.regTold';
+const TOLD_MAX = 50;
 
 /** admin.json next to the page, checked. null when there is none (or it is broken): no admin at all. */
 export async function fetchAdminConfig() {
@@ -121,7 +150,7 @@ export class AdminClient {
     this.notes = new Lru(200); // party room messages already shown
     this.since = Date.now();
     this.pageKey = null; // this page load's own key (newBoxKey): { priv, pub, raw }
-    this.states = { banner: null, maintenance: null }; // { args, ts, n, env } of the newest signed state
+    this.states = { banner: null, maintenance: null, bans: null }; // { args, ts, n, env } of the newest signed state
     this.marks = readJson(localStore(), MARK_KEY) || {};
     this.republished = {};
     // (a reloaded tab still knows the '*' commands it carried out)
@@ -135,6 +164,12 @@ export class AdminClient {
     this.feedMs = FEED_MS;
     this.offChat = null;
     this.upTimes = { report: [], log: [] };
+    this.registry = null; // js/accounts/registry.js (start())
+    this.writeBan = writeBan; // (tests: a stand-in)
+    this.banning = false; // a ban is being carried out here (it happens once)
+    this.heardBans = null; // { text, at }: the last thing the broker handed over on the ban list's topic (the admin's page)
+    this.republishTimers = {};
+    this.told = null; // TOLD_KEY, read once
   }
 
   start() {
@@ -146,13 +181,20 @@ export class AdminClient {
         ...STATE_TOPICS.map((t) => p.listen(t, (text, topic) => { this.onState(text, topic); })),
       ];
     }
+    // the account registry: this page's signed-in account, sealed for the admin's ACCOUNTS tab
+    const app = this.app;
+    this.registry = new Registry({ presence: p, boxPub: this.pubs.boxPub, account: () => app.activeAccount, store: app.accounts || null });
+    // (a new or imported account on this device: is it on the admin's ban list?)
+    this.offAccounts = app.accounts && typeof app.accounts.onChange === 'function'
+      ? app.accounts.onChange((what) => { if (what !== 'remove') this.checkBans(); }) : null;
+    this.registry.sync();
     // this page load's own key first: the card carries its public half, commands for this page open with it
     this.keyReady = newBoxKey().then((k) => {
       this.pageKey = k;
       this.gate.pageKey = k.priv;
       this.refreshCard();
     }).catch((e) => console.error('admin page key', e));
-    this.cardTimer = setInterval(() => { this.refreshCard(); this.hookChat(); }, CARD_MS);
+    this.cardTimer = setInterval(() => { this.refreshCard(); this.hookChat(); this.registry.sync(); this.tellRegistry(); }, CARD_MS);
     // the party chat's lines (the live feed a party host's page sends the admin)
     this.hookChat();
     // a banner or maintenance whose time is up goes by itself
@@ -171,8 +213,62 @@ export class AdminClient {
     this.offs = [];
     if (this.offChat) this.offChat();
     this.offChat = null;
+    if (this.offAccounts) this.offAccounts();
+    this.offAccounts = null;
+    if (this.registry) this.registry.stop();
+    for (const k of Object.keys(this.republishTimers)) clearTimeout(this.republishTimers[k]);
     for (const f of this.feeds.values()) clearTimeout(f.timer);
     this.feeds.clear();
+  }
+
+  /**
+   * The signed-in account changed (main.js saveSettings: a sign-in, a new account, a rename, sign
+   * out): its registry entry goes out now if it is new or renamed, the ban list is checked, the card
+   * is sealed again.
+   */
+  accountChanged() {
+    if (this.registry) this.registry.sync();
+    this.checkBans();
+    this.refreshCard();
+    this.tellRegistry();
+  }
+
+  /**
+   * Open moderation: the signed-in account (never a guest, never on a page in admin mode) is told
+   * once on this device that the admin keeps a list of accounts and can ban one while it's offline
+   * (accounts made before the registry, signed in with a password, or brought over with a code
+   * never saw the create screen's note). In the lobby only (not over a dialog or a match).
+   * -> true when it told it now.
+   */
+  tellRegistry() {
+    try {
+      const app = this.app, acc = app.activeAccount;
+      if (!acc || acc.guest || !acc.id || acc.id === 'guest' || app.admin || this.banned || this.banning) return false;
+      if (this.toldIds().has(acc.id)) return false;
+      if (!app.lobby || app.lobby.visible === false) return false; // (a match: later, in the lobby)
+      if (app.ui && typeof app.ui.modalOpen === 'function' && app.ui.modalOpen()) return false;
+      this.markTold(acc.id);
+      this.notify(`🛡 New: Philip (the admin) now keeps a list of accounts: <b>${esc(acc.name)}</b>'s name, level and wins, and when it last played. He can ban an account even while it's offline, and a ban locks this whole iPad (every profile on it).`, '', 10000);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  toldIds() {
+    if (!this.told) {
+      const v = readJson(localStore(), TOLD_KEY);
+      this.told = new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(-TOLD_MAX) : []);
+    }
+    return this.told;
+  }
+
+  /** This account was told (js/ui/accounts.js: the create screen's note said it already). */
+  markTold(id) {
+    if (!id) return;
+    const told = this.toldIds();
+    told.delete(id);
+    told.add(id);
+    while (told.size > TOLD_MAX) told.delete(told.values().next().value);
+    writeJson(localStore(), TOLD_KEY, [...told]); // (private mode: this page load only, in this.told)
   }
 
   // ------------------------------------------------------------------ the card
@@ -188,6 +284,9 @@ export class AdminClient {
       name: app.settings.name,
       level: app.profile ? app.profile.level : 1,
       account: acc ? (acc.guest ? 'guest' : String(acc.id).replace(/^p_/, '').slice(0, 8)) : null,
+      // the account's registry id and token (never a guest's): the admin's ACCOUNTS tab says who is
+      // online; the token (sealed like the rest) proves the rid, which is public (a topic name)
+      ...this.cardIds(acc),
       mode: (s.info && s.info.name) || s.modeId || '',
       phase: g && LIVE.has(g.phase) ? 'match' : 'lobby',
       // (the admin watching a party is not in it: 'watch')
@@ -229,7 +328,10 @@ export class AdminClient {
     // everyone' that reloads its pages again and again)
     if (env && env.to === '*' && Number.isFinite(env.ts) && env.ts < this.since) return;
     const pres = this.app.presence;
-    const r = await this.gate.live(env, pres ? pres.id : '');
+    // (being checked: the ban list waits for it, so the admin's own live 'ban' with his reason goes first)
+    this.cmdBusy = (this.cmdBusy || 0) + 1;
+    let r;
+    try { r = await this.gate.live(env, pres ? pres.id : ''); } finally { this.cmdBusy--; }
     if (!r.ok) return;
     // (a '*' command this page signed is for everyone else: the admin can aim one at himself by id)
     if (r.env.to === '*' && this.app.admin && this.app.admin.sent.has(r.env.n)) return;
@@ -327,12 +429,121 @@ export class AdminClient {
   }
 
   async ban(reason, raw) {
+    if (this.banning) return; // (once: the live 'ban' and the ban list can both come)
+    this.banning = true;
     this.tellParty(raw);
     this.leaveToLobby();
     this.banScreen(reason);
-    try { await writeBan({}, { reason }); } catch (e) { /* the overlay still stands */ }
-    // the website's lock screen shows its ban screen from now on (Philip's unban code lifts it)
-    setTimeout(() => location.reload(), 4000);
+    try { await this.writeBan({}, { reason }); } catch (e) { /* the overlay still stands */ }
+    // the website's lock screen shows its ban screen from now on (Philip's unban code lifts it; for
+    // a ban from the list, only once the list doesn't name this iPad any more: else it comes back)
+    if (typeof location !== 'undefined') setTimeout(() => location.reload(), 4000);
+  }
+
+  /** { rid, tok } of the signed-in real account for the card, once worked out (else nulls). */
+  cardIds(acc) {
+    const ids = acc && !acc.guest && this.registry ? this.registry.idsNow(acc.id) : null;
+    return { rid: ids ? ids.rid : null, tok: ids ? ids.tok : null };
+  }
+
+  /** Every account kept on this device (all profiles, the signed-in one too): { id, name, imported }. */
+  localAccounts() {
+    const app = this.app, out = new Map();
+    try {
+      if (app.accounts && typeof app.accounts.list === 'function') {
+        for (const p of app.accounts.list()) {
+          if (!p || !p.id) continue;
+          const full = typeof app.accounts.get === 'function' ? app.accounts.get(p.id) : null;
+          out.set(p.id, full || p);
+        }
+      }
+    } catch (e) { /* none */ }
+    const acc = app.activeAccount;
+    if (acc && !acc.guest && acc.id && acc.id !== 'guest' && !out.has(acc.id)) out.set(acc.id, acc);
+    return [...out.values()];
+  }
+
+  /** This device's id as the ban list carries it (registry.js banDid; worked out once). */
+  async banDidNow() {
+    const did = this.registry ? this.registry.did : '';
+    if (!did) return '';
+    if (!this.bdid || this.bdid.did !== did) this.bdid = { did, h: await banDid(did) };
+    return this.bdid.h;
+  }
+
+  /** The ban list's entries as this page has them now ([] before one came). */
+  banList() {
+    const st = this.states.bans;
+    return st && st.args && Array.isArray(st.args.list) ? st.args.list : [];
+  }
+
+  /** Has the ban list come yet? Waits up to ms for it while connected. -> Promise<bool> */
+  async banListReady(ms = 2000) {
+    const t0 = Date.now(), p = this.app.presence;
+    while (!this.states.bans && Date.now() - t0 < ms && !(p && p.connected === false)) await new Promise((r) => setTimeout(r, 100));
+    return !!this.states.bans;
+  }
+
+  /** Is the account with this local id on the ban list? (A transfer code for it is refused.) */
+  async accountBanned(id) {
+    try {
+      const list = this.banList();
+      if (!id || !list.length) return false;
+      const { rid } = await accountIds(id);
+      return list.some((e) => e.r === rid);
+    } catch (e) { return false; }
+  }
+
+  /**
+   * The admin's ban list (the newest signed 'bans' state): this device's id on it, or any account
+   * made here? Then this device is banned, like the live 'ban' (once). A hit only on accounts that
+   * were brought over from another iPad (their 'imported' mark) takes those accounts off this iPad
+   * instead, quietly (their registry entry stays for the admin's list), and says so: the friend who
+   * imported a banned account's code keeps their iPad and their own accounts. Never on a page in
+   * admin mode (the admin can't lock himself out; js/ui/admin.js doesn't offer a ban for his own
+   * accounts). -> Promise<bool>: true when it banned this device now.
+   */
+  async checkBans() {
+    try {
+      const st = this.states.bans;
+      const list = this.banList();
+      if (!list.length || this.banned || this.banning || this.app.admin) return false;
+      const bdid = await this.banDidNow();
+      let hit = !!bdid && list.some((e) => e.d === bdid);
+      const moved = [];
+      if (!hit) {
+        const rids = new Set(list.map((e) => e.r));
+        for (const acc of this.localAccounts()) {
+          if (!rids.has((await accountIds(acc.id)).rid)) continue;
+          if (acc.imported > 0) moved.push(acc);
+          else { hit = true; break; }
+        }
+      }
+      if (!hit && !moved.length) return false;
+      // (the admin bans a player who is online with the live 'ban' too, sent just before the list:
+      // when one is being checked, it goes first, so the ban screen shows his reason)
+      for (let i = 0; hit && this.cmdBusy > 0 && i < 40; i++) await new Promise((res) => setTimeout(res, 50));
+      // (checked again: a live 'ban' may have come meanwhile, or admin mode started)
+      if (this.banned || this.banning || this.app.admin || this.states.bans !== st) return false;
+      if (!hit) { this.dropMoved(moved); return false; }
+      this.ban(BAN_LIST_REASON);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /** Banned accounts that were only brought over to this iPad: off it again (quietly), and the player told. */
+  dropMoved(list) {
+    const app = this.app, store = app.accounts;
+    if (!store || typeof store.remove !== 'function') return;
+    let signedOut = false;
+    for (const acc of list) {
+      if (!store.remove(acc.id, { quiet: true })) continue;
+      if (app.activeAccount && app.activeAccount.id === acc.id) signedOut = true;
+      this.notify(`🛡 <b>${esc(acc.name)}</b> was banned by the admin, so it was taken off this iPad. Your other accounts are fine.`, 'bad', 9000, { keep: true });
+    }
+    if (!signedOut) return;
+    if (typeof app.signOut === 'function') app.signOut(); // (back to "Who's playing?")
+    else { try { store.signOut(); } catch (e) { /* fine */ } app.activeAccount = null; }
   }
 
   rename(name) {
@@ -606,14 +817,19 @@ export class AdminClient {
     const kind = topic.slice(STATE_PREFIX.length);
     if (!STATE_KINDS.includes(kind)) return;
     let env = null;
-    try { env = text && text.length <= 4000 ? JSON.parse(text) : null; } catch (e) { env = null; }
+    try { env = text && text.length <= stateTextMax(kind) ? JSON.parse(text) : null; } catch (e) { env = null; }
+    // (what this connection handed over on the ban list's topic, junk and '' too: the admin's page
+    // checks after a connect that the broker has his newest list, js/admin/session.js bansBack)
+    if (kind === 'bans') this.heardBans = { text: typeof text === 'string' ? text : '', at: Date.now() };
     const cur = this.states[kind], mark = this.marks[kind];
     // only forward: an older state (a replay of one Philip has since changed) never comes back,
     // even on a page that loads after it was replayed, if this device saw the newer one
     const old = !env || typeof env !== 'object' || !Number.isFinite(env.ts)
       || (cur && (env.n === cur.n || !(env.ts > cur.ts))) || (mark && env.ts < mark.ts);
     if (old) {
-      if (!(cur && env && env.n === cur.n)) this.republish(kind);
+      // (the newest one, exactly as signed, is fine; anything else in its place goes back to it,
+      // a copy with the same nonce but changed args too)
+      if (!(cur && env && env.n === cur.n && text === JSON.stringify(cur.env))) this.republish(kind);
       return;
     }
     const r = await this.gate.state(env, kind);
@@ -623,6 +839,13 @@ export class AdminClient {
     this.states[kind] = { args: r.env.args, ts: r.env.ts, n: r.env.n, env };
     this.marks[kind] = { ts: r.env.ts, n: r.env.n };
     writeJson(localStore(), MARK_KEY, this.marks);
+    if (kind === 'bans') {
+      // (the admin's panel: who is banned now; this page: is it one of them?)
+      const s = this.app.admin;
+      if (s && typeof s.bansChanged === 'function') { try { s.bansChanged(); } catch (e) { /* the panel catches up */ } }
+      this.checkBans();
+      return;
+    }
     this.applyStates();
   }
 
@@ -634,8 +857,12 @@ export class AdminClient {
   republish(kind) {
     const app = this.app, cur = this.states[kind];
     if (!app.admin || !cur || !cur.env || !app.presence) return;
-    const t = Date.now();
-    if (t - (this.republished[kind] || 0) < REPUBLISH_MS) return;
+    const t = Date.now(), wait = (this.republished[kind] || 0) + REPUBLISH_MS - t;
+    if (wait > 0) {
+      // (once more when the wait is over: a second wipe inside it doesn't stay on the broker)
+      if (!this.republishTimers[kind]) this.republishTimers[kind] = setTimeout(() => { this.republishTimers[kind] = 0; this.republish(kind); }, wait + 5);
+      return;
+    }
     this.republished[kind] = t;
     app.presence.publish(STATE_PREFIX + kind, JSON.stringify(cur.env), { retain: true });
   }
@@ -644,7 +871,7 @@ export class AdminClient {
   stateNow() {
     const out = { banner: null, maintenance: null };
     const t = Date.now();
-    for (const k of STATE_KINDS) {
+    for (const k of ['banner', 'maintenance']) {
       const s = this.states[k];
       if (s && stateActive(k, s.args, t, s.ts)) out[k] = { ...s.args };
     }
@@ -700,6 +927,7 @@ export class AdminClient {
     this.maintKey = '\u0000';
     this.applyStates();
     this.refreshCard();
+    this.checkBans(); // (admin mode off on a device whose account is on the ban list)
   }
 
   // ------------------------------------------------------------------ on screen

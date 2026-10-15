@@ -18,7 +18,9 @@
 // player card sealed to the admin's key (js/admin/client.js, setExtra): the broker and everyone
 // else see only ciphertext, never a name. Pages without it (or old ones) send just {s, t}. The admin's
 // signed commands ride on this same connection (listen / publish, js/admin/): one broker
-// connection per page.
+// connection per page. So does the account registry (js/accounts/registry.js): each page listens to
+// its signed-in account's own entry and, after every connect (onConnect), puts it back when the
+// broker lost it.
 import { Mqtt } from './mqtt.js';
 import { brokers } from './relay.js';
 
@@ -96,6 +98,7 @@ export class Presence {
     this.said = []; // our last few messages: their echoes are ours, anything else on our topic is not
     this.listens = []; // more topics on this connection: [{ filter, fn }] (the admin channel: listen)
     this.cardFns = [];
+    this.connectFns = [];
   }
 
   /** fn({ total, inMatch, inLobby, online }) whenever those change (at most ~2 a second). */
@@ -141,6 +144,18 @@ export class Presence {
     if (this.m && this.m.open) this.hook(this.m, l);
     return () => { this.listens = this.listens.filter((x) => x !== l); };
   }
+
+  /**
+   * fn() every time a broker connection is up and in use (the first, every reconnect, a move back
+   * to the first broker), right after this page's topics are subscribed. Returns a function that stops it.
+   */
+  onConnect(fn) {
+    this.connectFns.push(fn);
+    return () => { this.connectFns = this.connectFns.filter((f) => f !== fn); };
+  }
+
+  /** Is a broker connection up right now? (publish works) */
+  get connected() { return !!(this.m && this.m.open); }
 
   /** Publish on this page's broker connection. False when not connected. */
   publish(topic, text, opts = {}) {
@@ -245,6 +260,9 @@ export class Presence {
           this.settleTimer = setTimeout(() => this.settle(m), this.o.settleMs);
           this.homeward();
           for (const l of this.listens) this.hook(m, l);
+          for (const fn of [...this.connectFns]) {
+            try { fn(); } catch (e) { console.error('presence connect', e); }
+          }
           return;
         } catch (e) {
           if (this.pending === m) this.pending = null;

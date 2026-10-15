@@ -15,12 +15,17 @@
 //                                         ('banner', {text, minutes})  minutes 0 / absent = until
 //                                                                      cleared; text '' clears it
 //                                         ('maintenance', {on, text, hours})  hours: default 12, max 168
+//                                         ('bans', {list: [{r, d?}]})  the whole ban list (banAccount /
+//                                                                      unbanAccount make it)
 //   app.admin.players()                -> [card] everyone online with a readable card, this page
 //                                         included (me: true): { id, me, name, level, account,
 //                                         mode, phase, party: {code, kind, size} | null, v, since,
 //                                         admin, pk, s: 'l' | 'm', seen (ms), suspect: true when
 //                                         cards with different keys came for that id (someone is
-//                                         faking it: commands still reach only the real page) }
+//                                         faking it: commands still reach only the real page),
+//                                         rid: its signed-in account's registry id, only when the
+//                                         card's token proves it (rids are public topic names: a
+//                                         card can't claim someone else's account) }
 //   app.admin.onPlayers(fn)            -> off(); fn(players()) whenever the list changes
 //   app.admin.totals()                 -> { total (everyone counted, cards or not), cards, inMatch,
 //                                         inLobby, parties }
@@ -51,11 +56,62 @@
 // them). Anyone can seal something to the admin's public key, so an upload is only "as reported by
 // that page": ok is true when it was sealed with the key in the card of the page it names (and for
 // live chat, that page's card says it hosts that party). The panel shows the rest marked.
+// Accounts (js/accounts/registry.js): every page's signed-in account has a sealed, retained entry on
+// REG_PREFIX + rid; this page hears them all (REG_FILTER: the broker hands over every retained one
+// at once) and opens them within a budget (ACCT_RATE per ACCT_RATE_MS, the newest text per account
+// waiting, a size cap before anything is parsed, at most ACCTS_MAX accounts kept or waiting: what is
+// dropped is counted and logged), junk ignored; an empty message means that entry was deleted.
+// The registry lives on the public brokers: a broker that forgets it gets each entry back the next
+// time its page connects, so the list fills in again as players come back.
+//   app.admin.accounts()               -> [{ rid, name, created, seen, level, wins, matches, kills,
+//                                         did, v, online (a live card has this rid), banned (on the
+//                                         ban list), suspect (someone put a made-up entry for it on
+//                                         the relay: ignored, the row is still the account's own),
+//                                         isNew (made since the admin last opened the ACCOUNTS tab),
+//                                         gone (banned, its entry no longer on the broker: from this
+//                                         page's memory), mine (an account on this iPad: never banned
+//                                         from here), reason, bannedAt, bannedLive (the ban already
+//                                         reached a page online with it: that iPad is banned now) }]
+//                                         newest first
+//   app.admin.onAccounts(fn)           -> off(); fn(accounts()) when it changed
+//   app.admin.newAccounts() / .seenAccounts({fresh})   the ACCOUNTS tab's NEW badge
+//   app.admin.accountStats()           -> { total, waiting, dropped: {big, junk, full, bad} }
+//   app.admin.bans()                   -> [{ r, d? }] the ban list now (the newest signed one this
+//                                         page has: from the broker, or its own last)
+//   app.admin.banAccount(rid, { did, reason, name })  -> Promise<{ env, online, sent } | null> rid
+//                                         (and its device id, hashed one way: registry.js banDid)
+//                                         onto the list, signed and published retained; a page online
+//                                         with that account is also sent the live 'ban' at once; the
+//                                         rest are banned the next time they open Phortnite. null:
+//                                         offline. Throws for one of this iPad's own accounts, or a
+//                                         full list (BANS_MAX).
+//   app.admin.unbanAccount(rid)        -> Promise<envelope | null> off the list: a ban that hasn't
+//                                         happened yet never does (almost always: an older list put
+//                                         back on the relay can still reach an iPad that hasn't
+//                                         opened Phortnite since); an iPad already banned stays
+//                                         banned until Philip's unban code is typed on it, AFTER it
+//                                         is off the list (typed while it's still on, the game bans
+//                                         that iPad again as soon as it opens)
+// Every entry proves itself: its tok must hash to the rid of its topic (registry.js tokMatches),
+// which only a device that has the account (or the admin) can do; a made-up entry for a real
+// account's topic is dropped (counted 'bad'), and the account's row, when this page knows it,
+// stays as it was and is marked suspect (someone tried). As a second check the first tok seen for
+// a rid is remembered (ACCT_MEM_KEY) and an entry with another one is treated the same. What this
+// page remembers per account, in localStorage ACCT_MEM_KEY ({ rid: { tok, name, created, did,
+// reason, at, live, t } }, at most ACCT_MEM_MAX): names and reasons stay here, never on the broker
+// (the signed list carries ids only). The newest list this page signed is kept too (BANS_KEY, ids
+// only), and after every connect it goes back on the broker unless that connection handed it over
+// exactly as signed (the broker forgot it, someone deleted or spoiled it, or this page moved to
+// another of the free brokers: they don't share messages).
 // Nothing here logs the password or a key; the keys are non-extractable CryptoKeys.
 import {
   CMD_TOPIC, STATE_PREFIX, PARTY_CMDS, PUBLIC_ARGS, ALL_OK, makeEnvelope, cleanCard, Lru, Budget, UP_TOPIC, UP_MAX, upShape, cleanUpload,
+  cleanArgs, cleanName, BANS_MAX, BANS_TEXT_MAX,
 } from './commands.js';
-import { openSealed, keysMatch, importBoxPub, SEAL_UP } from './keys.js';
+import { openSealed, keysMatch, importBoxPub, verifyCommand, SEAL_UP, SEAL_ACCT } from './keys.js';
+import {
+  REG_PREFIX, REG_FILTER, REG_MAX, RID_RE, TOK_RE, DID_RE, regShape, cleanRegistration, accountIds, cachedIds, tokMatches, banDid,
+} from '../accounts/registry.js';
 
 const IDB = 'phortnite-admin'; // IndexedDB: object store 'kv', the remembered keys under 'keys'
 const MAX_OPENS = 300; // cards opened per refresh at most (a flood of junk can't stall the iPad)
@@ -72,6 +128,17 @@ export const REPORTS = 50;
 const LOGS = 20;
 export const LOG_WAIT_MS = 10000; // requestLog gives up after this long
 const REPORT_TOAST_MS = 10000; // "🚩 New chat report" on the admin's screen at most this often
+// accounts (the registry) and the ban list
+export const ACCT_RATE = 40; // entries opened per ACCT_RATE_MS at most
+export const ACCT_RATE_MS = 1000;
+export const ACCTS_MAX = 3000; // accounts kept (and waiting to be opened) at most
+export const ACCT_MEM_MAX = 2000; // accounts this page remembers (localStorage) at most
+export const ACCT_MEM_KEY = 'phortnite.adminAccounts';
+export const ACCT_SEEN_KEY = 'phortnite.adminAccountsSeen'; // when the ACCOUNTS tab was last opened
+export const BANS_KEY = 'phortnite.adminBans'; // the newest ban list this page signed (ids only)
+const BANS_BACK_MS = 4000; // after a connect: the broker didn't hand back the newest list by then -> it goes back
+const cleanText = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max) : '');
+const int = (v) => (Number.isFinite(v) ? Math.max(0, Math.min(8.64e15, Math.floor(v))) : 0);
 const lineKey = (code, l) => `${code}|${l.ts}|${l.id}|${l.text}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -149,6 +216,24 @@ export class AdminSession {
     this.upBudget = new Budget({ rate: UP_RATE, ms: UP_RATE_MS, queue: 8 });
     this.toastAt = 0;
     this.offUp = app.presence && app.presence.listen ? app.presence.listen(UP_TOPIC, (text) => { this.onUpload(text); }) : null;
+    // accounts (the registry) and the ban list
+    this.accts = new Map(); // rid -> { rid, name, created, seen, level, wins, matches, kills, did, v, suspect, text }
+    this.acctWait = new Map(); // rid -> the newest sealed text waiting to be opened
+    this.acctDrops = { big: 0, junk: 0, full: 0, bad: 0 };
+    this.acctBudget = new Budget({ rate: ACCT_RATE, ms: ACCT_RATE_MS });
+    this.acctTimer = 0;
+    this.acctBusy = false;
+    this.acctFns = [];
+    this.mem = readMem();
+    this.seenAt = readNum(ACCT_SEEN_KEY);
+    this.markFrom = null; // the ACCOUNTS tab open: rows made after this are NEW (seenAt before it was opened)
+    this.myBans = null; // { list, ts, env }: the newest list this page signed
+    this.myBansReady = readMyBans(pubs).then((b) => { if (b && !this.closed && !(this.myBans && this.myBans.ts >= b.ts)) this.myBans = b; });
+    this.offAcct = app.presence && app.presence.listen ? app.presence.listen(REG_FILTER, (text, topic) => { this.onRegistration(text, topic); }) : null;
+    this.connectAt = Date.now(); // (the ban list handed over since then counts for this connection)
+    this.offConnect = app.presence && typeof app.presence.onConnect === 'function'
+      ? app.presence.onConnect(() => { this.connectAt = Date.now(); this.bansBack(); }) : null;
+    this.bansBack(); // (admin mode just started: did the broker keep the newest list?)
     this.refresh();
   }
 
@@ -176,7 +261,7 @@ export class AdminSession {
 
   async sendState(kind, payload = {}) {
     if (this.closed) return null;
-    const now = Date.now();
+    let now = Date.now();
     let args;
     if (kind === 'banner') {
       const mins = Number(payload.minutes) || 0;
@@ -185,10 +270,26 @@ export class AdminSession {
     } else if (kind === 'maintenance') {
       const hours = Math.max(0.1, Math.min(168, Number(payload.hours) || 12));
       args = { on: !!payload.on, text: String(payload.text || '').trim().slice(0, 300), until: payload.on ? now + Math.round(hours * 3600000) : 0 };
+    } else if (kind === 'bans') {
+      args = cleanArgs('bans', { list: payload.list });
+      if (!args) throw new Error('not a ban list');
+      // too long for the brokers: the oldest entries go without their device id (the account stays banned)
+      const room = BANS_TEXT_MAX - 320; // (the rest of the envelope: cmd, ts, n, the signature)
+      for (let i = 0; i < args.list.length && JSON.stringify(args).length > room; i++) if (args.list[i].d) args.list[i] = { r: args.list[i].r };
+      // (a page only takes a newer list: never the same ms twice)
+      now = Math.max(now, this.bansTs() + 1);
     } else throw new Error(`unknown state ${kind}`);
     const env = await makeEnvelope(this.keys.sign, kind, args, '*', now);
     this.sent.add(env.n);
-    return this.app.presence && this.app.presence.publish(STATE_PREFIX + kind, JSON.stringify(env), { retain: true }) ? env : null;
+    const text = JSON.stringify(env);
+    if (kind === 'bans' && text.length > BANS_TEXT_MAX) throw new Error('The ban list is too long.');
+    if (!(this.app.presence && this.app.presence.publish(STATE_PREFIX + kind, text, { retain: true }))) return null;
+    if (kind === 'bans') {
+      this.myBans = { list: args.list.map((e) => ({ ...e })), ts: env.ts, env };
+      writeJson(BANS_KEY, env);
+      this.accountsChanged();
+    }
+    return env;
   }
 
   observeHello(code) { return makeEnvelope(this.keys.sign, 'observe', { code: String(code || '').toUpperCase() }, '*'); }
@@ -223,7 +324,7 @@ export class AdminSession {
         live.add(a.ct);
         if (!this.opened.has(a.ct)) {
           if (opens++ >= MAX_OPENS) return undefined;
-          this.opened.set(a.ct, cleanCard(await openSealed(this.keys.box, a)));
+          this.opened.set(a.ct, await checkedCard(await openSealed(this.keys && this.keys.box, a)));
         }
         return this.opened.get(a.ct);
       };
@@ -245,12 +346,14 @@ export class AdminSession {
       for (const ct of [...this.opened.keys()]) if (!live.has(ct)) this.opened.delete(ct);
       if (this.pks.size > 2000) { this.pks.clear(); this.suspects.clear(); } // (a flood of made-up ids)
       const mine = this.app.adminClient ? cleanCard(this.app.adminClient.card()) : null;
+      if (mine) delete mine.tok; // (this page's own card: its rid is its own)
       if (mine) out.push({ ...mine, me: true, s: mine.phase === 'match' ? 'm' : 'l', seen: Date.now() });
       out.sort((a, b) => (b.me - a.me) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
       this.list = out;
-      const key = JSON.stringify(out.map((p) => [p.id, p.name, p.level, p.account, p.mode, p.phase, p.party, p.v, p.admin, p.s, p.pk, p.suspect, p.muted]));
+      const key = JSON.stringify(out.map((p) => [p.id, p.name, p.level, p.account, p.mode, p.phase, p.party, p.v, p.admin, p.s, p.pk, p.suspect, p.muted, p.rid]));
       if (key !== this.listKey) {
         this.listKey = key;
+        this.accountsChanged(); // (who is online)
         for (const fn of this.fns) {
           try { fn(this.players()); } catch (e) { console.error('admin players', e); }
         }
@@ -408,6 +511,271 @@ export class AdminSession {
     }
   }
 
+  // ------------------------------------------------------------------ accounts (the registry) + the ban list
+  /** A registry entry as it came off the broker (REG_PREFIX + rid): queued for opening, or a deletion. */
+  onRegistration(text, topic) {
+    if (this.closed || typeof topic !== 'string' || !topic.startsWith(REG_PREFIX)) return;
+    const rid = topic.slice(REG_PREFIX.length);
+    if (!RID_RE.test(rid)) { this.drop('junk'); return; }
+    if (!text) {
+      // deleted (its account was deleted on its iPad; or someone wiped it: it comes back when that iPad connects)
+      this.acctWait.delete(rid);
+      if (this.accts.delete(rid)) this.accountsChanged();
+      return;
+    }
+    if (typeof text !== 'string' || text.length > REG_MAX) { this.drop('big'); return; }
+    const had = this.accts.get(rid);
+    if (had && had.text === text) return; // (the same one again)
+    if (!had && !this.acctWait.has(rid) && this.accts.size + this.acctWait.size >= ACCTS_MAX) { this.drop('full'); return; }
+    this.acctWait.set(rid, text);
+    this.pumpAccts();
+  }
+
+  /** Open waiting entries, ACCT_RATE per ACCT_RATE_MS at most (a flood of junk can't stall the iPad). */
+  pumpAccts() {
+    if (this.acctBusy || this.acctTimer || this.closed) return;
+    this.acctBusy = true;
+    (async () => {
+      let changed = false;
+      try {
+        while (this.acctWait.size && !this.closed && this.acctBudget.take()) {
+          const [rid, text] = this.acctWait.entries().next().value;
+          this.acctWait.delete(rid);
+          if (await this.openRegistration(rid, text)) changed = true;
+        }
+      } catch (e) {
+        console.error('admin accounts', e);
+      } finally {
+        this.acctBusy = false;
+        if (changed) this.accountsChanged();
+        if (this.acctWait.size && !this.closed) {
+          const b = this.acctBudget, wait = b.t.length ? b.t[0] + b.ms - b.now() + 5 : 0;
+          this.acctTimer = setTimeout(() => { this.acctTimer = 0; this.pumpAccts(); }, Math.max(20, wait));
+        }
+      }
+    })();
+  }
+
+  /** Open one entry (SEAL_ACCT), check it, keep it. -> true when the list changed. */
+  async openRegistration(rid, text) {
+    let sealed = null;
+    try { sealed = JSON.parse(text); } catch (e) { sealed = null; }
+    if (!regShape(sealed)) { this.drop('junk'); return false; }
+    const reg = cleanRegistration(await openSealed(this.keys && this.keys.box, sealed, SEAL_ACCT, { max: REG_MAX }), rid);
+    if (this.closed) return false;
+    if (!reg) { this.drop('bad'); return false; }
+    // its tok must hash to the topic's rid: everyone can see the rid (it is the topic), only a device
+    // that has the account (or the admin) knows its tok
+    const real = await tokMatches(rid, reg.tok);
+    if (this.closed) return false;
+    const had = this.accts.get(rid), m = this.mem[rid];
+    if (!real || (m && m.tok && m.tok !== reg.tok)) {
+      // a made-up entry under a real account's topic (or, the second check, not the tok first seen
+      // for it): dropped. The account's row, when this page knows it, stays as it was (never the
+      // newcomer's name, stats or iPad), marked: someone tried. Unknown here: nothing is listed.
+      this.drop('bad');
+      if (!had && !(m && (m.tok || m.name))) return false;
+      const old = had || { rid, name: m.name || 'Unknown account', created: m.created || 0, seen: 0, level: 1, wins: 0, matches: 0, kills: 0, did: m.did || '', v: '' };
+      this.accts.set(rid, { ...old, suspect: true, text });
+      return true;
+    }
+    this.memo(rid, { tok: reg.tok, name: reg.name, created: reg.created, did: reg.did });
+    const { tok, ...rest } = reg;
+    this.accts.set(rid, { ...rest, suspect: !!(had && had.suspect), text });
+    return true;
+  }
+
+  drop(why) {
+    this.acctDrops[why] = (this.acctDrops[why] || 0) + 1;
+    const t = Date.now();
+    if (t - (this.dropLog || 0) > 10000) {
+      this.dropLog = t;
+      console.warn('admin accounts: registry entries dropped so far', JSON.stringify(this.acctDrops));
+    }
+  }
+
+  /** What this page remembers about an account (merged in; written to localStorage soon). */
+  memo(rid, patch) {
+    const m = this.mem[rid];
+    this.mem[rid] = { ...(m || {}), ...patch, t: Date.now() };
+    if (!m) this.trimMem();
+    this.saveMemSoon();
+  }
+
+  /** At most ACCT_MEM_MAX remembered: the longest unseen go first, banned accounts last of all. */
+  trimMem() {
+    const ids = Object.keys(this.mem);
+    if (ids.length <= ACCT_MEM_MAX) return;
+    const banned = new Set(this.bans().map((b) => b.r));
+    ids.sort((a, b) => (banned.has(a) - banned.has(b)) || ((this.mem[a].t || 0) - (this.mem[b].t || 0)));
+    for (const id of ids.slice(0, ids.length - ACCT_MEM_MAX)) delete this.mem[id];
+  }
+
+  saveMemSoon() {
+    if (this.memTimer) return;
+    this.memTimer = setTimeout(() => { this.memTimer = 0; this.saveMem(); }, 500);
+  }
+
+  saveMem() {
+    clearTimeout(this.memTimer);
+    this.memTimer = 0;
+    writeJson(ACCT_MEM_KEY, this.mem);
+  }
+
+  /** The rids of the accounts kept on this iPad (the admin's own: never banned from here). */
+  localRids() {
+    const app = this.app, ids = new Set(), out = new Set();
+    try { if (app.accounts && typeof app.accounts.list === 'function') for (const p of app.accounts.list()) if (p && p.id) ids.add(p.id); } catch (e) { /* none */ }
+    const acc = app.activeAccount;
+    if (acc && !acc.guest && acc.id && acc.id !== 'guest') ids.add(acc.id);
+    for (const id of ids) {
+      const c = cachedIds(id);
+      if (c) out.add(c.rid);
+      else accountIds(id).then(() => this.accountsChanged(), () => {});
+    }
+    return out;
+  }
+
+  accounts() {
+    const bans = new Map(this.bans().map((b) => [b.r, b]));
+    const online = new Set(this.list.map((c) => c.rid).filter(Boolean));
+    const mine = this.localRids();
+    const from = this.markFrom === null ? this.seenAt : this.markFrom;
+    const row = (e, extra = {}) => {
+      const banned = bans.has(e.rid), m = this.mem[e.rid] || {};
+      return {
+        rid: e.rid, name: e.name, created: e.created, seen: e.seen, level: e.level, wins: e.wins, matches: e.matches, kills: e.kills,
+        did: e.did, v: e.v, online: online.has(e.rid), banned, suspect: !!e.suspect, isNew: e.created > from, gone: false,
+        mine: mine.has(e.rid), reason: banned ? m.reason || '' : '', bannedAt: banned ? m.at || 0 : 0, bannedLive: banned && !!m.live, ...extra,
+      };
+    };
+    const out = [...this.accts.values()].map((e) => row(e));
+    // banned, but its entry is gone from the broker: still listed (from this page's memory), so the ban can come off
+    for (const b of bans.values()) {
+      if (this.accts.has(b.r)) continue;
+      const m = this.mem[b.r] || {};
+      // (did: the raw one this page remembers; the list's d is a one-way hash)
+      out.push(row({ rid: b.r, name: m.name || 'Unknown account', created: m.created || 0, seen: 0, level: 1, wins: 0, matches: 0, kills: 0, did: m.did || '', v: '' }, { gone: true, isNew: false }));
+    }
+    out.sort((a, b) => (b.created - a.created) || a.name.localeCompare(b.name) || a.rid.localeCompare(b.rid));
+    return out;
+  }
+
+  onAccounts(fn) {
+    this.acctFns.push(fn);
+    return () => { this.acctFns = this.acctFns.filter((f) => f !== fn); };
+  }
+
+  /** The panel hears the new list a moment later (many entries at once: one redraw). */
+  accountsChanged() {
+    if (this.acctNotify || this.closed || !this.acctFns.length) return;
+    this.acctNotify = setTimeout(() => {
+      this.acctNotify = 0;
+      if (this.closed) return;
+      const list = this.accounts();
+      for (const fn of this.acctFns) {
+        try { fn(list); } catch (e) { console.error('admin accounts', e); }
+      }
+    }, 150);
+  }
+
+  /** The ACCOUNTS tab's badge: accounts made since it was last opened. */
+  newAccounts() {
+    let n = 0;
+    for (const e of this.accts.values()) if (e.created > this.seenAt) n++;
+    return n;
+  }
+
+  /** The ACCOUNTS tab is on screen. fresh: just opened (the rows made since last time stay NEW while it is). */
+  seenAccounts({ fresh = true } = {}) {
+    if (fresh || this.markFrom === null) this.markFrom = this.seenAt;
+    this.seenAt = Date.now();
+    writeJson(ACCT_SEEN_KEY, this.seenAt);
+  }
+
+  accountStats() {
+    return { total: this.accts.size, waiting: this.acctWait.size, dropped: { ...this.acctDrops } };
+  }
+
+  /** The newest ban list this page has: its own last one, or a newer one from the broker. */
+  bansNow() {
+    const c = this.app.adminClient, st = c && c.states ? c.states.bans : null;
+    const mine = this.myBans;
+    if (mine && (!st || mine.ts >= st.ts)) return { list: mine.list, ts: mine.ts };
+    return st && st.args && Array.isArray(st.args.list) ? { list: st.args.list, ts: st.ts } : { list: [], ts: 0 };
+  }
+
+  bans() { return this.bansNow().list.map((e) => (e.d ? { r: e.r, d: e.d } : { r: e.r })); }
+
+  bansTs() { return this.bansNow().ts; }
+
+  /** A newer ban list came in (js/admin/client.js). */
+  bansChanged() { this.accountsChanged(); }
+
+  /**
+   * After a connect (and when admin mode starts): unless THIS connection handed over the newest
+   * list this page has, exactly as signed (js/admin/client.js heardBans), it goes back: the broker
+   * forgot it, someone deleted or spoiled it or put an older one there, or this page is on another
+   * of the free brokers now (they don't share messages). Still signed: pages check it as usual, and
+   * one that has it already ignores it.
+   */
+  bansBack() {
+    clearTimeout(this.bansTimer);
+    this.bansTimer = setTimeout(async () => {
+      await this.myBansReady;
+      const mine = this.myBans, c = this.app.adminClient, st = c && c.states ? c.states.bans : null;
+      if (this.closed) return;
+      // the newest signed list: this page's own last one, or a newer one from the broker
+      const best = mine && mine.env && !(st && st.env && st.ts > mine.ts) ? mine.env : st && st.env ? st.env : null;
+      if (!best) return;
+      const text = JSON.stringify(best), h = c && c.heardBans;
+      if (h && h.at >= this.connectAt && h.text === text) return;
+      if (this.app.presence) this.app.presence.publish(STATE_PREFIX + 'bans', text, { retain: true });
+    }, BANS_BACK_MS);
+  }
+
+  /** Ban an account (see the top): Promise<{ env, online, sent } | null>. */
+  async banAccount(rid, { did = '', reason = '', name = '' } = {}) {
+    if (this.closed) return null;
+    if (typeof rid !== 'string' || !RID_RE.test(rid)) throw new Error('That is not an account.');
+    if (this.localRids().has(rid)) throw new Error("That's an account on this iPad (yours): it can't be banned from here.");
+    const e = this.accts.get(rid), m = this.mem[rid] || {};
+    // its iPad's id (as its entry sealed it to this page), on the public list only one-way hashed
+    const raw = [did, e && e.did, m.did].find((x) => typeof x === 'string' && DID_RE.test(x)) || '';
+    const d = raw ? await banDid(raw) : '';
+    if (this.closed) return null;
+    const list = this.bans().filter((b) => b.r !== rid);
+    if (list.length >= BANS_MAX) throw new Error(`The ban list is full (${BANS_MAX} bans): take an old one off first.`);
+    list.push(d ? { r: rid, d } : { r: rid });
+    const why = cleanText(reason, 120);
+    // online right now: the live ban too, at once, sent just before the list (it carries the reason;
+    // a ban from the list itself says "The admin banned this account")
+    const live = this.list.filter((c) => c.rid === rid && !c.me);
+    let sent = 0;
+    for (const c of live) {
+      try { if (await this.send('ban', { reason: why }, c.id)) sent++; } catch (err) { /* an older game: the list bans it */ }
+    }
+    const env = await this.sendState('bans', { list });
+    if (!env) return null;
+    const nm = cleanName(name) || (e && e.name) || m.name || '';
+    // (live: the ban reached a page online with it, so that iPad is banned now: REMOVE BAN says so)
+    this.memo(rid, { reason: why, at: Date.now(), live: live.length ? Date.now() : 0, ...(nm ? { name: nm } : {}) });
+    this.saveMem();
+    this.accountsChanged();
+    return { env, online: live.length, sent };
+  }
+
+  /** Take an account off the ban list: Promise<envelope | null>. */
+  async unbanAccount(rid) {
+    if (this.closed) return null;
+    const env = await this.sendState('bans', { list: this.bans().filter((b) => b.r !== rid) });
+    if (!env) return null;
+    const m = this.mem[rid];
+    if (m) { delete m.reason; delete m.at; delete m.live; this.saveMem(); }
+    this.accountsChanged();
+    return env;
+  }
+
   /** Keep (true) or forget (false) the keys on this iPad. */
   async remember(on) {
     if (on) await rememberKeys(this.keys, this.cfg); else await forgetKeys();
@@ -428,6 +796,17 @@ export class AdminSession {
     this.reportList = [];
     this.logs.clear();
     this.fns = [];
+    // accounts
+    if (this.offAcct) this.offAcct();
+    if (this.offConnect) this.offConnect();
+    this.offAcct = this.offConnect = null;
+    clearTimeout(this.acctTimer);
+    clearTimeout(this.acctNotify);
+    clearTimeout(this.bansTimer);
+    clearTimeout(this.acctBudget.timer);
+    if (this.memTimer) this.saveMem();
+    this.acctFns = [];
+    this.acctWait.clear();
     this.keys = null;
     this.opened.clear();
   }
@@ -440,3 +819,56 @@ export class AdminSession {
 }
 
 function copyLog(l) { return { ...l, lines: l.lines.map((x) => ({ ...x })) }; }
+
+/**
+ * A peer's opened card, cleaned (js/admin/commands.js cleanCard): its rid kept only when the
+ * card's tok proves it (registry.js tokMatches; rids are public topic names, so a made-up card
+ * could name anyone's account), and the tok itself dropped (never shown, never kept).
+ */
+async function checkedCard(raw) {
+  const card = cleanCard(raw);
+  if (!card) return null;
+  const { tok, ...out } = card;
+  if (out.rid && !(await tokMatches(out.rid, tok))) delete out.rid;
+  return out;
+}
+
+function localStore() { try { return globalThis.localStorage || null; } catch (e) { return null; } }
+function readJson(key) {
+  try { const st = localStore(); return st ? JSON.parse(st.getItem(key) || 'null') : null; } catch (e) { return null; }
+}
+function writeJson(key, v) {
+  try { const st = localStore(); if (st) st.setItem(key, JSON.stringify(v)); } catch (e) { /* private mode: this visit only */ }
+}
+function readNum(key) { const v = readJson(key); return Number.isFinite(v) ? v : 0; }
+
+/** What the admin's page remembers per account (ACCT_MEM_KEY), cleaned. */
+function readMem() {
+  const out = Object.create(null), d = readJson(ACCT_MEM_KEY);
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return out;
+  for (const rid of Object.keys(d).slice(0, ACCT_MEM_MAX * 2)) {
+    const m = d[rid];
+    if (!RID_RE.test(rid) || !m || typeof m !== 'object') continue;
+    const o = { t: int(m.t) };
+    if (typeof m.tok === 'string' && TOK_RE.test(m.tok)) o.tok = m.tok;
+    if (cleanName(m.name)) o.name = cleanName(m.name);
+    if (int(m.created)) o.created = int(m.created);
+    if (typeof m.did === 'string' && DID_RE.test(m.did)) o.did = m.did;
+    if (typeof m.reason === 'string') o.reason = cleanText(m.reason, 120);
+    if (int(m.at)) o.at = int(m.at);
+    if (int(m.live)) o.live = int(m.live);
+    out[rid] = o;
+  }
+  return out;
+}
+
+/** The newest ban list this page signed (BANS_KEY): { list, ts, env } when the admin key still signs it. */
+async function readMyBans(pubs) {
+  try {
+    const env = readJson(BANS_KEY);
+    if (!env || typeof env !== 'object' || env.cmd !== 'bans' || env.to !== '*' || !Number.isFinite(env.ts)) return null;
+    const args = cleanArgs('bans', env.args);
+    if (!args || !(await verifyCommand(pubs.signPub, env))) return null;
+    return { list: args.list, ts: env.ts, env };
+  } catch (e) { return null; }
+}

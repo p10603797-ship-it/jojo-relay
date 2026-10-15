@@ -203,8 +203,9 @@ removes the Face ID setup. A ban hides Face ID; the unban brings it back.
 
 ## Admin
 
-Philip (the admin) can see who's online and moderate the game, from any iPad, with the admin
-password. Players are told this on the *Who's playing?* screen, and moderation is never secret:
+Philip (the admin) can see who's online and every account's name, level and wins, and moderate the
+game, from any iPad, with the admin password. Players are told this on the *Who's playing?* screen
+(and every account once more in the lobby, see *Accounts and the ban list*), and moderation is never secret:
 every time the admin does something to a player, that player sees it on screen ("The admin removed
 you from the match.", "📣 Message from the admin: …", "🚫 You've been banned by the admin"…). On
 the locked website a banned device's ban screen says the admin banned it (and why), not "too many
@@ -221,8 +222,9 @@ wrong passwords".
 * **🛡 ADMIN → PLAYERS** (everyone online, live, with their name, level, guest or account, lobby
   or match, party code and size, host or member, mode, game version and how long they've been
   online; tap a player for the buttons): **spectate** their match, send a **message**, **kick**
-  someone back to their own lobby, **ban** a device (it gets the lock screen's ban screen, and
-  Philip's unban code lifts it like any other ban), **rename** them, **give XP** (up to 100,000),
+  someone back to their own lobby, **ban** them (their iPad gets the lock screen's ban screen; a
+  signed-in player's *account* goes on the ban list too, exactly like ACCOUNTS → 🚫 BAN, so every
+  iPad with it is banned; a guest: only that iPad; lifting it: see ACCOUNTS below), **rename** them, **give XP** (up to 100,000),
   **reset stats**, or **reload** their game. For a party host: **end the match** (everyone back to the lobby) or **pause / resume** it
   during a match, or **set the mode** in the party's lobby; everyone in that party sees that the
   admin did it (kicking or banning a host ends their party, and the others are told why). A row
@@ -255,6 +257,69 @@ wrong passwords".
   admin's key on the relay; anyone *could* seal something to his public key, so the panel marks ⚠
   whatever wasn't sealed by the game it claims to come from (each game seals its uploads with its
   own key, the one in its player card).
+* **🛡 ADMIN → ACCOUNTS**: everyone who ever made an account (guests never show up), newest first,
+  with a **NEW** badge for the ones made since Philip last looked, and a search box. Each row is the
+  account's name (tap it) and 🟢 online / 🚫 banned / ⚠ suspect, when it was made and last seen,
+  its level and wins. Tapping a name opens a sheet: **🚫 BAN** (an optional reason, then *are you
+  sure?*) puts the account and its iPad on the ban list: if they are online right now their iPad
+  shows the ban screen at once ("Ruby is banned."), otherwise the next time they open Phortnite
+  ("Ruby will be banned the next time they open Phortnite."). To lift it: **✓ REMOVE BAN** first,
+  then Philip's unban code typed on that iPad (in the other order, or the code alone, the game bans
+  the iPad again as soon as it opens, because the list still names it). REMOVE BAN on its own stops
+  a ban that hasn't happened yet (the panel says when the ban already reached their iPad, which then
+  needs the code). Online accounts also get **✉ MESSAGE** and **👢 KICK**. The accounts on Philip's
+  own iPad can't be banned from there. The 🚫 BAN in PLAYERS does the same for a signed-in player.
+
+### Accounts and the ban list
+
+When someone makes an account, its name goes to the admin, and players are told: the
+create-account screen says *🛡 Your account name is sent to the admin (Philip) so he can keep
+Phortnite fair.*, the account panel says what he can see (name, level, wins and when it last played,
+even while they're offline) and that a ban locks the whole iPad, every profile on it, and every
+account that didn't see the create screen (made before this, signed in with a password, brought over
+with a code) is told once on that iPad with a long note in the lobby (*🛡 New: Philip (the admin) now
+keeps a list of accounts…*). Guests are never sent. Each game keeps one small entry for its signed-in
+account on the same free public relay as the player count, **sealed to the admin's key** like the
+player cards (name, level, wins, matches, eliminations, when it was made and last played, game
+version, and a random id for the iPad, made once and kept in that iPad's storage); the relay only
+ever sees scrambled data under an id worked out from the account (`js/accounts/registry.js`). As
+seldom as works, since every entry on a fixed topic says "this account is playing now" to anyone
+listening: the first time an iPad sees the account, right after a rename, new stats at most every 6
+hours and a "last played" refresh once a day; a reload or a reconnect alone sends nothing (the game
+listens for its own entry and only puts it back when the relay lost it or something else is there).
+Deleting an account on the iPad deletes its entry too (or the next time the iPad is online). Moving
+an account to another iPad with a code keeps it the same account, but a **banned** account can't be
+brought over (*This account was banned by the admin (Philip), so it can't be brought over to this
+iPad.*), and one the ban list catches later on an iPad it was moved to is taken off that iPad (and
+the player told), never that iPad banned: a friend who typed in a banned kid's code keeps their own
+accounts.
+
+The ban list is one more **signed** message on the relay (like the banner): only account ids and
+one-way scrambled iPad ids (so nobody can read an iPad's id off the relay and copy it into their own
+game), never names or reasons (those stay on Philip's iPad). Every game checks it: when its iPad's
+id is on it, or **any** account made on that iPad (not only the one playing), the iPad gets the same
+ban as the admin's 🚫 BAN button. A ban list never runs out by itself, a game takes it even when the
+iPad's date is set back, and a game never goes back to an older one it saw. Philip's unban code
+doesn't take anyone off the list: REMOVE BAN does.
+
+Honest limits: the entries live on the public relay, which keeps them only as long as it likes. If
+it forgets them, each game puts its own back the next time it connects, so the ACCOUNTS list fills in
+again as players come back (an account nobody opens again stays missing until then; one Philip
+banned stays in his list either way, from his iPad's memory, so he can still remove the ban). Every
+entry has to prove it belongs to its account: it carries a token that only that account's iPad (and
+the admin) can know, and the account's id on the relay is worked out from that token, so Philip's
+iPad throws away any entry for an account that wasn't made by that account's iPad. A made-up entry
+can't rename a real account, change its stats or point its row (and a ban) at another iPad; the row
+is marked ⚠ when someone tried. Same for the player cards: a card can't claim someone else's account.
+What anyone on the relay *can* still do: delete an entry, or put back an older entry of the same
+account (an earlier name or stats), until that account's iPad next connects; and add made-up
+accounts of their own, which ban nobody else. The ban list is on the public relay too: anyone there
+can delete it, or put back an older list Philip signed. A game that hasn't seen his newer list then
+misses a ban, or gets a ban he already removed (his unban code lifts it). A game that has seen the
+newer list never goes back to an older one, and Philip's iPad puts his newest list back every time
+it connects while admin mode is open. The free relays don't share messages, so a list he published
+while on a backup relay can stay there. The list is read on Philip's iPad a few dozen entries a
+second (and at most 3,000 accounts are kept).
 
 How it works: `public/admin.json` holds two public keys and the matching private keys *encrypted*
 with the admin password (PBKDF2-SHA256, 600,000 rounds, then AES-256-GCM), so it is safe to publish.
@@ -274,7 +339,11 @@ arrive (the panel only says *sent*); and someone who recorded one of the admin's
 banners or maintenance messages can put it back on the relay after Philip changed it. A game that
 already saw the newer one never goes back (it remembers), and while Philip's admin page is open it
 puts his newest one back at once; otherwise a game opened later can show that old banner (a week
-at most) or maintenance (until the time it was set for, 12 hours unless chosen otherwise).
+at most) or maintenance (until the time it was set for, 12 hours unless chosen otherwise). The same
+goes for the ban list, which never runs out: an older list put back on the relay is taken by a game
+that never saw the newer one, so an iPad can still be banned after ✓ REMOVE BAN if it wasn't opened
+in between (Philip's unban code lifts it as usual), and a new ban can be held off until Philip's
+admin page is open again.
 
 ```bash
 node tools/admin.mjs new --out public/admin.json     # a new admin key; the password is printed ONCE

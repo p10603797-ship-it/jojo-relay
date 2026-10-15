@@ -260,7 +260,7 @@ test('state messages: only on their own topic, signed; banner and maintenance ru
   assert.equal(stateActive('banner', { text: 'forever', id: 'x', until: 0 }, now + STATE_MAX_MS + 1, now), false, "but a week at most: a replayed old one runs out");
   assert.equal(stateActive('banner', { text: 'far', id: 'x', until: 8e15 }, now + STATE_MAX_MS + 1, now), false);
   assert.equal(MAINT_MAX_MS, STATE_MAX_MS);
-  assert.deepEqual(STATE_TOPICS, [STATE_PREFIX + 'banner', STATE_PREFIX + 'maintenance'], 'two exact topics, no wildcard');
+  assert.deepEqual(STATE_TOPICS, [STATE_PREFIX + 'banner', STATE_PREFIX + 'maintenance', STATE_PREFIX + 'bans'], 'three exact topics (the ban list too), no wildcard');
   assert.equal(stateActive('banner', { text: '', id: '', until: 0 }, now), false, 'cleared');
   const m = cleanArgs('maintenance', { on: true, text: 'Back soon', until: now + 3600000 });
   assert.equal(stateActive('maintenance', m, now, now), true);

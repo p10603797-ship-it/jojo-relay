@@ -6,9 +6,11 @@
 //   CMD_TOPIC                   'phortnite/admin/v1/cmd'           live commands (not retained)
 //   STATE_PREFIX + 'banner'     'phortnite/admin/v1/state/banner'   retained: the admin's banner
 //   STATE_PREFIX + 'maintenance'                                    retained: maintenance on/off
+//   STATE_PREFIX + 'bans'                                           retained: the admin's ban list
 //   UP_TOPIC                    'phortnite/admin/v1/up'            uploads from pages (not retained)
-// (pages subscribe to those two exact topics, never a wildcard: junk parked under made-up state
-// topics never reaches an iPad; only the admin's page subscribes to UP_TOPIC)
+// (pages subscribe to those exact topics, never a wildcard: junk parked under made-up state topics
+// never reaches an iPad; only the admin's page subscribes to UP_TOPIC, and to the account registry
+// REG_PREFIX + '+', js/accounts/registry.js; a page listens only to its own account's entry)
 // Envelope (js/admin/keys.js signs it): { v: 1, cmd, args, to, ts, n, sig }
 //   to   a page's presence id (random per page load), or '*' (only for ALL_OK commands)
 //   ts   ms since 1970 when it was signed; n 12 random bytes (base64), never used twice
@@ -24,7 +26,25 @@
 // (for its id) the sealed args open with its own key.
 // State messages (retained) may be older: they carry their own 'until' (a banner at most a week
 // from its signing too), and a page only ever moves forward (js/admin/client.js keeps the newest it
-// accepted, across reloads).
+// accepted, across reloads). A state signed more than 2 min in the future is refused (a wrong clock
+// somewhere), except a ban list (see below).
+// The ban list ('bans', signed like the others): args { list: [{ r, d? }] } at most BANS_MAX, r an
+// account's registry id (16 hex, js/accounts/registry.js), d the one-way hash of a device id
+// (registry.js banDid: 16 hex, so nobody can read an iPad's id off the relay and copy it). No names,
+// no reasons: it is public on the broker (the admin's page keeps those for itself). It never runs
+// out by age (a ban stands until Philip takes it off the list), but a page still only moves
+// forward, and it is taken even when signed "in the future": the admin's page signs each list
+// strictly after the last one, so only an iPad whose date was set back would see that, and it must
+// not slip past the list. A page whose device id is on it, or that has ANY account on this device
+// (every profile, not only the signed-in one) whose rid is on it, bans the device exactly like the
+// live 'ban' (js/admin/client.js checkBans; a banned account brought over with a transfer code is
+// refused, or taken off that iPad again: never its new iPad banned). Taking a rid off the list
+// stops a ban that hasn't happened yet (almost always: an older list someone puts back on the relay
+// can still reach an iPad that hasn't opened Phortnite since). A device already banned stays banned
+// until Philip takes the account off the list AND types his unban code on it: the code alone
+// doesn't last while the list still names it (the game bans the iPad again as soon as it opens).
+// Its published text is at most BANS_TEXT_MAX (the admin's page leaves out the oldest entries'
+// device ids to fit).
 //
 // Party chat moderation (stage 3), always open: the player is told every time.
 //   mute {minutes 1..MAX_MUTE_MIN, reason}   that page's chat is muted ("🔇 The admin muted your chat")
@@ -57,8 +77,14 @@
 //     .seen(n)           -> was this nonce accepted here already?
 //   partyNote(signPub, env, code, now)   -> the public args of a party command passed on by the
 //                                           host's page for party `code`, signed by the admin | null
-//   stateActive(kind, args, now, ts)     -> is a banner / maintenance state in force right now?
+//   stateActive(kind, args, now, ts)     -> is a banner / maintenance state in force right now? (a
+//                                           ban list: always, it never runs out by age)
+//   stateTextMax(kind)                   -> the longest state message a page reads for that kind
+//   BANS_MAX, BANS_TEXT_MAX              the ban list's entries / published text, at most
 //   cleanCard(obj)                       -> the player card fields the admin's panel shows | null
+//                                           (rid + tok: the signed-in account's registry id and its
+//                                           token, not for a guest; the admin's page keeps the rid
+//                                           only when the tok proves it, js/admin/session.js)
 //   makeObserverCheck(signPub, opts)     -> async (env, code) => bool (stage E: a party host
 //                                           checks an observer's signed 'observe' hello with it)
 //   UP_TOPIC, UP_MAX, UP_LINES, UP_CONTEXT, UP_KINDS, MAX_MUTE_MIN
@@ -68,10 +94,11 @@
 //   cleanChatLine(obj)                    -> one chat line, cleaned and capped | null
 import { signCommand, verifyCommand, randomNonce, sealToAdmin, openSealed, SEAL_PAGE, SEAL_UP } from './keys.js';
 import { cleanChat, quickText, QUICK_CHAT, MAX_CHAT } from '../../shared/chatFilter.js';
+import { RID_RE, TOK_RE, BDID_RE } from '../accounts/registry.js';
 
 export const CMD_TOPIC = 'phortnite/admin/v1/cmd';
 export const STATE_PREFIX = 'phortnite/admin/v1/state/';
-export const STATE_KINDS = Object.freeze(['banner', 'maintenance']);
+export const STATE_KINDS = Object.freeze(['banner', 'maintenance', 'bans']);
 export const STATE_TOPICS = Object.freeze(STATE_KINDS.map((k) => STATE_PREFIX + k));
 /** Commands sent live on CMD_TOPIC (every page; party ones only on the party host's page). */
 export const LIVE_CMDS = Object.freeze(['reload', 'message', 'kick', 'ban', 'rename', 'grant', 'resetStats', 'end', 'pause', 'mode', 'mute', 'unmute', 'chatlog']);
@@ -88,6 +115,12 @@ export const MAX_MUTE_MIN = 10080; // the longest chat mute: a week
  */
 export const STATE_MAX_MS = 7 * 86400000;
 export const MAINT_MAX_MS = STATE_MAX_MS;
+/** The ban list: entries at most, and its signed message's text at most (UP_MAX: what the brokers carry). */
+export const BANS_MAX = 500;
+export const BANS_TEXT_MAX = 16000;
+const STATE_TEXT = { banner: 4000, maintenance: 4000, bans: BANS_TEXT_MAX };
+/** The longest state message (as published) a page reads for kind: longer is junk, never parsed. */
+export const stateTextMax = (kind) => STATE_TEXT[kind] || 4000;
 /** What stays in the clear in a command for one page (the party checks it): the rest is sealed. */
 export const PUBLIC_ARGS = Object.freeze({ end: ['code'], pause: ['code', 'on'], mode: ['code', 'modeId'], kick: ['code'], ban: ['code'] });
 const NONCE_RE = /^[A-Za-z0-9+/]{16}$/; // 12 bytes in base64
@@ -128,8 +161,28 @@ export function cleanArgs(cmd, args) {
       return { on: a.on, text: cleanText(a.text, 300), until: int(a.until, 0, 8.64e15) || 0 };
     }
     case 'observe': return typeof a.code === 'string' && CODE_RE.test(a.code) ? { code: a.code } : null;
+    case 'bans': return cleanBans(a.list);
     default: return null;
   }
+}
+
+/**
+ * The ban list's args: { list: [{ r, d? }] } (malformed entries dropped, the same r once: the first,
+ * with a device id from a later one if it had none), at most BANS_MAX. null when list isn't a list.
+ * d is a hashed device id (BDID_RE, never a raw one: a raw did can't appear on a list).
+ */
+function cleanBans(list) {
+  if (!Array.isArray(list)) return null;
+  const out = new Map();
+  for (const e of list.slice(0, BANS_MAX * 4)) {
+    if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.r !== 'string' || !RID_RE.test(e.r)) continue;
+    if (e.d !== undefined && e.d !== '' && (typeof e.d !== 'string' || !BDID_RE.test(e.d))) continue;
+    const had = out.get(e.r);
+    if (had) { if (!had.d && e.d) had.d = e.d; continue; }
+    if (out.size >= BANS_MAX) continue;
+    out.set(e.r, e.d ? { r: e.r, d: e.d } : { r: e.r });
+  }
+  return { list: [...out.values()] };
 }
 
 /**
@@ -151,9 +204,10 @@ export async function makeEnvelope(signKey, cmd, args = {}, to = '*', now = Date
   return signCommand(signKey, { v: 1, cmd, args: signed, to, ts: Math.floor(now), n: randomNonce() });
 }
 
-/** Is a banner / maintenance state (its clean args, signed at ts) in force at `now`? */
+/** Is a banner / maintenance state (its clean args, signed at ts) in force at `now`? A ban list always is. */
 export function stateActive(kind, args, now = Date.now(), ts = now) {
   if (!args) return false;
+  if (kind === 'bans') return Array.isArray(args.list); // (never runs out by age)
   // (a banner "until cleared" too: never longer than STATE_MAX_MS from its signing)
   if (kind === 'banner') return !!args.text && now < Math.min(args.until || Infinity, ts + STATE_MAX_MS);
   if (kind === 'maintenance') return !!args.on && now < args.until && args.until - ts <= STATE_MAX_MS;
@@ -291,8 +345,13 @@ export class CommandGate {
   async state(env, kind) {
     if (!shaped(env)) return { ok: false, why: 'shape' };
     if (!STATE_KINDS.includes(kind) || env.cmd !== kind || env.to !== '*') return { ok: false, why: 'cmd' };
-    // (a state signed more than 2 min in the future: a wrong clock somewhere, not a real state)
-    if (env.ts - this.now() > this.maxAge) return { ok: false, why: 'future' };
+    // (a state signed more than 2 min in the future: a wrong clock somewhere, not a real state.
+    // Not for a ban list: it never runs out by age, and the admin's page signs each one strictly
+    // after the last (js/admin/session.js sendState), so one "in the future" can only be the
+    // admin's own. Refusing it would let an iPad whose date was set back skip every list, and one
+    // signing on a wrongly-ahead admin clock would freeze the list for everyone (each later one is
+    // that ts + 1). Only forward still holds: js/admin/client.js onState's mark.)
+    if (kind !== 'bans' && env.ts - this.now() > this.maxAge) return { ok: false, why: 'future' };
     const args = cleanArgs(kind, env.args);
     if (!args) return { ok: false, why: 'args' };
     const why = await this.check(env, 'state');
@@ -339,6 +398,10 @@ export function cleanCard(c) {
     pk: typeof c.pk === 'string' && /^[A-Za-z0-9+/]{87}=$/.test(c.pk) ? c.pk : null,
     // that page's chat is muted until then (ms since 1970; only while it is)
     ...(int(c.muted, 1, 8.64e15) ? { muted: int(c.muted, 1, 8.64e15) } : {}),
+    // the signed-in account's registry id and token (js/accounts/registry.js): links the player to
+    // ACCOUNTS. The token proves the rid (rids are public topic names): the admin's page checks it
+    // and drops both (js/admin/session.js refresh); never shown
+    ...(typeof c.rid === 'string' && RID_RE.test(c.rid) ? { rid: c.rid, ...(typeof c.tok === 'string' && TOK_RE.test(c.tok) ? { tok: c.tok } : {}) } : {}),
   };
 }
 

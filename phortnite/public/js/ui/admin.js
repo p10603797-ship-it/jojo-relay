@@ -1,8 +1,9 @@
 // The admin panel (Philip only): the lobby's 🛡 ADMIN button opens it (app.adminPanel.open, wired
-// in js/ui/adminLogin.js). Three tabs:
+// in js/ui/adminLogin.js). Four tabs:
 //   PLAYERS   everyone online, from their sealed player cards (js/admin/session.js), live. Tap a
 //             player for what the admin can do: SPECTATE their match (js/ui/adminWatch.js), MESSAGE,
-//             RENAME, GIVE XP, RESET STATS, RELOAD, KICK, BAN, 💬 CHAT LOG (their game's chat lines,
+//             RENAME, GIVE XP, RESET STATS, RELOAD, KICK, BAN (a signed-in player's ACCOUNT goes on
+//             the ban list too, the same as ACCOUNTS → BAN; a guest: only that iPad), 💬 CHAT LOG (their game's chat lines,
 //             in a sheet), 🔇 MUTE CHAT / 🔈 UNMUTE CHAT; on a party host's page also END MATCH and
 //             PAUSE / RESUME (during a match) or SET MODE (in the party's lobby): the room runs on
 //             that page. A row whose card came with two different keys is marked: someone is faking
@@ -15,6 +16,16 @@
 //             10 min / 1 hour / 1 day, unmuted, messaged, or their chat log fetched. The tab's badge
 //             counts new reports. Uploads are only "as that page reported them": one that wasn't
 //             sealed by the page it names is marked ⚠. Every text here is escaped.
+//   ACCOUNTS  everyone who made an account (never guests), newest first, from the account registry
+//             (js/accounts/registry.js, js/admin/session.js accounts()); a NEW badge counts the ones
+//             made since the tab was last opened, and a search box finds a name. Each row: the name
+//             as a big button, and 🟢 online / 🚫 banned / ⚠ suspect, when it was made and last seen,
+//             level and wins. Tap a name: a sheet with 🚫 BAN (an optional reason, then "are you
+//             sure?"): the account (and its iPad) goes on the signed ban list, so it is banned at once
+//             when online, else the next time it opens Phortnite; ✓ REMOVE BAN takes it off (a ban that
+//             hasn't happened yet never does; an iPad already banned then needs the unban code typed
+//             on it: REMOVE BAN first, the code after, or the game bans it again); online:
+//             ✉ MESSAGE and 👢 KICK too. The admin's own accounts (on this iPad) can't be banned here.
 // Every command is signed with the admin key on this iPad and every player is told on screen what
 // the admin did. Commands are live: a page that is offline at that moment never gets one, so the
 // panel says "sent", never "done". Asking twice (confirm) happens right in the panel: it never
@@ -29,6 +40,7 @@ const BANNER_TIMES = [[5, '5 MIN'], [30, '30 MIN'], [120, '2 HOURS'], [0, 'UNTIL
 const XP_PICKS = [100, 500, 1000, 5000];
 const MUTE_PICKS = [[10, '10 MIN'], [60, '1 HOUR'], [1440, '1 DAY']];
 const PARTY_SHOWN = 40; // a party's newest lines shown (SHOW ALL: every line kept)
+const ACCTS_SHOWN = 100; // account rows drawn at first (SHOW MORE: the next ones; search finds any)
 const lineKey = (code, l) => `${code}|${l.ts}|${l.id}|${l.text}`;
 const CATS = { br: 'Battle Royale', team: 'Team', party: 'Party games', mutators: 'Mutators', builders: 'Builders', practice: 'Practice', places: 'Places' };
 
@@ -41,14 +53,41 @@ function ago(ms) {
   return `${h} h${m % 60 ? ` ${m % 60} min` : ''}`;
 }
 
+/** 'just now', '5 min ago', '3 h ago', '2 days ago' */
+function since(ms) {
+  const m = Math.floor(Math.max(0, ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
+}
+
+/** An account row's small details (every value escaped or a number). */
+function acctChips(a, now) {
+  const c = [];
+  if (a.isNew) c.push('<span class="adm-anew">NEW</span>');
+  if (a.online) c.push('<span class="adm-aon">🟢 online</span>');
+  if (a.banned) c.push('<span class="adm-aban">🚫 banned</span>');
+  if (a.suspect) c.push('<span class="adm-warn">⚠ suspect</span>');
+  if (a.mine) c.push('<span>📱 this iPad</span>');
+  if (a.gone) c.push('<span>not on the relay any more</span>');
+  if (a.created) c.push(`<span>made ${since(now - a.created)}</span>`);
+  if (a.seen && !a.online) c.push(`<span>seen ${since(now - a.seen)}</span>`);
+  if (!a.gone) c.push(`<span>Lv ${a.level | 0}</span>`, `<span>🏆 ${a.wins | 0} win${a.wins === 1 ? '' : 's'}</span>`);
+  return c.join('');
+}
+
 function clock(t) {
   if (!(t > 0)) return '';
   try { return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; }
 }
 
-/** The short summary chips of a player card. */
-function metaHtml(p, now) {
+/** The short summary chips of a player card (onList: its account is on the ban list). */
+function metaHtml(p, now, onList = false) {
   const chips = [];
+  if (onList) chips.push('🚫 On your ban list');
   chips.push(`Lv ${p.level | 0}`);
   chips.push(p.account === 'guest' ? 'Guest' : p.account ? 'Account' : 'Choosing a profile');
   chips.push(p.phase === 'match' ? '🎮 In a match' : '🏠 Lobby');
@@ -85,21 +124,30 @@ export class AdminPanel {
     this.chatLines = new Map(); // row key -> { code, line } (the last render)
     this.chatDirty = false;
     this.sheetEl = null;
+    // ACCOUNTS tab
+    this.offAccts = null;
+    this.acctFind = ''; // the search box
+    this.acctShow = ACCTS_SHOWN;
+    this.acctKey = ''; // the list as last drawn (drawn again only when it changed)
+    this.acctSel = ''; // the account whose sheet is open
+    this.acctForm = ''; // its open form: 'ban' | 'msg' | 'kick'
+    this.acctNote = null; // { text, ok }: what the last action did, in the sheet
   }
 
   get session() { return this.app.admin; }
 
-  /** 🛡 ADMIN: the panel (tab: 'players' | 'everyone' | 'chat'). */
+  /** 🛡 ADMIN: the panel (tab: 'players' | 'everyone' | 'chat' | 'accounts'). */
   open(tab = this.tab) {
     const app = this.app, s = this.session;
     if (!s) return;
-    this.tab = ['everyone', 'chat'].includes(tab) ? tab : 'players';
+    this.tab = ['everyone', 'chat', 'accounts'].includes(tab) ? tab : 'players';
     const html = `<div class="adm-panel">
       <div class="adm-head"><h2>🛡 ADMIN</h2><p class="adm-open-note">Every command is signed with the admin key, and players always see what the admin did.</p></div>
       <div class="adm-tabs" role="tablist">
-        <button class="adm-tab" data-tab="players" role="tab">👥 PLAYERS <b class="adm-count"></b></button>
-        <button class="adm-tab" data-tab="everyone" role="tab">📢 EVERYONE</button>
-        <button class="adm-tab" data-tab="chat" role="tab">💬 CHAT <b class="adm-count adm-rbadge hidden"></b></button>
+        <button class="adm-tab" data-tab="players" role="tab" aria-label="Players">👥<span class="adm-tw"> PLAYERS</span> <b class="adm-count adm-pcount"></b></button>
+        <button class="adm-tab" data-tab="everyone" role="tab" aria-label="Everyone">📢<span class="adm-tw"> EVERYONE</span></button>
+        <button class="adm-tab" data-tab="chat" role="tab" aria-label="Chat">💬<span class="adm-tw"> CHAT</span> <b class="adm-count adm-rbadge hidden"></b></button>
+        <button class="adm-tab" data-tab="accounts" role="tab" aria-label="Accounts">📇<span class="adm-tw"> ACCOUNTS</span> <b class="adm-count adm-nbadge hidden"></b></button>
       </div>
       <div class="adm-pane adm-players">
         <p class="adm-totals"></p>
@@ -107,6 +155,12 @@ export class AdminPanel {
       </div>
       <div class="adm-pane adm-everyone"></div>
       <div class="adm-pane adm-chat"></div>
+      <div class="adm-pane adm-accts">
+        <div class="adm-afindrow"><input class="adm-afind" type="search" maxlength="16" enterkeyhint="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="🔍 Find a name" aria-label="Find a name"></div>
+        <p class="adm-atotals"></p>
+        <ul class="adm-alist"></ul>
+        <p class="adm-hint adm-anote">Everyone who made an account shows up here (guests never do): players are told when they make one. Tap a name to ban it, even while they're offline. Names live on the free public relay, sealed so only you can read them; if the relay forgets them, each one comes back the next time that player opens Phortnite.</p>
+      </div>
       <div class="adm-status" aria-live="polite"></div>
     </div>`;
     // ("🚩 New chat report" toasts would sit over the tabs: the CHAT tab's badge says it now)
@@ -119,11 +173,14 @@ export class AdminPanel {
       for (const t of b.querySelectorAll('.adm-tab')) t.addEventListener('click', () => { this.ui(); this.show(t.dataset.tab); });
       this.everyone();
       this.chatPane();
+      this.acctPane();
       this.show(this.tab);
       this.renderPlayers();
       this.off = s.onPlayers(() => { this.renderPlayers(); if (this.tab === 'chat') this.renderChat(); });
       this.offChats = s.onChats ? s.onChats(() => this.renderChat()) : null;
+      this.offAccts = s.onAccounts ? s.onAccounts(() => this.renderAccounts()) : null;
       this.badge();
+      this.acctBadge();
       this.timer = setInterval(() => this.tick(), TICK_MS);
     }, () => this.closed());
   }
@@ -134,6 +191,12 @@ export class AdminPanel {
     this.off = null;
     if (this.offChats) this.offChats();
     this.offChats = null;
+    if (this.offAccts) this.offAccts();
+    this.offAccts = null;
+    this.acctKey = '';
+    this.acctSel = '';
+    this.acctForm = '';
+    this.acctNote = null;
     this.sheetEl = null;
     clearInterval(this.timer);
     this.timer = 0;
@@ -162,8 +225,16 @@ export class AdminPanel {
     $('.adm-players', this.root).classList.toggle('hidden', tab !== 'players');
     $('.adm-everyone', this.root).classList.toggle('hidden', tab !== 'everyone');
     $('.adm-chat', this.root).classList.toggle('hidden', tab !== 'chat');
+    $('.adm-accts', this.root).classList.toggle('hidden', tab !== 'accounts');
     if (tab === 'everyone') this.stateNow();
     if (tab === 'chat') this.renderChat();
+    if (tab === 'accounts') {
+      // (opened now: the NEW badge goes; the rows made since it was last opened stay marked NEW)
+      if (this.session.seenAccounts) this.session.seenAccounts({ fresh: true });
+      this.acctKey = '';
+      this.renderAccounts();
+    }
+    this.acctBadge();
   }
 
   tick() {
@@ -171,6 +242,7 @@ export class AdminPanel {
     this.renderPlayers();
     this.stateNow();
     this.badge();
+    this.renderAccounts();
   }
 
   /** What happened, under the panel: ok true (sent), false (not sent), or a plain note. */
@@ -189,7 +261,8 @@ export class AdminPanel {
     const s = this.session, now = Date.now();
     const list = s.players();
     const t = s.totals();
-    $('.adm-count', this.root).textContent = String(t.total);
+    const banned = new Set(s.bans ? s.bans().map((b) => b.r) : []);
+    $('.adm-pcount', this.root).textContent = String(t.total);
     const missing = t.total - t.cards;
     $('.adm-totals', this.root).innerHTML = `<b>${t.total}</b> playing now · <b>${t.inMatch}</b> in a match · <b>${t.inLobby}</b> in the lobby · <b>${t.parties}</b> ${t.parties === 1 ? 'party' : 'parties'}`
       + (missing > 0 ? `<small>${missing} without a player card yet (still connecting, or an older version of the game)</small>` : '');
@@ -211,7 +284,7 @@ export class AdminPanel {
       if (prev ? prev.nextSibling !== li : ul.firstChild !== li) ul.insertBefore(li, prev ? prev.nextSibling : ul.firstChild);
       prev = li;
       $('.adm-nm', li).innerHTML = `${esc(p.name)}${p.me ? ' <small>(you)</small>' : ''}${p.admin && !p.me ? ' <small>🛡</small>' : ''}`;
-      $('.adm-meta', li).innerHTML = metaHtml(p, now)
+      $('.adm-meta', li).innerHTML = metaHtml(p, now, !!p.rid && banned.has(p.rid))
         + (p.suspect ? '<span class="adm-warn">⚠ Someone may be faking this card: your commands only reach the real player</span>' : '');
       li.classList.toggle('sel', p.id === this.sel);
       if (p.id === this.sel) this.actions(li, p);
@@ -331,10 +404,13 @@ export class AdminPanel {
         f.innerHTML = `<input class="adm-in" maxlength="120" placeholder="Why? (optional, they see it)">
           ${sure(`Take ${name} out of their party or match, back to the lobby?${hostNote}`, '🚪 KICK', 'danger')}`;
         break;
-      case 'ban':
+      case 'ban': {
+        const acct = this.banTarget(p);
         f.innerHTML = `<input class="adm-in" maxlength="120" placeholder="Why? (optional, they see it)">
-          ${sure(`Ban ${name}'s iPad? It shows the ban screen until Philip's unban code is typed in.${hostNote}`, '🚫 BAN', 'danger')}`;
+          ${sure(acct ? `Ban ${name}'s iPad and their account <b>${esc(acct.name)}</b>? It goes on your ban list: every iPad with that account shows the ban screen, now or the next time it opens Phortnite, until you tap ✓ REMOVE BAN (📇 ACCOUNTS) and then type your unban code in on it.${hostNote}`
+            : `Ban ${name}'s iPad? It shows the ban screen until Philip's unban code is typed in. (${p.account === 'guest' ? 'A guest: only this iPad.' : 'Only this iPad: no account of theirs can go on your ban list from here.'})${hostNote}`, '🚫 BAN', 'danger')}`;
         break;
+      }
       case 'end':
         f.innerHTML = sure(`End the match for everyone in party ${esc(p.party && p.party.code)}? Everyone goes back to the lobby.`, '⏹ END MATCH', 'danger');
         break;
@@ -376,7 +452,7 @@ export class AdminPanel {
         case 'resetStats': this.send('resetStats', {}, p, 'a stats reset'); break;
         case 'reload': this.send('reload', {}, p, 'a reload'); break;
         case 'kick': this.send('kick', { reason: v }, p, 'a kick'); break;
-        case 'ban': this.send('ban', { reason: v }, p, 'a ban'); break;
+        case 'ban': this.banPlayer(p, v); break;
         case 'end': this.send('end', {}, p, 'END MATCH'); break;
         case 'mode': this.send('mode', { modeId: input.value }, p, 'a new mode'); break;
         default: return;
@@ -392,6 +468,38 @@ export class AdminPanel {
     requestAnimationFrame(() => { try { if (f.isConnected) f.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* fine */ } });
   }
 
+  /**
+   * PLAYERS → 🚫 BAN: the account a player is signed in to (its rid proven by their card, js/admin/
+   * session.js), when it can go on the ban list: { rid, did, name } | null (a guest, the admin's own,
+   * a card someone may be faking, an older game without a rid).
+   */
+  banTarget(p) {
+    const s = this.session;
+    if (!s || !s.banAccount || !p || p.me || p.suspect || !p.rid) return null;
+    const row = s.accounts ? s.accounts().find((a) => a.rid === p.rid) : null;
+    if (row && row.mine) return null;
+    return { rid: p.rid, did: row ? row.did : '', name: row ? row.name : p.name };
+  }
+
+  /**
+   * PLAYERS → 🚫 BAN: a signed-in player's account goes on the ban list (banAccount sends their page
+   * the live ban too), like ACCOUNTS → BAN, so both buttons do the same; a guest's iPad gets the
+   * live ban only. When the list can't take it (full), the live ban still goes and the status says why.
+   */
+  async banPlayer(p, reason) {
+    const s = this.session, acct = this.banTarget(p);
+    if (!acct) { this.send('ban', { reason }, p, 'a ban'); return; }
+    let r = null, err = '';
+    try { r = await s.banAccount(acct.rid, { did: acct.did, reason, name: acct.name }); } catch (e) { err = (e && e.message) || ''; }
+    if (r) {
+      this.status(`✓ Sent a ban to ${p.name}, and their account ${acct.name} is on your ban list: every iPad with it is banned, now or the next time it opens Phortnite.`);
+      this.toast(`🚫 <b>${esc(acct.name)}</b> is banned.`);
+    } else if (err) {
+      const res = await this.send('ban', { reason }, p, 'a ban');
+      this.status(`${res.text} The account couldn't go on the ban list: ${err}`, res.ok);
+    } else this.status('✕ Not sent: the admin channel is offline right now. Try again in a moment.', false);
+  }
+
   grant(p, xp) {
     if (!(xp >= 1 && xp <= MAX_XP)) { this.status(`Give between 1 and ${MAX_XP} XP.`, false); return; }
     this.send('grant', { xp }, p, `${xp} XP`);
@@ -400,14 +508,16 @@ export class AdminPanel {
     this.renderPlayers();
   }
 
-  /** Sign and send a command to one player's page; the status line says what went out. */
+  /** Sign and send a command to one player's page; the status line says what went out. -> { ok, text } */
   async send(cmd, args, p, what) {
     const s = this.session;
-    if (!s) return;
+    if (!s) return { ok: false, text: '' };
     let env = null, err = '';
     try { env = await s.send(cmd, args, p.id); } catch (e) { env = null; err = (e && e.message) || ''; }
-    if (env) this.status(`✓ Sent ${what} to ${p.name}. (If their iPad is offline right now it won't get it.)`);
-    else this.status(err ? `✕ ${err}` : '✕ Not sent: the admin channel is offline right now. Try again in a moment.', false);
+    const text = env ? `✓ Sent ${what} to ${p.name}. (If their iPad is offline right now it won't get it.)`
+      : err ? `✕ ${err}` : '✕ Not sent: the admin channel is offline right now. Try again in a moment.';
+    this.status(text, !!env);
+    return { ok: !!env, text };
   }
 
   async spectate(p) {
@@ -422,10 +532,11 @@ export class AdminPanel {
   /** The CHAT tab's badge: new reports. */
   badge() {
     if (!this.root || !this.session || !this.session.unseenReports) return;
-    const n = this.session.unseenReports();
+    const n = this.session.unseenReports() | 0;
     const b = $('.adm-rbadge', this.root);
     b.classList.toggle('hidden', !n);
-    b.textContent = n ? `🚩 ${n}` : '';
+    // (the word goes with the tab's word on a narrow screen: the red badge alone says it)
+    b.innerHTML = n ? `<span class="adm-tw">🚩 </span>${n > 99 ? '99+' : n}` : '';
   }
 
   /** The CHAT pane's taps, once (its content is drawn again and again: delegated). */
@@ -639,6 +750,227 @@ export class AdminPanel {
   closeSheet() {
     if (this.sheetEl) this.sheetEl.remove();
     this.sheetEl = null;
+    this.acctSel = '';
+    this.acctForm = '';
+    this.acctNote = null;
+    this.sheetKey = '';
+  }
+
+  // ------------------------------------------------------------------ ACCOUNTS
+  /** The ACCOUNTS tab's badge: accounts made since the tab was last opened. */
+  acctBadge() {
+    if (!this.root || !this.session || !this.session.newAccounts) return;
+    const n = this.tab === 'accounts' ? 0 : this.session.newAccounts() | 0;
+    const b = $('.adm-nbadge', this.root);
+    b.classList.toggle('hidden', !n);
+    // (the word goes with the tab's word on a narrow screen: the yellow badge alone says it)
+    b.innerHTML = n ? `<span class="adm-tw">NEW </span>${n > 99 ? '99+' : n}` : '';
+  }
+
+  /** The ACCOUNTS pane's search box and taps, once (the list is drawn again and again: delegated). */
+  acctPane() {
+    const pane = $('.adm-accts', this.root);
+    const find = $('.adm-afind', pane);
+    find.value = this.acctFind;
+    find.addEventListener('input', () => { this.acctFind = find.value; this.acctShow = ACCTS_SHOWN; this.renderAccounts(); });
+    find.addEventListener('keydown', (e) => { if (e.key === 'Enter') find.blur(); });
+    pane.addEventListener('click', (e) => {
+      const name = e.target.closest('.adm-aname');
+      if (name && pane.contains(name)) { this.ui(); this.acctSheet(name.parentNode.dataset.rid); return; }
+      if (e.target.closest('.adm-amore')) { this.ui(); this.acctShow += ACCTS_SHOWN; this.renderAccounts(); }
+    });
+  }
+
+  /** The ACCOUNTS list, from the session's accounts() (drawn again only when what it shows changed). */
+  renderAccounts() {
+    if (!this.live() || !this.session.accounts) return;
+    this.acctBadge();
+    if (this.sheetEl && this.acctSel) this.drawAcctSheet();
+    if (this.tab !== 'accounts') return;
+    const s = this.session, now = Date.now();
+    s.seenAccounts({ fresh: false }); // (looking at it: nothing is "new since last time" for the badge)
+    const all = s.accounts();
+    const q = this.acctFind.trim().toLowerCase();
+    const list = q ? all.filter((a) => a.name.toLowerCase().includes(q)) : all;
+    const st = s.accountStats ? s.accountStats() : { waiting: 0 };
+    const online = all.filter((a) => a.online).length, banned = all.filter((a) => a.banned).length;
+    let totals = all.length ? `<b>${all.length}</b> account${all.length === 1 ? '' : 's'} · <b>${online}</b> online now · <b>${banned}</b> banned` : '';
+    if (st.waiting) totals += `<small>${st.waiting} more being read…</small>`;
+    let html;
+    if (!all.length) html = `<li class="adm-aempty">${st.waiting ? 'Reading the accounts…' : 'No accounts yet. When someone makes an account it shows up here.'}</li>`;
+    else if (!list.length) html = `<li class="adm-aempty">No account name has “${esc(q)}” in it.</li>`;
+    else {
+      const shown = list.slice(0, this.acctShow);
+      html = shown.map((a) => `<li class="adm-arow${a.banned ? ' banned' : ''}${a.suspect ? ' suspect' : ''}" data-rid="${esc(a.rid)}">`
+        + `<button class="adm-aname">${esc(a.name)}</button><div class="adm-ameta">${acctChips(a, now)}</div></li>`).join('')
+        + (list.length > shown.length ? `<li class="adm-amorerow"><button class="btn adm-amore">SHOW ${Math.min(ACCTS_SHOWN, list.length - shown.length)} MORE (${list.length - shown.length} not shown)</button></li>` : '');
+    }
+    const key = totals + html;
+    if (key === this.acctKey) return;
+    this.acctKey = key;
+    const pane = $('.adm-accts', this.root);
+    $('.adm-atotals', pane).innerHTML = totals;
+    $('.adm-alist', pane).innerHTML = html;
+  }
+
+  /** Tap a name: its sheet (over the panel, its own CLOSE). */
+  acctSheet(rid) {
+    const s = this.session;
+    const a = s && s.accounts().find((x) => x.rid === rid);
+    if (!a) return;
+    const el = this.sheet(a.name, '<div class="adm-acard"></div>');
+    this.acctSel = rid;
+    el.classList.add('adm-asheet');
+    el.dataset.rid = rid;
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-aact]');
+      if (b && el.contains(b) && !b.disabled) { this.ui(); this.acctAct(b.dataset.aact); }
+    });
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+      e.preventDefault();
+      if (this.acctForm === 'ban') this.acctAct('banyes');
+      else if (this.acctForm === 'kick') this.acctAct('kickyes');
+    });
+    this.drawAcctSheet(true);
+  }
+
+  /** The open account sheet, drawn from accounts() (not while the admin types in it, unless force). */
+  drawAcctSheet(force = false) {
+    const el = this.sheetEl, s = this.session;
+    if (!el || !el.isConnected || el.dataset.rid !== this.acctSel || !s) return;
+    const body = $('.adm-acard', el);
+    const act = document.activeElement;
+    if (!force && act && body.contains(act) && (act.tagName === 'INPUT' || act.tagName === 'TEXTAREA')) return;
+    const a = s.accounts().find((x) => x.rid === this.acctSel);
+    if (!a) {
+      body.innerHTML = '<p class="adm-now">This account isn\'t listed any more: its entry was deleted from the relay (the account was deleted on its iPad).</p>';
+      return;
+    }
+    const card = a.online ? s.players().find((c) => c.rid === a.rid && !c.me) : null;
+    const now = Date.now(), name = esc(a.name);
+    $('h3', el).textContent = `📇 ${a.name}`;
+    const b = (act2, label, cls = '') => `<button class="btn adm-aact ${cls}${this.acctForm === act2 ? ' on' : ''}" data-aact="${act2}">${label}</button>`;
+    const bits = [];
+    if (!a.gone) bits.push(`${a.matches | 0} match${a.matches === 1 ? '' : 'es'}`, `${a.kills | 0} elimination${a.kills === 1 ? '' : 's'}`);
+    if (a.v) bits.push(`game v${esc(a.v)}`);
+    if (a.did) bits.push(`iPad ${esc(a.did.slice(0, 4))}…`);
+    let html = `<div class="adm-ameta adm-adet">${acctChips(a, now)}</div>${bits.length ? `<p class="adm-hint">${bits.join(' · ')}</p>` : ''}`;
+    if (a.suspect) html += '<p class="adm-warn">⚠ Someone put a made-up entry for this account on the public relay. It was ignored: what you see here came from the account\'s own iPad.</p>';
+    if (a.banned) html += `<p class="adm-now adm-abanned">🚫 On your ban list${a.bannedAt ? ` since ${since(now - a.bannedAt)}` : ''}${a.reason ? `: “${esc(a.reason)}”` : '.'}</p>`;
+    if (this.acctNote) html += `<p class="adm-ares ${this.acctNote.ok === null ? '' : this.acctNote.ok ? 'ok' : 'bad'}"></p>`;
+    if (a.mine) html += '<p class="adm-now">📱 This account is on this iPad (yours), so it can\'t be banned from here.</p>';
+    else {
+      html += `<div class="adm-aacts">${card ? b('msg', '✉ MESSAGE') + b('kick', '👢 KICK') : ''}${a.banned ? b('unban', '✓ REMOVE BAN', 'yellow') : b('ban', '🚫 BAN', 'danger')}</div>`;
+      if (a.banned) {
+        html += '<p class="adm-hint">To let them play again: ① tap ✓ REMOVE BAN here first, ② then, if their iPad already shows the ban screen, type your unban code in on it. '
+          + 'The code alone doesn\'t last while they\'re on this list: Phortnite bans that iPad again as soon as it opens. '
+          + '(REMOVE BAN stops a ban that hasn\'t happened yet, almost always: an older ban list someone puts back on the relay can still reach an iPad that hasn\'t opened Phortnite since.)</p>';
+      }
+      else if (!card) html += '<p class="adm-hint">Not online right now: a ban happens the next time they open Phortnite.</p>';
+      const sure = (text, label) => `<p class="adm-q">${text}</p><div class="adm-btns2"><button class="btn danger" data-aact="${label[0]}">${label[1]}</button><button class="btn" data-aact="no">CANCEL</button></div>`;
+      if (this.acctForm === 'ban') {
+        html += `<div class="adm-form"><input class="adm-in adm-areason" maxlength="120" placeholder="Why? (optional${card ? ', they see it' : ''})">`
+          + sure(`Ban <b>${name}</b>? ${card ? 'Their iPad shows the ban screen right now' : 'Their iPad shows the ban screen the next time they open Phortnite'}, and stays banned until you tap ✓ REMOVE BAN here and then type your unban code in on it.`, ['banyes', '🚫 YES, BAN'])
+          + '</div>';
+      } else if (this.acctForm === 'kick' && card) {
+        html += `<div class="adm-form"><input class="adm-in adm-areason" maxlength="120" placeholder="Why? (optional, they see it)">${sure(`Take <b>${name}</b> out of their party or match, back to the lobby?`, ['kickyes', '👢 KICK'])}</div>`;
+      } else if (this.acctForm === 'msg' && card) {
+        html += `<div class="adm-form"><textarea class="adm-in adm-amsg" maxlength="300" rows="2" placeholder="Message for ${name}"></textarea>`
+          + `<div class="adm-btns2"><button class="btn yellow" data-aact="msgsend">✉ SEND</button><button class="btn" data-aact="no">CANCEL</button></div></div>`;
+      }
+    }
+    // (the same as on screen: left alone; else drawn again with what was typed kept)
+    const key = `${html}|${this.acctNote ? this.acctNote.text : ''}`;
+    if (!force && key === this.sheetKey) return;
+    this.sheetKey = key;
+    const typed = {};
+    if (this.drawnForm === this.acctForm) for (const i of body.querySelectorAll('.adm-areason, .adm-amsg')) typed[i.className] = i.value;
+    this.drawnForm = this.acctForm;
+    body.innerHTML = html;
+    for (const i of body.querySelectorAll('.adm-areason, .adm-amsg')) if (typed[i.className]) i.value = typed[i.className];
+    const note = $('.adm-ares', body);
+    if (note) note.textContent = this.acctNote.text;
+    // (like the PLAYERS forms: only a message box takes the focus, never an optional reason, so no
+    // keyboard comes up over the question and its buttons; the form is scrolled into sight)
+    const msg = $('.adm-amsg', body), form = $('.adm-form', body);
+    if (msg && force) setTimeout(() => { try { if (msg.isConnected) msg.focus(); } catch (e) { /* fine */ } }, 30);
+    if (form && force) requestAnimationFrame(() => { try { if (form.isConnected) form.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* fine */ } });
+  }
+
+  /** A button in the account sheet. */
+  async acctAct(act) {
+    const s = this.session, el = this.sheetEl;
+    if (!s || !el) return;
+    const a = s.accounts().find((x) => x.rid === this.acctSel);
+    if (!a) return;
+    const card = s.players().find((c) => c.rid === a.rid && !c.me) || null;
+    const val = (sel) => { const i = $(sel, el); return i ? i.value.trim() : ''; };
+    switch (act) {
+      case 'ban': case 'msg': case 'kick':
+        this.acctForm = this.acctForm === act ? '' : act;
+        this.acctNote = null;
+        break;
+      case 'no': this.acctForm = ''; break;
+      case 'banyes': {
+        if (this.acctBusy) return;
+        this.acctBusy = true;
+        const reason = val('.adm-areason');
+        let r = null, err = '';
+        try { r = await s.banAccount(a.rid, { did: a.did, reason, name: a.name }); } catch (e) { err = (e && e.message) || ''; } finally { this.acctBusy = false; }
+        if (r) {
+          const text = r.online ? `${a.name} is banned.` : `${a.name} will be banned the next time they open Phortnite.`;
+          this.acctForm = '';
+          this.acctNote = { text: `✓ ${text}`, ok: true };
+          this.status(`✓ ${text}`);
+          this.toast(r.online ? `🚫 <b>${esc(a.name)}</b> is banned.` : `🚫 <b>${esc(a.name)}</b> will be banned the next time they open Phortnite.`);
+        } else this.acctNote = { text: err ? `✕ ${err}` : '✕ Not sent: the admin channel is offline right now. Try again in a moment.', ok: false };
+        break;
+      }
+      case 'unban': {
+        if (this.acctBusy) return;
+        this.acctBusy = true;
+        const already = !!a.bannedLive; // (the ban reached their page online: that iPad IS banned)
+        let env = null, err = '';
+        try { env = await s.unbanAccount(a.rid); } catch (e) { err = (e && e.message) || ''; } finally { this.acctBusy = false; }
+        if (env && already) {
+          const text = `${a.name} is off your ban list, but their iPad is already banned: type your unban code in on it to let them back in.`;
+          this.acctNote = { text, ok: null };
+          this.status(text);
+          this.toast(`<b>${esc(a.name)}</b> is off your ban list, but their iPad is already banned: type your unban code in on it.`);
+        } else if (env) {
+          const text = `${a.name} is off your ban list: they won't be banned when they next open Phortnite. (If their iPad already shows the ban screen, type your unban code in on it.)`;
+          this.acctNote = { text: `✓ ${text}`, ok: true };
+          this.status(`✓ ${text}`);
+          this.toast(`✓ <b>${esc(a.name)}</b> is off your ban list. (If their iPad already shows the ban screen, type your unban code in on it.)`);
+        } else this.acctNote = { text: err ? `✕ ${err}` : '✕ Not sent: the admin channel is offline right now. Try again in a moment.', ok: false };
+        break;
+      }
+      case 'msgsend': {
+        const text = val('.adm-amsg');
+        if (!card) { this.acctNote = { text: `✕ ${a.name} isn't online right now.`, ok: false }; break; }
+        if (!text) { const i = $('.adm-amsg', el); if (i) i.focus(); return; }
+        const r = await this.send('message', { text }, card, 'a message');
+        this.acctNote = r;
+        if (r.ok) this.acctForm = '';
+        break;
+      }
+      case 'kickyes': {
+        if (!card) { this.acctNote = { text: `✕ ${a.name} isn't online right now.`, ok: false }; break; }
+        const r = await this.send('kick', { reason: val('.adm-areason') }, card, 'a kick');
+        this.acctNote = r;
+        if (r.ok) this.acctForm = '';
+        break;
+      }
+      default: return;
+    }
+    this.drawAcctSheet(true);
+  }
+
+  /** A short toast over the panel (the lobby's): html is trusted markup with escaped values. */
+  toast(html) {
+    const lobby = this.app.lobby;
+    try { if (lobby && lobby.toast) lobby.toast(html, { ms: 5000 }); } catch (e) { /* the sheet says it too */ }
   }
 
   // ------------------------------------------------------------------ EVERYONE

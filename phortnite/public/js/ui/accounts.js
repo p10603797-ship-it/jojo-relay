@@ -4,6 +4,12 @@
 // signing out / renaming / deleting, and "Move my account" (an encrypted transfer code + QR).
 // The store (js/accounts/store.js) and the maths (js/accounts/stats.js, js/accounts/crypto.js) are
 // DOM-free and tested in Node; this file is the glue and the copy (kid-friendly, big tap targets).
+// Where the website has an admin (admin.json), an account's name and stats go to the admin's
+// ACCOUNTS list (js/accounts/registry.js, sealed so only he can read them): the create-account
+// screen says so right under the name box, the account panel says what the admin sees and that a
+// ban locks the whole iPad, and every other account is told once in the lobby (js/admin/client.js
+// tellRegistry). A banned account can't be brought over with a transfer code (the ban list is
+// asked first: "This account was banned by the admin").
 import { SKINS } from '../../shared/constants.js';
 import { hashPassword, verifyPassword, encryptTransfer, decryptTransfer, makeSigningIdentity } from '../accounts/crypto.js';
 import { kd, winRate, favoriteMode, playtimeLabel } from '../accounts/stats.js';
@@ -47,7 +53,7 @@ export class AccountsUi {
     }).join('');
     const html = `<div class="acc">
       <h2>WHO'S PLAYING?</h2>
-      <p class="acc-sub">Pick your profile. Everything is saved on this iPad, just for you.</p>
+      <p class="acc-sub">Pick your profile. It's saved on this iPad.</p>
       <div class="who-grid">${cardHtml}
         <button class="who-card who-new" data-act="create"><i class="who-ava who-plus">+</i><span class="who-name">CREATE ACCOUNT</span><span class="who-lv">New profile</span></button>
       </div>
@@ -86,14 +92,30 @@ export class AccountsUi {
   }
 
   // ---------------------------------------------------------------- create account
+  /**
+   * Does this website have an admin (account names go to him)? admin.json still loading: wait a
+   * moment for it; no answer by then says yes (better told than not).
+   */
+  adminTold() {
+    const app = this.app;
+    if (app.adminCfg) return Promise.resolve(true);
+    if (!app.adminCfgPromise) return Promise.resolve(false);
+    return Promise.race([
+      Promise.resolve(app.adminCfgPromise).then((c) => !!c, () => false),
+      new Promise((r) => setTimeout(() => r(true), 2000)),
+    ]);
+  }
+
   async createScreen() {
     const app = this;
     const face = await this.checkFace();
+    const told = await this.adminTold();
     const skin = this.app.settings.skin | 0;
     const html = `<div class="acc">
       <h2>CREATE ACCOUNT</h2>
       <p class="acc-sub">Choose a username. It's saved on this iPad — no email, no sign-up.</p>
       <div class="rn-row"><input id="acc-name" maxlength="16" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Your username"></div>
+      ${told ? '<p class="acc-note acc-regnote">🛡 Your account name is sent to the admin (Philip) so he can keep Phortnite fair.</p>' : ''}
       <div class="acc-locks">
         <div class="acc-lockhead">Lock it so it's just yours? <small>(optional)</small></div>
         <label class="acc-opt"><input type="checkbox" id="acc-usepw"><span>🔒 Password</span></label>
@@ -128,6 +150,8 @@ export class AccountsUi {
           }
           const acc = this.app.accounts.create(opts);
           if (carryStats) this.app.accounts.update(acc.id, { stats: carryStats });
+          // (the note above told them: no "New: the admin keeps a list of accounts" toast for this one)
+          if (told && this.app.adminClient && this.app.adminClient.markTold) this.app.adminClient.markTold(acc.id);
           this.app.setActiveProfile(acc);
           this.app.ui.closeModal(true);
           this.app.lobby.toast(`Account <b>${esc(nm)}</b> created — saved on this iPad. 🎉`, { ms: 5000 });
@@ -221,7 +245,7 @@ export class AccountsUi {
         <button class="btn acc-signout">🚪 SIGN OUT</button>
         ${acc.guest ? '' : '<button class="btn acc-delete danger">🗑 DELETE ACCOUNT</button>'}
       </div>
-      <p class="acc-note">Everything here is saved only on this iPad.</p>
+      <p class="acc-note">Everything here is saved only on this iPad.${app.adminCfg && !acc.guest ? ' The admin (Philip) can see this account\'s name, level and wins and when it last played (even when you\'re offline), so he can keep Phortnite fair, and he can ban it. A ban locks this whole iPad, every profile on it.' : ''}</p>
       <div class="acc-adminrow" data-back="panel"></div>
     </div>`;
     app.ui.modal(html, (b) => {
@@ -298,6 +322,13 @@ export class AccountsUi {
         const btn = $('.acc-import-go', b); btn.disabled = true; btn.textContent = 'Bringing it over…';
         try {
           const obj = await decryptTransfer(code.value.trim(), pin.value);
+          // a banned account can't be brought over (refused before anything is saved; the ban list
+          // comes a moment after the game connects: waited for, briefly)
+          const ac = this.app.adminClient;
+          if (obj && obj.id && ac && ac.accountBanned) {
+            if (ac.banListReady) await ac.banListReady(2000);
+            if (await ac.accountBanned(obj.id)) throw new Error("🛡 This account was banned by the admin (Philip), so it can't be brought over to this iPad.");
+          }
           const acc = this.app.accounts.importProfile(obj);
           this.app.accounts.setActive(acc.id);
           this.app.setActiveProfile(acc);

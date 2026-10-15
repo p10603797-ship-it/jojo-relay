@@ -28,7 +28,7 @@ export class AdminLoginUi {
   bits(row) {
     if (!row || row.dataset.filled) return;
     row.dataset.filled = '1';
-    const note = `<p class="acc-note adm-note">🛡 Philip (the admin) can see who's online and moderate the game.</p>`;
+    const note = `<p class="acc-note adm-note">🛡 Philip (the admin) can see who's online, every account's name, level and wins, and moderate the game.</p>`;
     // "Who's playing?": the note goes right under the title (on a phone the bottom is out of sight)
     const sub = row.dataset.back === 'who' && row.parentNode && row.parentNode.querySelector('.acc-sub');
     if (sub) sub.insertAdjacentHTML('afterend', note.replace('adm-note', 'adm-note adm-note-top'));
@@ -54,7 +54,7 @@ export class AdminLoginUi {
     if (app.admin) { this.status(done, locked); return; }
     const html = `<div class="acc adm-login">
       <h2>🛡 ADMIN</h2>
-      <p class="acc-sub">For Philip only. Admin mode can see who's online and moderate the game — and players are always told when the admin does something.</p>
+      <p class="acc-sub">For Philip only. Admin mode can see who's online and every account's name, level and wins, and moderate the game — and players are always told when the admin does something.</p>
       <div class="rn-row"><input id="adm-pw" type="password" maxlength="40" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" placeholder="Admin password"></div>
       <label class="acc-opt"><input type="checkbox" id="adm-remember"><span>Remember admin on this iPad</span></label>
       <div class="sheet-btns"><button class="btn yellow big adm-go">UNLOCK</button><button class="btn big adm-back">BACK</button></div>

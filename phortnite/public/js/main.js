@@ -114,6 +114,8 @@ class App {
     // settings save can't rename or overwrite a locked profile. A guest only updates in memory.
     const acc = this.activeAccount;
     if (acc) { acc.name = this.settings.name; acc.skin = this.settings.skin | 0; this.accounts.persist(acc); }
+    // (the admin's account registry: a sign-in, a new account or a rename goes out now; js/admin/client.js)
+    if (this.adminClient) this.adminClient.accountChanged();
   }
 
   /**
@@ -137,6 +139,7 @@ class App {
     this.accounts.signOut();
     this.activeAccount = null;
     this.profile = new Profile(defaultStats());
+    if (this.adminClient) this.adminClient.accountChanged();
     if (this.lobby && this.lobby.visible) this.lobby.render();
     this.accountsUi.whoScreen({ gate: true });
   }
@@ -156,8 +159,10 @@ class App {
 
   async boot() {
     $('.load-tip').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
-    // admin.json (if the website has an admin): fetched while everything else loads
+    // admin.json (if the website has an admin): fetched while everything else loads (the create-account
+    // screen waits for it to say whether account names go to the admin)
     const adminCfg = fetchAdminConfig();
+    this.adminCfgPromise = adminCfg;
     // news from Philip, from the very start (the loading screen too)
     this.announce = new Announce(this);
     this.announce.start();

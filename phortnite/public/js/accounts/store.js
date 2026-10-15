@@ -13,6 +13,16 @@
 //     isAdmin  : NOT settable from normal UI; a later stage unlocks it with Philip's credential
 //   stats is a stats.js object. A GUEST profile is the same shape with guest:true and is NEVER
 //   written to disk (its progress lasts only for the session).
+//     imported : when it was brought over with a transfer code (ms), or 0 (made on this device)
+// onChange(fn) -> off: fn(what, account, info) after 'create', 'import' or 'remove' (the account
+// registry, js/accounts/registry.js, deletes a removed account's entry, unless info.quiet; the
+// admin's ban list is checked again for a new one, js/admin/client.js).
+// A transfer code ("Move my account") carries the account's id and createdAt, so the moved account
+// is the SAME account (the same registry id: the admin's ACCOUNTS tab follows it to the new iPad);
+// the id is only kept when it is well-formed and not already on this device. A banned account
+// can't be brought over (js/ui/accounts.js asks the ban list first), and one the ban list catches
+// later on an iPad it was moved to is taken off that iPad quietly instead of banning the iPad
+// (remove(id, { quiet: true }), js/admin/client.js checkBans): the 'imported' mark tells them apart.
 import { defaultStats, sanitizeStats } from './stats.js';
 import { cleanPwRecord } from './crypto.js';
 
@@ -30,6 +40,7 @@ const randId = () => {
 };
 
 const cleanName = (s) => String(s == null ? '' : s).replace(/[\u0000-\u001f<>&"']/g, '').trim().slice(0, 16);
+const ID_RE = /^p_[0-9a-f]{6,40}$/; // randId's ids (a transfer code's id is only kept like this)
 
 /** Cosmetics as a small flat map (id -> true/number/short text): nothing else is ever kept. */
 function cleanCosmetics(c) {
@@ -60,6 +71,7 @@ function sanitizeAccount(a) {
     sign: a.sign && typeof a.sign === 'object' && a.sign.key ? a.sign : null,
     stats: sanitizeStats(a.stats),
     cosmetics: cleanCosmetics(a.cosmetics),
+    imported: Number.isFinite(a.imported) && a.imported > 0 ? Math.floor(a.imported) : 0,
   };
 }
 
@@ -73,7 +85,20 @@ export class AccountStore {
     // only in memory: a reload starts locked again, so a protected profile is never "active" from
     // disk alone. Nothing to do with the device site-lock — this is per-profile, inside the game.
     this._unlocked = null;
+    this._fns = [];
     this._read();
+  }
+
+  /** fn(what, account, info) after 'create' | 'import' | 'remove' (info.quiet). Returns a function that stops it. */
+  onChange(fn) {
+    this._fns.push(fn);
+    return () => { this._fns = this._fns.filter((f) => f !== fn); };
+  }
+
+  _emit(what, acc, info = {}) {
+    for (const fn of [...this._fns]) {
+      try { fn(what, acc, info); } catch (e) { /* a listener's problem never breaks the store */ }
+    }
   }
 
   // ---------------------------------------------------------------- storage (never throws)
@@ -154,7 +179,7 @@ export class AccountStore {
     return {
       id: randId(), schema: ACCOUNT_SCHEMA, name: cleanName(name) || 'Player', skin: skin | 0,
       createdAt: Date.now(), isAdmin: false, pw: null, passkey: null, sign: null,
-      stats: defaultStats(), cosmetics: {},
+      stats: defaultStats(), cosmetics: {}, imported: 0,
     };
   }
 
@@ -171,6 +196,7 @@ export class AccountStore {
     // just created it (and set any password) -> unlocked for this session, so active() returns it
     if (opts.makeActive !== false) { this.guest = null; this.data.active = acc.id; this._unlocked = acc.id; }
     this.save();
+    this._emit('create', acc);
     return acc;
   }
 
@@ -189,14 +215,18 @@ export class AccountStore {
     return acc;
   }
 
-  /** Delete an account and its data from this device. */
-  remove(id) {
+  /**
+   * Delete an account and its data from this device. quiet: its registry entry stays on the broker
+   * (a banned account taken off a device it was moved to: the admin's list keeps it).
+   */
+  remove(id, { quiet = false } = {}) {
     const i = this.data.profiles.findIndex((p) => p.id === id);
     if (i < 0) return false;
-    this.data.profiles.splice(i, 1);
+    const [acc] = this.data.profiles.splice(i, 1);
     if (this.data.active === id) this.data.active = null;
     if (this._unlocked === id) this._unlocked = null;
     this.save();
+    this._emit('remove', acc, { quiet: !!quiet });
     return true;
   }
 
@@ -232,7 +262,11 @@ export class AccountStore {
   /** Import a profile object brought over by a transfer code. Returns the new account. */
   importProfile(obj) {
     const acc = this._newAccount({ name: (obj && obj.name) || 'Player', skin: (obj && obj.skin) | 0 });
+    acc.imported = Date.now();
     if (obj && typeof obj === 'object') {
+      // the same account, moved: its id (when well-formed and not on this device already) and age
+      if (typeof obj.id === 'string' && ID_RE.test(obj.id) && !this.get(obj.id)) acc.id = obj.id;
+      if (Number.isFinite(obj.createdAt) && obj.createdAt > 0 && obj.createdAt <= Date.now()) acc.createdAt = Math.floor(obj.createdAt);
       acc.stats = sanitizeStats(obj.stats);
       acc.cosmetics = cleanCosmetics(obj.cosmetics);
       // the password protection comes with the account (only a well-formed record: a crafted code
@@ -243,6 +277,7 @@ export class AccountStore {
     }
     this.data.profiles.push(acc);
     this.save();
+    this._emit('import', acc);
     return acc;
   }
 
@@ -250,7 +285,7 @@ export class AccountStore {
   exportObject(id) {
     const a = this.get(id);
     if (!a) return null;
-    return { v: 1, name: a.name, skin: a.skin, stats: a.stats, cosmetics: a.cosmetics, pw: a.pw || undefined };
+    return { v: 1, id: a.id, createdAt: a.createdAt, name: a.name, skin: a.skin, stats: a.stats, cosmetics: a.cosmetics, pw: a.pw || undefined };
   }
 }
 

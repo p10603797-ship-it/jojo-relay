@@ -25,7 +25,9 @@
 //                                        (info: SEAL_CARD (default), the player cards for the admin,
 //                                        SEAL_PAGE, a command's args sealed to one page's own key, or
 //                                        SEAL_UP, what a page uploads to the admin: chat lines, a chat
-//                                        log, a report (js/admin/commands.js sealUpload). from: seal
+//                                        log, a report (js/admin/commands.js sealUpload), or
+//                                        SEAL_ACCT, an account's entry in the registry the admin's
+//                                        ACCOUNTS tab lists (js/accounts/registry.js). from: seal
 //                                        with this page's own key (newBoxKey) instead of a fresh one,
 //                                        so e is that page's public key: the admin can tell an upload
 //                                        really came from the page whose card he has. max: the
@@ -49,6 +51,7 @@ const ENC_AAD = new TextEncoder().encode('phortnite admin keys v1'); // binds th
 export const SEAL_CARD = 'phortnite admin seal v1';
 export const SEAL_PAGE = 'phortnite page seal v1';
 export const SEAL_UP = 'phortnite admin up v1'; // a page's upload to the admin (never confused with a card)
+export const SEAL_ACCT = 'phortnite admin acct v1'; // an account's registry entry (never a card or an upload)
 const EC_SIGN = { name: 'ECDSA', namedCurve: 'P-256' };
 const EC_BOX = { name: 'ECDH', namedCurve: 'P-256' };
 const SIG_ALG = { name: 'ECDSA', hash: 'SHA-256' };

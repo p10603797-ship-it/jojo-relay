@@ -5,6 +5,9 @@
 
 /* a locked modal (the "Who's playing?" gate) can't be dismissed: hide the ✕, keep the backdrop. */
 #modal.locked .modal-x { display: none; }
+/* a phone (upright or sideways): Philip's news chip (js/ui/announce.js, above every modal) waits for the
+   lobby; on the account screens it sat over the name box and the "sent to the admin" note */
+@media (max-width: 760px), (max-height: 520px) { body:has(#modal:not(.hidden) .acc) #announce { visibility: hidden; } }
 
 .acc { font-family: system-ui, -apple-system, sans-serif; }
 .acc h2 { font-family: var(--font-title); font-weight: normal; }
@@ -36,6 +39,7 @@
 }
 
 /* ---------------------------------------------------------- create / locks */
+.acc-regnote { margin: 6px 0 0; opacity: 0.85; font-size: 14px; } /* "Your account name is sent to the admin…" */
 .acc-locks { margin: 14px 0 4px; padding: 12px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.05); }
 .acc-lockhead { font-family: var(--font-hud); margin-bottom: 8px; }
 .acc-lockhead small { opacity: 0.6; }
