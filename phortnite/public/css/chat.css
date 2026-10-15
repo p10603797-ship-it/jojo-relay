@@ -8,7 +8,7 @@
 #chat {
   position: fixed; z-index: 45; left: calc(16px + var(--sal)); top: calc(86px + var(--sat)); bottom: calc(80px + var(--sab)); width: min(420px, calc(100vw - 32px));
   display: flex; flex-direction: column; gap: 8px; padding: 10px; box-sizing: border-box;
-  border-radius: 16px; background: rgba(16, 12, 44, 0.94); color: #fff;
+  border-radius: 16px; background: rgba(16, 12, 44, 0.975); color: #fff; /* (the lobby's party rail and buttons under it must not show through the lines) */
   box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5), inset 0 0 0 2px rgba(255, 255, 255, 0.1);
   font-family: system-ui, -apple-system, sans-serif; touch-action: none; overscroll-behavior: contain;
   animation: chin 0.18s ease-out;
@@ -27,11 +27,13 @@
 .ch-x { width: 48px; height: 48px; flex: none; border: 0; border-radius: 50%; background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 20px; }
 .ch-x:active { transform: translateY(2px); }
 
-/* the safety note: always there, never scrolled away (moderation is open) */
+/* the safety note: always there, never scrolled away (moderation is open). Its title (shown when
+   the title row makes way) and its short form (a short drawer) are spans of its own */
 .ch-safe {
   flex: none; margin: 0; padding: 7px 10px; border-radius: 10px; font-size: 13px; line-height: 1.35;
   background: rgba(90, 174, 255, 0.14); box-shadow: inset 0 0 0 1px rgba(90, 174, 255, 0.45); color: #d8ecff;
 }
+.ch-stitle, .ch-sshort, .ch-strust { display: none; }
 
 .ch-list {
   flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain;
@@ -74,6 +76,9 @@
 }
 .ch-chip:active { transform: translateY(2px); background: rgba(255, 210, 63, 0.35); }
 #chat .ch-chip:disabled, #chat .ch-send:disabled { opacity: 0.4; cursor: default; transform: none; }
+/* muted: the red hint says until when and why; the quick chat and the input step aside, so the
+   list keeps their room (a muted player can still read the party) */
+#chat.muted .ch-quick, #chat.muted .ch-form { display: none; }
 
 .ch-form { flex: none; display: flex; gap: 8px; }
 .ch-form.hidden { display: none; }
@@ -107,21 +112,27 @@
 .ch-mbtn:active { transform: translateY(2px); }
 
 /* a short drawer (phones on their side, the iPad keyboard up): smaller bits, more room for the
-   list; the ✕ goes beside the safety note instead of a title row */
+   list; the ✕ goes beside the safety note instead of a title row, PARTY CHAT starts the note, and
+   the note takes its short form (both points and the 🛡 ADMIN tag: three lines, never cut off) */
 #chat.tight { gap: 6px; padding: 8px; }
 #chat.tight .ch-head { position: absolute; top: 8px; right: 8px; z-index: 1; }
 #chat.tight .ch-title, #chat.tight .ch-code { display: none; }
 #chat.tight .ch-x { width: 44px; height: 44px; }
 #chat.tight .ch-safe { font-size: 12px; padding: 5px 8px; line-height: 1.3; margin-right: 50px; min-height: 44px; box-sizing: border-box; }
+#chat.tight .ch-stitle { display: inline; font-family: var(--font-title); font-weight: normal; font-size: 14px; letter-spacing: 1px; color: #fff; }
+#chat.tight .ch-sfull { display: none; }
+#chat.tight .ch-sshort, #chat.tight .ch-strust { display: inline; }
 #chat.tight .ch-quick { grid-template-rows: auto; }
 #chat.tight .ch-chip { min-height: 44px; font-size: 15px; }
 #chat.tight .ch-line { font-size: 16px; padding: 4px 8px; }
 #chat.tight .ch-in, #chat.tight .ch-send { height: 48px; }
 #chat.tight .ch-menu { gap: 6px; padding: 8px; }
 #chat.tight .ch-mbtn { min-height: 46px; }
-/* tiny (a phone with its keyboard up): the note on one line, no chips while typing */
-#chat.tiny .ch-safe { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 32px; }
-#chat.tiny.kb .ch-quick { display: none; }
+/* tiny (a phone with its keyboard up): the note in two lines (both points, never cut off), no
+   chips while typing (a fully panned keyboard reads as kb 0: typing covers it) */
+#chat.tiny .ch-strust { display: none; }
+#chat.tiny .ch-safe { line-height: 1.25; }
+#chat.tiny.kb .ch-quick, #chat.tiny.typing .ch-quick { display: none; }
 
 /* ------------------------------------------------------------------ the lobby's 💬 CHAT button */
 #lobby .lb-chat { position: relative; }
@@ -147,9 +158,12 @@ body.chat-off #lobby .lb-chat, body.chat-off #chatbtn, body.chat-off #chatfeed {
 #chatbtn .cb-ico { line-height: 1; font-family: system-ui, sans-serif; }
 body.chat-open #chatbtn { background: rgba(255, 210, 63, 0.75); }
 /* (the ping / FPS text moves over to make room for it; the warm-up chip goes under ☰ 💬, and
-   under Philip's banner when that reaches down that far: its ↩ LOBBY is never under the banner) */
+   under Philip's banner when that reaches down that far: its ↩ LOBBY is never under the banner.
+   An open drawer goes under the chip (chat.js place); a phone on its side has no room for both:
+   the chip steps aside while the drawer is open, so nothing shows through it) */
 body:not(.chat-off) #netinfo, body:not(.chat-off) #fps { left: calc(120px + var(--sal)); }
 body:not(.chat-off) #lobbypanel.show { left: calc(10px + var(--sal)); top: max(calc(64px + var(--sat)), calc(var(--announce-bottom, 0px) + 6px)); }
+@media (max-height: 499px) { body.chat-open:not(.chat-off) #lobbypanel.show { visibility: hidden; } }
 
 /* ------------------------------------------------------------------ in a match: the fading feed
    Bottom left, above the health bars and under the left fire button; never over the hotbar, the
@@ -169,7 +183,9 @@ body.chat-open #chatfeed, body.endcard #chatfeed { display: none; }
 }
 .cf-clip { overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .cf-name { font-family: var(--font-hud); font-weight: normal; }
-.cf-line.k-admin { box-shadow: inset 0 0 0 1px #5aaeff; }
+/* the admin: the drawer's 🛡 ADMIN tag (.ch-tag), smaller, on a blue line */
+.cf-tag { font-size: 11px; padding: 1px 5px; vertical-align: 1px; text-shadow: none; }
+.cf-line.k-admin { background: rgba(8, 32, 63, 0.82); box-shadow: inset 0 0 0 1px #5aaeff; }
 .cf-line.k-sys, .cf-line.k-quickonly { font-style: italic; opacity: 0.85; }
 @keyframes cfin { from { transform: translateX(-12px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes cfout { from { opacity: 1; } to { opacity: 0; } }
@@ -188,6 +204,7 @@ body.observing #chatfeed { bottom: calc(112px + var(--sab)); width: min(340px, 2
   body.dead #chatfeed { bottom: calc(8px + var(--sab)); }
   body.observing #chatfeed { bottom: calc(86px + var(--sab)); }
   .cf-line { font-size: 13px; padding: 2px 8px; }
+  .cf-tag { font-size: 10px; padding: 0 4px; }
   .cf-clip { -webkit-line-clamp: 1; }
 }
 /* portrait (the admin watching on an iPad held upright, a narrow window); spectating, the feed

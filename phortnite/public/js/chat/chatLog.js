@@ -1,9 +1,11 @@
 // The party chat's store and its small decisions, DOM-free (the tests run it in Node). The chat UI
 // (js/ui/chat.js, app.chat) keeps one ChatLog for the whole page load.
 //   new ChatLog({ storage, now, max })   storage: localStorage (or a fake), now: () => ms epoch
-//   .add(raw, { code, history, game })   a room line {id, name, text, ts, q?, admin?} -> the stored
-//                                        line (cleaned again), or null (junk, or already seen).
-//                                        history: from a welcome, kept but never announced as new
+//   .add(raw, { code, history, game, adminOk })   a room line {id, name, text, ts, q?, admin?} ->
+//                                        the stored line (cleaned again), or null (junk, or already
+//                                        seen). history: from a welcome, kept but never announced as
+//                                        new. adminOk: the answer of the admin signature check on a
+//                                        line that claims to be his (js/ui/chat.js always passes it)
 //   .notice(text, code)                  a system line (sys: true) for that party's list
 //   .lines()                             copies of the newest `max` (100) lines, all parties
 //   .party(code)                         this party's lines (the drawer's list)
@@ -18,10 +20,19 @@
 // when it arrived, code = the party code ('SOLO' in a party of one).
 // Pure helpers: chatMode(settings), cleanLine(), lineKey(), lineView() (what a line shows as under
 // each Chat setting), sendBlock() (why a line can't be sent), Limiter (the room's rate limit, kept
-// here too), muteText().
+// here too), muteText(), adminLike(name) / playerName(name) (the admin's look is his alone).
 // Every line is cleaned again here with shared/chatFilter.js (text AND name): a modded host page
 // can't push unfiltered text into this page.
-import { cleanChat, quickText, QUICK_CHAT, MAX_CHAT } from '../../shared/chatFilter.js';
+// The admin's look is his alone: a player's name never shows the 🛡 and never reads "Admin" (or
+// "Adm1n", "A d m i n", "Moderator", "mod"…): it shows as 'Player' (the room renames such players
+// too: shared/chatFilter.js playerName). Only an observer's line (the admin watching: a negative id,
+// admin: true) that carries his signature is named 'Admin' and gets the 🛡 ADMIN tag: the party's
+// room runs on the host's page, so the room's admin: true alone proves nothing (a modded host page
+// could set it on any line). js/ui/chat.js checks the signature (js/admin/commands.js adminLineOk)
+// and passes the answer as adminOk; a claim that fails shows as 'Player'. ("Philip" is not
+// reserved: Philip plays under his own name, and friends may be called that too.) The room's other
+// messages (notes, alerts) still trust the host's page; the admin's own party commands are signed.
+import { cleanChat, quickText, QUICK_CHAT, MAX_CHAT, adminLike, playerName } from '../../shared/chatFilter.js';
 
 export const MAX_LINES = 100;
 export const MUTE_KEY = 'phortnite.chatMute';
@@ -47,19 +58,26 @@ export function cleanCode(code) {
 
 const isQuick = (q) => Number.isInteger(q) && q >= 0 && q < QUICK_CHAT.length;
 
+// ------------------------------------------------------------------ the admin's look
+// adminLike / playerName live in shared/chatFilter.js (the room uses them for every name it takes);
+// re-exported here for the chat UI and the rename sheet (js/ui/menu.js).
+export { adminLike, playerName };
+
 /**
  * A room line as this page keeps it, or null. The text is cleaned again (a quick line shows this
- * page's own QUICK_CHAT text for its index), the name too; admin only for an observer's id.
+ * page's own QUICK_CHAT text for its index), the name too; admin only for an observer's id, and
+ * only when adminOk (the caller checked the admin's signature on it: js/ui/chat.js). A player's
+ * name that looks like the admin's shows as 'Player' (playerName), and so does a failed claim.
  */
-export function cleanLine(m, code = 'SOLO', at = Date.now()) {
+export function cleanLine(m, code = 'SOLO', at = Date.now(), adminOk = true) {
   if (!m || typeof m !== 'object') return null;
   const id = Number.isFinite(m.id) ? Math.trunc(m.id) : 0;
   const ts = Number.isFinite(m.ts) ? m.ts : 0;
   const quick = isQuick(m.q);
   const text = quick ? quickText(m.q) : cleanChat(typeof m.text === 'string' ? m.text.slice(0, MAX_CHAT * 4) : '').text;
   if (!text) return null;
-  const admin = m.admin === true && id < 0;
-  const name = admin ? 'Admin' : cleanChat(typeof m.name === 'string' ? m.name.slice(0, 64) : '').text.slice(0, 16) || 'Player';
+  const admin = m.admin === true && id < 0 && adminOk === true;
+  const name = admin ? 'Admin' : playerName(cleanChat(typeof m.name === 'string' ? m.name.slice(0, 64) : '').text) || 'Player';
   const line = { id, name, text, ts, code: cleanCode(code), at };
   if (quick) line.q = m.q;
   if (admin) line.admin = true;
@@ -166,8 +184,8 @@ export class ChatLog {
   }
 
   /** A line from the room (or a welcome's history). Returns the stored line, or null. */
-  add(raw, { code = 'SOLO', history = false, game = null } = {}) {
-    const line = cleanLine(raw, code, this.now());
+  add(raw, { code = 'SOLO', history = false, game = null, adminOk = true } = {}) {
+    const line = cleanLine(raw, code, this.now(), adminOk);
     if (!line) return null;
     const key = lineKey(line);
     if (this.seen.has(key)) return null;

@@ -376,11 +376,12 @@ export class LobbyUi {
    * In the lobby on a narrow screen (portrait, phones) the toasts go right of the party rail, not
    * over its cards (like Philip's news under the bar, js/ui/announce.js); else the top middle.
    * An open chat drawer (js/ui/chat.js) pushes them right of it too, in the lobby and in a match
-   * (left of the minimap there).
+   * (left of the minimap there). A lobby with no room beside the drawer (a phone held upright):
+   * under it instead, never over its title, ✕ and safety note.
    */
   placeToasts() {
     const st = this.toasts.style;
-    st.left = st.width = st.transform = '';
+    st.left = st.width = st.transform = st.top = '';
     const onstage = document.body.classList.contains('onstage');
     const chat = this.app.chat && this.app.chat.rect ? this.app.chat.rect() : null;
     if (!onstage && !chat) return;
@@ -390,7 +391,17 @@ export class LobbyUi {
     const tr = !onstage && document.getElementById('topright');
     if (tr) { const r = tr.getBoundingClientRect(); if (r.width) right = Math.min(right, r.left - 12); }
     const left = edge + 12;
-    if (!edge || this.toasts.getBoundingClientRect().left >= left || right - left < 200) return;
+    if (!edge || this.toasts.getBoundingClientRect().left >= left) return;
+    if (right - left < 200) {
+      // (over the EMOTE / WARM UP / CHAT row for a moment: the drawer has its own ✕)
+      if (chat && onstage && innerHeight - chat.bottom >= 72) {
+        st.left = `${Math.round(chat.left)}px`;
+        st.top = `${Math.round(chat.bottom + 8)}px`;
+        st.width = `${Math.round(chat.width)}px`;
+        st.transform = 'none';
+      }
+      return;
+    }
     st.left = `${left}px`;
     st.width = `${chat ? Math.min(560, right - left) : right - left}px`;
     st.transform = 'none';

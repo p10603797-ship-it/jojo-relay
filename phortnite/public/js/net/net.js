@@ -169,7 +169,7 @@ export class LocalNet extends Emitter {
     this.kind = 'solo';
     this.rtt = 0;
     this.clock = new PausableClock();
-    this.room = new Room({ code: 'SOLO', name: 'Solo', solo: true, now: () => this.clock.now(), settings: opts.settings || null });
+    this.room = new Room({ code: 'SOLO', name: 'Solo', solo: true, now: () => this.clock.now(), wall: () => this.clock.base(), settings: opts.settings || null });
     this.conn = { id: 'local', ip: 'local', send: (m) => this.inbox.push(m) };
     this.inbox = [];
     this.hello = hello;

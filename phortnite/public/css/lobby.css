@@ -235,6 +235,8 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
 .mem-h i { width: 36px; height: 36px; border-radius: 8px; display: inline-block; }
 .mem-sub { font-family: system-ui, -apple-system, sans-serif; opacity: 0.8; margin: 4px 0 8px; }
 .rn-row input { width: 100%; font-size: 26px !important; text-align: center; }
+/* a name only the admin may have ("Admin", the 🛡): why it wasn't saved */
+.rn-why { margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; background: rgba(255, 110, 90, 0.2); font-size: 16px; line-height: 1.3; text-align: center; }
 .mode-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .mtile {
   --mc: #ffd23f; position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-height: 104px; padding: 10px 12px; border: 0; border-radius: 12px; color: #fff; text-align: left; cursor: pointer;

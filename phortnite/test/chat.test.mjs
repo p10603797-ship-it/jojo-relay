@@ -2,8 +2,8 @@
 // (public/shared/plugins/chat.js) on a real Room through the test harness.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanChat, quickText, QUICK_CHAT, MAX_CHAT } from '../public/shared/chatFilter.js';
-import { chat, HISTORY, WELCOME_LINES, BURST, REFILL_MS, PER_MIN, DUP_MS } from '../public/shared/plugins/chat.js';
+import { cleanChat, quickText, QUICK_CHAT, MAX_CHAT, adminLike, playerName } from '../public/shared/chatFilter.js';
+import { chat, HISTORY, WELCOME_LINES, BURST, REFILL_MS, PER_MIN, DUP_MS, ENV_MAX } from '../public/shared/plugins/chat.js';
 import { ROOM_PLUGINS } from '../public/shared/plugins/index.js';
 import { PROTOCOL } from '../public/shared/constants.js';
 import { makeRoom } from './helpers/roomharness.mjs';
@@ -60,6 +60,27 @@ const BAD = [
   ['pass the ass', 'pass the ★★★'],
   ['crappy', '★★★★★★'],
   ['wtf', '★★★'],
+  // "fancy text" NFKC leaves alone: small capitals, negative circled / squared letters, regional indicators
+  ['you ɴɪɢɢᴇʀ lol', 'you ★★★★★★ lol'],
+  ['ꜰᴜᴄᴋ', '★★★★'],
+  [U(0x1f175, 0x1f184, 0x1f172, 0x1f17a), '★★★★'],
+  [U(0x1f15d, 0x1f158, 0x1f156, 0x1f156, 0x1f150), '★★★★★'],
+  [U(0x1f1eb, 0x1f1fa, 0x1f1e8, 0x1f1f0), '★★★★'],
+  // look-alikes: Greek eta, Cyrillic pe / i, Armenian u, Latin hooked f
+  ['ηigger', '★★★★★★'], ['пigger', '★★★★★★'], ['fսck', '★★★★'], ['ƒuck', '★★★★'],
+  // a '*' or '#' for one or two hidden letters (the stars stay)
+  ['n*gger', '★*★★★★'], ['n**ger', '★**★★★'], ['f*ggot', '★*★★★★'], ['c*nt', '★*★★'], ['a**hole', '★**★★★★'],
+  ['f**k', '★**★'], ['f**king', '★**★★★★'], ['wh*re', '★★*★★'], ['f#ck', '★#★★'],
+  // more leetspeak: 9 6 → g, 8 → b, 1 | → l (a second reading), € → e, + → t inside a word
+  ['ni99a', '★★★★★'], ['ni99er', '★★★★★★'], ['8itch', '★★★★★'], ['s1ut', '★★★★'], ['s|ut', '★★★★'], ['bi+ch', '★★★★★'], ['nigg€r', '★★★★★★'],
+  // more of the list, and slurs split across words
+  ['twat', '★★★★'], ['niqqa', '★★★★★'], ['nig ga', '★★★ ★★'], ['ni gga', '★★ ★★★'], ['kunt', '★★★★'], ['fking', '★★★★★'],
+  ['cumshot', '★★★★★★★'], ['seggs', '★★★★★'], ['nazi', '★★★★'], ['heil hitler', '★★★★ ★★★★★★'],
+  // self-harm taunts
+  ['go die', '★★ ★★★'], ['u should go die', 'u should ★★ ★★★'], ['hang urself', '★★★★ ★★★★★★'], ['neck yourself', '★★★★ ★★★★★★★★'],
+  ['drink bleach', '★★★★★ ★★★★★★'],
+  // a root starts at a piece of a dotted word
+  ['what.the.f.u.c.k', 'what.the.★.★.★.★'], ['b.u.l.l.s.h.i.t', '★.★.★.★.★.★.★.★'],
 ];
 
 test('chat filter: swears are masked one ★ per letter, through leetspeak, spacing, symbols, zero-width, fullwidth and look-alike letters', () => {
@@ -83,6 +104,16 @@ const CLEAN = [
   'booby trap', 'cumulative', 'sextant', 'homophone', 'Pakistan', 'skyscraper', 'Matsushita', 'as is', 'is it ok',
   'I have 455 wood', '1v1 me', 'GG ez', 'hi!!!', 'what the hell', 'I got 3 kills', 'score 10 - 7', 'e.g. this', 'wait 5 min',
   'top 10', '1st place', 'version 2.5.0', 'meet at 5.30', 'Nice build, Zoë 🎉', 'ok.', 'lol...', '¿qué tal?', 'Привет', '你好',
+  // a doubled letter is not a root's single one; symbols between real words; texting
+  'i love rapping', 'she rapped a song', 'self assess', 'Sunni and Shiite', 'yes...hit him', 'smash-it', 'c u m8', 'he s hit', 'it s lag',
+  // the newer roots stay whole words
+  'Shaggy', 'phage', 'cumin', 'cucumber', 'goodies', 'go dive', 'go diego', 'jump off the bridge', 'hang out', 'nibble', 'tardy', 'restart', 'jazz',
+  'i died lol', 'c little', 't water',
+  // digits and symbols that are not leetspeak here, and fancy letters that spell nothing bad
+  'sushi', 'sushi+', 'sk8', 'gr8', 'h8ers', '6v6', '9mm', 'top 8', 'b4 we go', '*waves*', '*sigh*', '2*3=6', 'x*y', 'c++', 'i like (rap) music',
+  'ʜᴇʟʟᴏ', U(0x1f1fa, 0x1f1f8),
+  // a child saying this must reach the admin as it is
+  'kill myself', 'kms',
 ];
 
 test('chat filter: the Scunthorpe problem — whole words only, common words stay clean', () => {
@@ -113,14 +144,44 @@ test('chat filter: personal info becomes [hidden] (e-mails, links, domains, phon
     ['find me: Zoë#1234', 'find me: [hidden]'],
     ['ｂｏｂ＠ｇｍａｉｌ．ｃｏｍ', '[hidden]'],
     ['gmail．com', '[hidden]'],
+    // phone numbers with any separators, keycaps, other scripts' digits
+    ['0770,0900,123', '[hidden]'],
+    ['my number is 07700, 900, 123', 'my number is [hidden]'],
+    ['07700/900/123', '[hidden]'],
+    ['07700_900_123', '[hidden]'],
+    ['555|123|4567', '[hidden]'],
+    [`555${U(0x1f525)}123${U(0x1f525)}4567`, '[hidden]'],
+    [[...'07700900123'].map((d) => d + U(0xfe0f, 0x20e3)).join(''), '[hidden]'],
+    ['٠٧٧٠٠٩٠٠١٢٣', '[hidden]'],
+    // e-mails and domains written out
+    ['jake.smith at gmail dot com', '[hidden]'],
+    ['jakesmith(at)gmail(dot)com', '[hidden]'],
+    ['jake.smith @ gmail . com', '[hidden]'],
+    ['mail jakesmith@gmail', 'mail [hidden]'],
+    [`jake@gmail${U(0x3002)}com`, '[hidden]'],
+    ['youtube . com', '[hidden]'],
+    ['youtube dot com slash jake', '[hidden]'],
+    ['discord dot gg slash abc', '[hidden]'],
+    ['goo.gl/abc', '[hidden]'],
+    ['ᴡᴡᴡ.ʀᴏʙʟᴏx.ᴄᴏᴍ', '[hidden]'],
+    // usernames after an app's name
+    ['snap: jake2014', 'snap: [hidden]'],
+    ['add me on snap jake2014', 'add me on snap [hidden]'],
+    ['my insta is jake.2014', 'my insta is [hidden]'],
+    ['ig: jake_2014', 'ig: [hidden]'],
+    ['add me on roblox: Jake_2014', 'add me on roblox: [hidden]'],
+    ['@ jake2014', '[hidden]'],
+    ['jake # 1234', '[hidden]'],
   ];
   for (const [input, want] of cases) {
     const r = cleanChat(input);
     assert.equal(r.text, want, JSON.stringify(input));
     assert.equal(r.masked, true, JSON.stringify(input));
   }
-  // short handles and numbers stay
-  for (const s of ['@ab', 'room 123456', 'I have 100 wood']) assert.equal(clean(s), s);
+  // short handles and numbers stay, and so do everyday lines that only look a bit like the above
+  for (const s of ['@ab', 'room 123456', 'I have 100 wood', '50/50 chance', '3/4/2015', 'won 3-2, 4-1', 'see you at 4:30 on 15/10',
+    'I got 12,345 coins and 67 kills', 'i have 1,000 vbucks', 'look at this', 'see you at school', 'roblox is fun', 'xbox 360', 'my discord is down',
+    'oh snap that was close', 'insta 100', 'snap 2 grid', 'that was close . gg']) assert.equal(clean(s), s);
   // both kinds in one line
   assert.equal(clean('shit, email bob@x.com'), '★★★★, email [hidden]');
 });
@@ -157,7 +218,8 @@ test('chat filter: idempotent (the room cleans, every page cleans again) — a f
     assert.equal(twice.masked, false, JSON.stringify(s));
   }
   const parts = ['fuck', 'f', 'u', 'c', 'k', ' ', '.', '@', 'bob', 'gmail', '.com', '5', '1', '0', 'sh', 'it', 'a', 's', 'ss', '!', '$', '★',
-    '[hidden]', 'www.', 'x.io', '555', '-', '(', ')', '#1234', ZWSP, RLO, U(0x301), '🙂', 'ｆ', 'class', 'grass', 'kill', 'yourself', 'é', '\n', 'mishit', 'gg'];
+    '[hidden]', 'www.', 'x.io', '555', '-', '(', ')', '#1234', ZWSP, RLO, U(0x301), '🙂', 'ｆ', 'class', 'grass', 'kill', 'yourself', 'é', '\n', 'mishit', 'gg',
+    ' at ', ' dot ', 'snap', ':', '/', ',', U(0x3002), 'jake2014', '*', '#', '8', '9', '|', '+', '€', 'ᴀ', 'ɴ', U(0x1f175), U(0xfe0f, 0x20e3), '٧', 'go', 'die', 'nig', 'ga'];
   let seed = 7;
   const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
   for (let t = 0; t < 3000; t++) {
@@ -245,7 +307,7 @@ test('chat plugin: rate limits (burst, refill, 20 a minute), duplicates dropped 
   H.advance(REFILL_MS - 1000);
   H.send(a, { t: 'chat', text: 'one more' });
   assert.equal(said(), BURST + 1, 'a token every REFILL_MS');
-  // the same text again within DUP_MS: dropped without a word, and it costs nothing
+  // the same text again within DUP_MS: dropped without a word (it still takes its token)
   H.advance(REFILL_MS * 4);
   H.clear(a);
   H.send(a, { t: 'chat', text: 'gg' });
@@ -275,6 +337,68 @@ test('chat plugin: rate limits (burst, refill, 20 a minute), duplicates dropped 
   // limits are per speaker
   H2.send(d, { t: 'chat', text: 'me too' });
   assert.equal(H2.last(c, 'chat').text, 'me too');
+});
+
+test('chat plugin: a flood is turned away before it is cleaned (crafted lines cost the filter the most); repeats take a token too', () => {
+  const ZW = (i) => ZWSP.repeat(i % 5);
+  const floods = {
+    varied: (i) => `${'x y '.repeat(30)}${i}`,                       // cut at MAX_CHAT: they all clean to the same line
+    same: () => 'a b '.repeat(60),
+    invisible: (i) => `x${ZW(i)} y ${'x y '.repeat(29)}`,           // differs as sent, the same once cleaned
+    fancy: () => 'ﬁ ǉ ǌ ĳ ㎏ ™ '.repeat(10),                         // one character, two letters
+    stars: (i) => `${'f**f '.repeat(23)}${i}`,
+  };
+  for (const [kind, line] of Object.entries(floods)) {
+    const H = makeRoom({ clone: false });
+    const a = H.join('Ann'), b = H.join('Ben');
+    const t0 = performance.now();
+    for (let i = 0; i < 400; i++) H.send(a, { t: 'chat', text: line(i) }); // what a modded page can send in a second
+    const ms = performance.now() - t0;
+    assert.ok(H.msgs(b, 'chat').length <= BURST, kind);
+    assert.ok(ms < 500, `${kind}: ${ms.toFixed(0)} ms for 400 lines (every one was cleaned before the limit)`);
+    assert.deepEqual(H.msgs(a, 'chatno'), [{ t: 'chatno', why: 'slow' }], `${kind}: told once`);
+    // and the room still hears this speaker once a token is back
+    H.advance(REFILL_MS);
+    H.send(a, { t: 'chat', text: 'sorry' });
+    assert.equal(H.last(b, 'chat').text, 'sorry', kind);
+  }
+  // the filter itself stays cheap on such lines (the room cleans each line once, every page again)
+  const t0 = performance.now();
+  for (let i = 0; i < 30; i++) for (const s of ['x y '.repeat(30), 'a b '.repeat(60), 'ﬁ ǉ ǌ ĳ ㎏ ™ '.repeat(10), 's 1 '.repeat(30)]) cleanChat(s + i);
+  const ms = performance.now() - t0;
+  assert.ok(ms < 400, `${ms.toFixed(0)} ms for 120 crafted lines`);
+});
+
+test('chat plugin: limits and ts run on room.wall(), so chat keeps working through the admin\'s pause (the room clock stops)', () => {
+  let w = 50000;
+  const H = makeRoom({ wall: () => w }); // the harness clock never moves here: the room's now() is "paused"
+  const a = H.join('Ann'), b = H.join('Ben'), o = ob(H);
+  const said = () => H.msgs(b, 'chat').filter((m) => m.id === a.pid);
+  for (let i = 0; i < BURST + 4; i++) {
+    H.send(a, { t: 'chat', text: `why is it paused ${i}` });
+    w += REFILL_MS + 200;
+  }
+  assert.equal(said().length, BURST + 4, 'a token comes back every REFILL_MS of real time');
+  assert.equal(H.msgs(a, 'chatno').length, 0);
+  assert.equal(new Set(said().map((m) => m.ts)).size, BURST + 4, 'every line its own ts (pages tell lines apart by it)');
+  // the same text: dropped within DUP_MS, said again after it
+  H.send(a, { t: 'chat', text: 'GG' });
+  w += DUP_MS - 1;
+  H.send(a, { t: 'chat', text: 'GG' });
+  w += 2;
+  H.send(a, { t: 'chat', text: 'GG' });
+  const gg = said().filter((m) => m.text === 'GG');
+  assert.equal(gg.length, 2);
+  assert.notEqual(gg[0].ts, gg[1].ts);
+  // the admin watching too
+  for (let i = 0; i < BURST + 2; i++) { H.send(o, { t: 'chat', text: `resuming soon ${i}` }); w += REFILL_MS; }
+  assert.equal(H.msgs(b, 'chat').filter((m) => m.admin).length, BURST + 2);
+  // a burst at one moment is still a burst: one chatno
+  H.clear(a);
+  w += 60000;
+  for (let i = 0; i < BURST + 2; i++) H.send(a, { t: 'chat', text: `burst ${i}` });
+  assert.deepEqual(H.msgs(a, 'chatno'), [{ t: 'chatno', why: 'slow' }]);
+  assert.equal(H.errors.length, 0, JSON.stringify(H.errors));
 });
 
 test('chat plugin: the party keeps its last 30 lines; the welcome (joiners, rejoiners, observers) carries the last 20', () => {
@@ -389,6 +513,73 @@ test('chat plugin: the admin observing talks as "Admin" (admin: true, set by the
   // observers' other messages still can't touch the match
   H.send(o, { t: 'start', bots: 0 });
   assert.equal(H.room.phase, 'lobby');
+  assert.equal(H.errors.length, 0, JSON.stringify(H.errors));
+});
+
+test('chat plugin: the admin\'s line carries his signature (env) as it came, a copy; never a player\'s; junk or oversized env dropped; the history keeps it', () => {
+  const H = makeRoom();
+  const a = H.join('Ann'), o = ob(H);
+  const env = { v: 1, cmd: 'say', args: { code: 'TEST', text: 'Be kind!' }, to: '*', ts: 5, n: 'AAAAAAAAAAAAAAAA', sig: 'c2lnbmVk' };
+  H.send(o, { t: 'chat', text: 'Be kind!', env });
+  assert.deepEqual(H.last(a, 'chat'), { t: 'chat', id: H.last(o, 'welcome').you, name: 'Admin', text: 'Be kind!', ts: H.now(), admin: true, env });
+  // (the room's own copy: nothing a page does to what it got changes the history)
+  const H2 = makeRoom({ clone: false });
+  const a2 = H2.join('Ann'), o2 = ob(H2);
+  H2.send(o2, { t: 'chat', text: 'hi', env });
+  const got = H2.last(a2, 'chat');
+  assert.notEqual(got.env, env);
+  got.env.args.text = 'changed';
+  assert.equal(H2.room.chatLines[0].env.args.text, 'Be kind!', 'the room keeps its own copy (it never checks the signature: pages do)');
+  // a player's env is never passed on
+  H.advance(2000);
+  H.send(a, { t: 'chat', text: 'hello', env });
+  assert.equal('env' in H.last(o, 'chat'), false);
+  // junk, an array, too big: dropped (the line still goes, without it: pages show it as 'Player')
+  for (const [i, bad] of ['nope', [1, 2], { pad: 'x'.repeat(ENV_MAX) }, 42].entries()) {
+    H.advance(2000);
+    H.send(o, { t: 'chat', text: `line ${i}`, env: bad });
+    const l = H.last(a, 'chat');
+    assert.equal(l.text, `line ${i}`);
+    assert.equal(l.admin, true);
+    assert.equal('env' in l, false, JSON.stringify(bad).slice(0, 40));
+  }
+  // quick chat too
+  H.advance(2000);
+  const qenv = { ...env, args: { code: 'TEST', text: 'GG!' } };
+  H.send(o, { t: 'chat', q: 1, env: qenv });
+  assert.deepEqual(H.last(a, 'chat').env, qenv);
+  // a joiner's welcome: the admin's lines with their signatures
+  const c = H.join('Cy');
+  const hist = H.last(c, 'welcome').chat;
+  assert.deepEqual(hist.find((l) => l.text === 'Be kind!').env, env);
+  assert.equal(hist.filter((l) => l.env).length, 2);
+  assert.equal(H.errors.length, 0, JSON.stringify(H.errors));
+});
+
+test('room names: nobody takes the admin\'s look (join and rename): "Player" instead, the 🛡 dropped; "Philip" stays', () => {
+  const H = makeRoom();
+  const names = ['Admin', '🛡 Sam', 'Adm1n', 'A d m i n', 'Moderator', 'mod', 'Philip', 'Chad Miner', '⛨Bea'];
+  const conns = names.map((n) => H.join(n));
+  const roster = () => new Map(H.last(conns[0], 'roster') ? H.last(conns[0], 'roster').players.map((p) => [p.id, p.name]) : []);
+  const got = conns.map((c) => H.player(c.pid).name);
+  assert.deepEqual(got, ['Player', 'Sam', 'Player', 'Player', 'Player', 'Player', 'Philip', 'Chad Miner', 'Bea']);
+  // a rename ('look') goes through the same rule
+  const p = conns[6];
+  H.advance(500);
+  H.send(p, { t: 'look', name: 'The Admin' });
+  H.advance(500);
+  assert.equal(H.player(p.pid).name, 'Player');
+  H.send(p, { t: 'look', name: '🛡 Phil' });
+  H.advance(500);
+  assert.equal(H.player(p.pid).name, 'Phil');
+  assert.equal(roster().get(p.pid), 'Phil');
+  // and a chat line names the speaker as the roster does
+  H.send(conns[0], { t: 'chat', text: 'hi' });
+  assert.equal(H.last(p, 'chat').name, 'Player');
+  // the rule itself (shared/chatFilter.js; js/chat/chatLog.js re-exports it)
+  assert.equal(adminLike('Commodore'), false);
+  assert.equal(adminLike('ADMIN'), true);
+  assert.equal(playerName('  🛡️  Mia  '), 'Mia');
   assert.equal(H.errors.length, 0, JSON.stringify(H.errors));
 });
 

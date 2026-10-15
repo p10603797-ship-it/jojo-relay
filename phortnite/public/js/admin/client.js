@@ -38,7 +38,10 @@
 //                         the last 100) sealed to the admin, and its chat list says "🛡 The admin
 //                         looked at this chat" (a toast too when the chat isn't open)
 // Uploads to the admin (UP_TOPIC, js/admin/commands.js sealUpload), sealed with this page's own key:
-//   report(line, context) a player's 🚩 Report to admin (js/ui/chat.js) -> Promise<bool> (published?)
+//   report(line, context) a player's 🚩 Report to admin (js/ui/chat.js) -> Promise<bool>: published,
+//                         NOT delivered: UP_TOPIC is not retained, so only an admin page that is
+//                         open right now hears it (one made while Philip is offline is lost; the
+//                         chat's wording must never promise more)
 //   the live party chat   ONLY on the page that hosts a P2P party (its room runs here), and only
 //                         while someone else is in it (a friend, or the admin watching): its new
 //                         lines (app.chat.onLine), batched, at most one upload every FEED_MS. Every
@@ -294,6 +297,9 @@ export class AdminClient {
         code: kind === 'solo' ? '' : (g && g.code) || '',
         kind: g && g.observer ? 'watch' : kind === 'solo' ? 'solo' : kind === 'p2p-host' ? 'host' : 'member',
         size: Math.max(1, humans),
+        // (this page's player id in that party's room, the id its chat lines carry: the admin's CHAT
+        // tab finds a line's speaker by it, so a copied or filtered name can't point at someone else)
+        ...(kind !== 'solo' && g && !g.observer && Number.isInteger(g.myId) && g.myId > 0 ? { pid: g.myId } : {}),
       },
       v: VERSION,
       since: this.since,

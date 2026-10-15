@@ -1,5 +1,6 @@
 // Menus and modal dialogs.
 import { SKINS } from '../../shared/constants.js';
+import { playerName } from '../chat/chatLog.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -63,10 +64,20 @@ export class Ui {
     const st = app.settings;
     this.modal(`<h2>YOUR NAME</h2>
       <div class="rn-row"><input id="rn-name" maxlength="16" autocomplete="off" autocorrect="off" spellcheck="false" value="${esc(st.name)}"></div>
+      <p class="rn-why hidden" role="alert"></p>
       <div class="sheet-btns"><button class="btn yellow big rn-ok">SAVE</button></div>`, (b) => {
       const input = $('#rn-name', b);
+      const why = $('.rn-why', b);
       const save = () => {
-        const n = input.value.replace(/[\u0000-\u001f<>&"']/g, '').trim().slice(0, 16);
+        const raw = input.value.replace(/[\u0000-\u001f<>&"']/g, '').trim().slice(0, 16);
+        // (the 🛡 and names like "Admin" are the admin's alone: chat shows them as 'Player')
+        const n = playerName(raw);
+        if (raw && !n) {
+          why.textContent = 'That name is only for the admin (Philip). Pick another one!';
+          why.classList.remove('hidden');
+          input.focus();
+          return;
+        }
         if (n) {
           st.name = n;
           app.saveSettings();
@@ -238,7 +249,7 @@ export class Ui {
       <h3>Playing with friends</h3>
       <p>Play with friends anywhere: tap <b>+ INVITE</b> in the lobby and send the 4-letter party code, the QR code or the link (SHARE / COPY LINK). Friends tap <b>JOIN A FRIEND</b> and type the code, or just open the link. The party leader (♛) picks the mode with <b>CHANGE</b> and presses <b>PLAY</b>; everyone else taps <b>READY</b>. After a match everybody comes back to the lobby together. On the website the party runs on the host's device, so the host should keep the game open; if the Wi-Fi blips you get back into the same match within a minute.</p>
       <h3>Party chat</h3>
-      <p>Tap <b>💬 CHAT</b> in the lobby (or 💬 next to ☰ in a match, <kbd>Enter</kbd> on a keyboard) to chat with your party, or tap a quick message like "GG!". Be kind! Bad words, links and phone numbers are hidden. 🛡 The admin (Philip) can read chats to keep everyone safe, and you can tap someone's message to hide them or report it to the admin. Settings → Chat: On, Quick chat only, or Off.</p>`;
+      <p>Tap <b>💬 CHAT</b> in the lobby (or 💬 next to ☰ in a match, <kbd>Enter</kbd> on a keyboard) to chat with your party, or tap a quick message like "GG!". Be kind! Bad words, links and phone numbers are hidden. 🛡 The admin (Philip) can read chats to keep everyone safe, and you can tap someone's message to hide them or report it to the admin (he gets it if he is online right now; tell a grown-up about anything serious). The real admin's messages always have the <b>🛡 ADMIN</b> tag, and he never asks for your name, school, address or phone number. Settings → Chat: On, Quick chat only, or Off.</p>`;
     this.modal(html, null, onClose);
   }
 

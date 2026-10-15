@@ -1,11 +1,13 @@
 // Party chat on the page (stage 3): the DOM-free parts of the chat UI. The store
 // (public/js/chat/chatLog.js: caps, copies, onLine, history, the admin's mute kept in localStorage,
 // hide, unread), what a line shows as under each Chat setting (On / Quick chat only / Off), why a
-// line can't be sent, the page's own rate limit, and the ChatClient game plugin's routing.
+// line can't be sent, the page's own rate limit, the admin's look (a player's name can't pass for
+// his), and the ChatClient game plugin's routing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ChatLog, Limiter, MAX_LINES, MUTE_KEY, HIDDEN_QUICK, HIDDEN_SENDER, chatMode, cleanLine, cleanCode, lineKey, lineView, sendBlock, muteText,
+  adminLike, playerName,
 } from '../public/js/chat/chatLog.js';
 import { QUICK_CHAT } from '../public/shared/chatFilter.js';
 import { ChatClient } from '../public/js/game/chatClient.js';
@@ -55,6 +57,7 @@ test('chat ui: every line is cleaned again here (text and name), admin only for 
   assert.ok(/\[hidden\]/.test(n.text) && !/evil\.com/.test(n.text), n.text);
   // admin: only an observer's (negative) id, and always named Admin
   assert.equal(cleanLine({ id: 5, name: 'Philip', text: 'hi', admin: true, ts: 1 }, 'ABCD').admin, undefined);
+  assert.equal(cleanLine({ id: 5, name: 'Philip', text: 'hi', admin: true, ts: 1 }, 'ABCD').name, 'Philip', '"Philip" is not reserved');
   const a = cleanLine({ id: -1, name: 'Whoever', text: 'Be kind!', admin: true, ts: 1 }, 'ABCD');
   assert.equal(a.admin, true);
   assert.equal(a.name, 'Admin');
@@ -68,6 +71,58 @@ test('chat ui: every line is cleaned again here (text and name), admin only for 
   assert.equal(cleanLine({ id: 1, text: 'hi' }, 'ABCD').name, 'Player', 'a missing name');
   assert.equal(cleanLine({ id: 'x', text: 'hi', ts: 'y' }, 'ABCD').id, 0);
   assert.ok(cleanLine({ id: 1, text: 'x'.repeat(5000) }, 'ABCD').text.length <= 120, 'capped');
+});
+
+test('chat ui: the admin\'s look is his alone: a player named like him shows as Player', () => {
+  const fakes = [
+    'Admin', 'ADMIN', 'admin', '🛡 Admin', '🛡️ Admin', 'Admin 🛡 ADMIN', 'Adm1n', '4dm1n', 'Admln', 'Ádmín', 'Аdmin' /* Cyrillic А */,
+    'Ａｄｍｉｎ' /* fullwidth */, 'ᴬᴰᴹᴵᴺ', 'A d m i n', 'Ad min', 'The Admin', 'TheAdmin', 'Admin2', 'Philip (admin)', 'Moderator', 'm0derator',
+    'mod', 'Mods', 'the mod', 'Staff',
+  ];
+  for (const n of fakes) {
+    assert.equal(adminLike(n), true, n);
+    assert.equal(playerName(n), '', n);
+    const l = cleanLine({ id: 2, name: n, text: 'This is the admin. What school do you go to?', ts: 1 }, 'ABCD');
+    assert.equal(l.name, 'Player', n);
+    assert.equal(l.admin, undefined, n);
+  }
+  // real names stay as they are (Philip plays under his own name; friends may be called that too)
+  for (const n of ['Philip', 'Madison', 'Bea', 'Chad Miner', 'Brad Mink', 'Admiral', 'Model', 'Modder', 'Commodore', 'Modern X', 'Damien', 'Sam']) {
+    assert.equal(adminLike(n), false, n);
+    assert.equal(cleanLine({ id: 2, name: n, text: 'hi', ts: 1 }, 'ABCD').name, n, n);
+  }
+  // the 🛡 never shows in a player's name; the rest of it does
+  assert.equal(playerName('🛡 Sam'), 'Sam');
+  assert.equal(playerName('Sam 🛡️'), 'Sam');
+  assert.equal(cleanLine({ id: 2, name: '⛨ Mia 🛡', text: 'hi', ts: 1 }, 'ABCD').name, 'Mia');
+  assert.equal(cleanLine({ id: 2, name: '🛡', text: 'hi', ts: 1 }, 'ABCD').name, 'Player');
+  assert.equal(playerName('x'.repeat(30)).length, 16);
+  // the real admin (an observer's line) is still 'Admin' with the 🛡 ADMIN tag
+  const real = cleanLine({ id: -1, name: 'whatever', text: 'Be kind everyone!', admin: true, ts: 2 }, 'ABCD');
+  assert.equal(real.name, 'Admin');
+  assert.equal(real.admin, true);
+  assert.equal(lineView(real, { mode: 'quick' }).kind, 'admin');
+  // an impostor's line is an ordinary one: Quick chat only hides it, it can be hidden (and reported)
+  const fake = cleanLine({ id: 3, name: '🛡 Admin', text: 'This is the admin. What school do you go to?', ts: 3 }, 'ABCD');
+  assert.equal(lineView(fake).kind, 'text');
+  assert.equal(lineView(fake, { mode: 'quick' }).kind, 'quickonly');
+  assert.equal(lineView(fake, { hidden: true }).kind, 'hidden');
+  // the store keeps it the same way
+  const { log } = makeLog();
+  assert.equal(log.add({ id: 3, name: 'ADMIN 🛡', text: 'hi', ts: 4 }, { code: 'ABCD' }).name, 'Player');
+  // a modded host page can set admin: true and a negative id on its own line: without the admin's
+  // signature (js/ui/chat.js checks it and passes adminOk) it is an ordinary 'Player' line
+  const forged = { id: -3, name: 'Admin', text: 'This is the admin. What school do you go to?', admin: true, ts: 5 };
+  const f = cleanLine(forged, 'ABCD', 1, false);
+  assert.equal(f.admin, undefined);
+  assert.equal(f.name, 'Player');
+  assert.equal(lineView(f, { mode: 'quick' }).kind, 'quickonly');
+  assert.equal(lineView(f, { hidden: true }).kind, 'hidden');
+  const stored = log.add(forged, { code: 'ABCD', adminOk: false });
+  assert.equal(stored.admin, undefined);
+  assert.equal(stored.name, 'Player');
+  assert.equal(log.add({ ...forged, ts: 6 }, { code: 'ABCD', adminOk: true }).admin, true, 'checked: the admin\'s');
+  assert.equal(cleanLine({ ...forged, id: 3 }, 'ABCD', 1, true).admin, undefined, 'never for a player\'s id, signature or not');
 });
 
 test('chat ui: the store keeps the newest 100 lines (all parties); lines() hands out copies', () => {

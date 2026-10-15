@@ -334,3 +334,13 @@ body.observing #elimscreen, body.observing #lobbypanel, body.observing #prompt, 
   #adminwatch .aw-name { font-size: 20px; }
   #adminwatch .aw-sub { display: none; }
 }
+/* a phone held upright: ◀ ▶ 💬 LEAVE take the whole width, so 👁 SPECTATING and the name get a
+   row of their own above them (side by side, the name had no room left at all). The HUD's own 💬
+   steps aside while watching: the bar has one, and up there it sits under Philip's banner */
+@media (max-width: 520px) {
+  #adminwatch { flex-wrap: wrap; justify-content: center; row-gap: 4px; padding: 6px 8px; }
+  #adminwatch .aw-info { flex: 1 1 100%; }
+  #adminwatch .aw-top { justify-content: center; }
+  #adminwatch .aw-name { max-width: none; }
+  body.observing #chatbtn { display: none; }
+}

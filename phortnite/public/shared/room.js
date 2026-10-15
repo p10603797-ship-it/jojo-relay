@@ -32,6 +32,7 @@ import {
 } from './modes/runtime.js';
 import { rollInitialLoot, rollChest, makeLoadout } from './loot.js';
 import { ROOM_PLUGINS } from './plugins/index.js';
+import { playerName } from './chatFilter.js';
 
 let sharedWorld = null;
 export function getWorld() {
@@ -54,7 +55,8 @@ const MYSTERY = [
 const r2 = (v) => Math.round(v * 100) / 100;
 const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const clampN = (v, a, b) => Math.max(a, Math.min(b, v));
-const cleanName = (s) => String(s ?? '').replace(/[\u0000-\u001f<>&"']/g, '').trim().slice(0, 16) || 'Player';
+// (a name never passes for the admin's: no 🛡, never "Admin" / "Adm1n" / "mod"…: shared/chatFilter.js playerName)
+const cleanName = (s) => playerName(String(s ?? '').replace(/[\u0000-\u001f<>&"']/g, '')) || 'Player';
 const cleanText = (s, n) => String(s ?? '').replace(/[\u0000-\u001f<>&"]/g, '').trim().slice(0, n);
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -132,15 +134,20 @@ export class Room {
   /**
    * settings: the mode ({modeId, rules, info, custom}, or the legacy {bots, mats, mode}).
    * maxHumans: party size limit. plugins: room plugins (default ROOM_PLUGINS).
+   * now: the room clock (ms). It may stop: on a P2P host and in solo it pauses for the admin's ⏸
+   * and while the page is hidden. wall: a clock that never pauses (ms, any origin), for what must
+   * keep running on real time through a pause (chat limits: plugins/chat.js); defaults to now (the
+   * Node server, whose clock never stops, and the test harness's fake clock).
    */
   constructor({
-    code = 'SOLO', name = 'Party', solo = false, now = () => Date.now(), log = () => {},
+    code = 'SOLO', name = 'Party', solo = false, now = () => Date.now(), wall = now, log = () => {},
     settings = null, maxHumans = MAX_HUMANS, plugins = ROOM_PLUGINS,
   } = {}) {
     this.code = code;
     this.name = name;
     this.solo = solo;
     this.now = now;
+    this.wall = wall;
     this.log = log;
     this.maxHumans = maxHumans;
     this.created = now();

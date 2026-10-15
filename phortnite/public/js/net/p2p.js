@@ -239,6 +239,8 @@ export class P2PHost extends Emitter {
     storeCode(this.code);
     this.room = new Room({
       code: this.code, name: `${this.hello.name || 'Player'}'s party`, now: () => this.clock.now(),
+      // chat limits run on real time: the admin's pause (or a hidden page) stops the room clock
+      wall: () => this.clock.base(),
       settings: cleanSettings(this.settings), maxHumans: P2P_MAX_HUMANS,
     });
     // a kicked friend hears it, then the link closes

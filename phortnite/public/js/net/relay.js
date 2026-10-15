@@ -22,10 +22,14 @@
 //     the host's answer body is the host's own ephemeral key for this link
 //   - both ends derive one AES-GCM-256 key: HKDF-SHA256 over the ECDH secret, salt = the link id,
 //     info 'phortnite relay v1'
-//   - every d body is base64(iv (12 random bytes) | ciphertext) of the batched text, with the link
-//     id and the direction ('h' to the host, 'c' to the friend) as additional data, so a message
-//     can't be bounced back to the end that sent it. Async crypto keeps the order: each link seals
-//     (and opens) its messages one after another. A d body that does not open is ignored.
+//   - every d body is base64(iv (12 random bytes) | ciphertext) of seq (8 bytes, big-endian) | the
+//     batched text, with the link id and the direction ('h' to the host, 'c' to the friend) as
+//     additional data, so a message can't be bounced back to the end that sent it. seq counts each
+//     direction's messages from 1, and an end only takes a message whose seq is above the last one
+//     it opened: anyone on the broker can publish a d body it saw again, and without the counter the
+//     Room would run its frames again (a kid's chat line said twice, a leader's start). Async crypto
+//     keeps the order: each link seals (and opens) its messages one after another. A d body that does
+//     not open, or opens with an old seq, is ignored.
 //   - a sealed batch holds at most SEALED_BATCH bytes of UTF-8, so the base64 stays within BATCH
 //     characters (a single frame is never split: p2p.js cuts messages into frames of at most 5000
 //     characters); x (close) carries nothing and needs no secret
@@ -36,8 +40,13 @@
 //     A page without WebCrypto (not https) can't encrypt, so it gets no party over the relay.
 //   - What this does NOT stop: an active man-in-the-middle. Anyone on a broker can knock or answer
 //     with their own key (the keys are not signed: there is no account or secret both pages share),
-//     and anyone who learns a link id can close it ('x'). Encryption stops eavesdroppers on the
-//     public brokers, which is the realistic risk; direct WebRTC links are encrypted by DTLS.
+//     and anyone who learns a link id can close it ('x'). Nor does the topic hide the party: it is
+//     a hash of the 4-letter code (topicFor), and with only 24^4 codes anyone listening on purpose
+//     can work the code back out in about a second, then join the party like a friend (and read its
+//     chat), or race the host's answer to sit in the middle. Encryption stops eavesdroppers on the
+//     public brokers (someone who just reads what goes by), which is the realistic risk; it can't
+//     make the relay private against someone set on getting in while party codes are this short and
+//     the knock carries no secret from the invite. Direct WebRTC links are encrypted by DTLS.
 import { Mqtt } from './mqtt.js';
 
 export const BROKERS = [
@@ -46,8 +55,8 @@ export const BROKERS = [
   { url: 'wss://broker.hivemq.com:8884/mqtt' },
 ];
 const BATCH = 16000; // characters per MQTT message
-// UTF-8 bytes of text per sealed message: base64(12 iv + text + 16 tag) <= BATCH characters
-export const SEALED_BATCH = Math.floor(BATCH * 3 / 4) - 12 - 16 - 12;
+// UTF-8 bytes of text per sealed message: base64(12 iv + 8 seq + text + 16 tag) <= BATCH characters (4 spare)
+export const SEALED_BATCH = Math.floor(BATCH * 3 / 4) - 12 - 8 - 16 - 4;
 const FLUSH_MS = 100; // host -> friend, with up to 3 friends on the relay
 const FRIEND_FLUSH_MS = 125;
 const KNOCK_MS = 1500;
@@ -79,7 +88,10 @@ export function brokers() {
   return BROKERS;
 }
 
-/** The party's topic: a hash, so the code is not on show on the public brokers. */
+/**
+ * The party's topic: a hash, so the code is not on show to someone glancing at the public brokers.
+ * Not a secret: there are only 24^4 codes, so a listener who wants the code can try them all.
+ */
 export function topicFor(code) {
   const s = `phortnite-party-v1:${code}`;
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
@@ -158,22 +170,32 @@ async function linkKey(priv, theirs, id) {
   );
 }
 
-async function seal(key, text, aad) {
+/** base64(iv | AES-GCM(seq (8 bytes, big-endian) | text)). */
+async function seal(key, text, aad, seq) {
   const iv = new Uint8Array(12);
   globalThis.crypto.getRandomValues(iv);
-  const ct = new Uint8Array(await subtle().encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, te.encode(text)));
+  const body = te.encode(text);
+  const plain = new Uint8Array(8 + body.length);
+  const dv = new DataView(plain.buffer);
+  dv.setUint32(0, Math.floor(seq / 0x100000000));
+  dv.setUint32(4, seq >>> 0);
+  plain.set(body, 8);
+  const ct = new Uint8Array(await subtle().encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, plain));
   const out = new Uint8Array(12 + ct.length);
   out.set(iv);
   out.set(ct, 12);
   return b64(out);
 }
 
-/** The text of a sealed body, or null when it does not open (not from the other end). */
+/** { seq, text } of a sealed body, or null when it does not open (not from the other end). */
 async function unseal(key, body, aad) {
   const raw = body.length <= BATCH * 4 ? unb64(body) : null;
-  if (!raw || raw.length < 12 + 16) return null;
+  if (!raw || raw.length < 12 + 8 + 16) return null;
   try {
-    return td.decode(await subtle().decrypt({ name: 'AES-GCM', iv: raw.subarray(0, 12), additionalData: aad }, key, raw.subarray(12)));
+    const plain = new Uint8Array(await subtle().decrypt({ name: 'AES-GCM', iv: raw.subarray(0, 12), additionalData: aad }, key, raw.subarray(12)));
+    if (plain.length < 8) return null;
+    const dv = new DataView(plain.buffer, plain.byteOffset, 8);
+    return { seq: dv.getUint32(0) * 0x100000000 + dv.getUint32(4), text: td.decode(plain.subarray(8)) };
   } catch (e) { return null; }
 }
 
@@ -204,6 +226,8 @@ export class RelayLink {
     this.cap = BATCH;
     this.txChain = Promise.resolve();
     this.rxChain = Promise.resolve();
+    this.txSeq = 0; // the last seq sealed (sent), and the last one opened (heard): replays are dropped
+    this.rxSeq = 0;
   }
 
   /** Seal this link from now on with key (a CryptoKey, or a Promise of one). */
@@ -258,12 +282,12 @@ export class RelayLink {
     if (batch.length) this.data(batch.join('\n'));
   }
 
-  /** One batch out: as it is on a plain link, else sealed, after every batch before it. */
+  /** One batch out: as it is on a plain link, else sealed (numbered in the order sent), after every batch before it. */
   data(text) {
     if (this.plain) { this.say('d', text); return; }
-    const key = this.key, aad = this.txAad;
+    const key = this.key, aad = this.txAad, seq = ++this.txSeq;
     this.txChain = this.txChain
-      .then(async () => { this.say('d', await seal(await key, text, aad)); })
+      .then(async () => { this.say('d', await seal(await key, text, aad, seq)); })
       .catch(() => { /* a bad key: nothing goes out */ });
   }
 
@@ -281,11 +305,13 @@ export class RelayLink {
     this.rxChain = this.rxChain.then(async () => {
       if (!this.open) return;
       if (kind === 'x') { this.drop(); return; }
-      const text = await unseal(await key, body, aad);
-      if (text === null || !this.open) return; // not sealed by the other end: ignored
+      const got = await unseal(await key, body, aad);
+      if (got === null || !this.open) return; // not sealed by the other end: ignored
+      if (got.seq <= this.rxSeq) return; // heard before: someone on the broker sent it again
+      this.rxSeq = got.seq;
       this.lastRx = Date.now();
       this.heardData = true;
-      this.deliver(text);
+      this.deliver(got.text);
     }).catch(() => { /* a bad key: nothing opens */ });
   }
 

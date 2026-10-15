@@ -140,7 +140,7 @@ test('relay crypto: a listener on # sees keys and ciphertext only; frames keep t
       }
     }
     assert.ok(data >= 4);
-    assert.ok(SEALED_BATCH > 11000 && Math.ceil((SEALED_BATCH + 28) / 3) * 4 <= 16000);
+    assert.ok(SEALED_BATCH > 11000 && Math.ceil((SEALED_BATCH + 12 + 8 + 16) / 3) * 4 <= 16000);
   } finally {
     if (link) link.close();
     host.stop();
@@ -198,6 +198,53 @@ test('relay crypto: junk with a link\'s id is ignored, a bad key gets no answer,
   }
 });
 
+test('relay crypto: a sealed message published again by someone on the broker is dropped (each direction numbers its messages)', async () => {
+  const b = await startBroker();
+  useBrokers([{ url: b.url }]);
+  const { spy, seen } = await spyOn(b);
+  const links = [];
+  const host = new RelayHost('RPLY', (l) => links.push(l));
+  let link = null;
+  try {
+    host.start();
+    assert.equal(await host.whenReady(3000), true);
+    link = await relayDial('RPLY', 3000);
+    await until(() => links.length === 1);
+    const hl = links[0];
+    const atHost = [], atFriend = [];
+    hl.on('data', (f) => atHost.push(f));
+    link.on('data', (f) => atFriend.push(f));
+    const base = topicFor('RPLY');
+    // one sealed message each way
+    link.send('{"t":"chat","text":"i like pizza"}');
+    hl.send('{"t":"welcome","you":2}');
+    await until(() => atHost.length === 1 && atFriend.length === 1);
+    const toHost = seen.filter(([tp, p]) => tp === `${base}/h` && p[10] === 'd').map(([, p]) => p);
+    const toFriend = seen.filter(([tp, p]) => tp === `${base}/c/${link.id}` && p[10] === 'd').map(([, p]) => p);
+    assert.equal(toHost.length, 1);
+    assert.equal(toFriend.length, 1);
+    // someone who saw them publishes them again (no key needed): neither end takes them twice
+    for (let i = 0; i < 3; i++) { spy.publish(`${base}/h`, toHost[0]); spy.publish(`${base}/c/${link.id}`, toFriend[0]); }
+    await sleep(300);
+    assert.deepEqual(atHost, ['{"t":"chat","text":"i like pizza"}']);
+    assert.deepEqual(atFriend, ['{"t":"welcome","you":2}']);
+    // the link carries on, and a message sent before the replay still can't come back after newer ones
+    link.send('{"t":"chat","text":"second"}');
+    await until(() => atHost.length === 2);
+    spy.publish(`${base}/h`, toHost[0]);
+    await sleep(200);
+    assert.deepEqual(atHost, ['{"t":"chat","text":"i like pizza"}', '{"t":"chat","text":"second"}']);
+    assert.equal(hl.open && link.open, true);
+  } finally {
+    if (link) link.close();
+    host.stop();
+    spy.close();
+    useBrokers(null);
+    await sleep(250);
+    await b.stop();
+  }
+});
+
 test('P2P over the relay: names, the welcome and chat never cross the broker in clear', async () => {
   const b = await startBroker();
   useBrokers([{ url: b.url }]);
@@ -228,6 +275,16 @@ test('P2P over the relay: names, the welcome and chat never cross the broker in 
     // a match starts (a big message)
     host.send({ t: 'start', bots: 0, mats: 0 });
     await until(() => bb.last('start'));
+    // the admin's pause stops the room clock, not chat: its limits and ts run on the room's wall clock
+    host.pause();
+    const n0 = host.room.now(), w0 = host.room.wall();
+    await sleep(40);
+    assert.equal(host.room.now(), n0);
+    assert.ok(host.room.wall() >= w0 + 30);
+    ben.send({ t: 'chat', text: 'why is it paused?' });
+    await until(() => bb.some((m) => m.t === 'chat' && m.text === 'why is it paused?'));
+    assert.ok(bb.last('chat').ts > w0, 'ts from the clock that runs on');
+    host.resume();
     await sleep(300);
     // the spy heard the whole conversation (how many messages depends on the batching)
     const base = topicFor(host.code);

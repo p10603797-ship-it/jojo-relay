@@ -12,7 +12,9 @@
 //             for everyone.
 //   CHAT      party chat moderation (stage 3): 🚩 REPORTS (the reported line, the lines before it)
 //             and every party's live chat, as its host's game sends it in (newest party first).
-//             Tap a line: its speaker (matched to a card by party code and name) can be muted for
+//             Tap a line: its speaker (matched to a card by party code and the room's player id the
+//             line carries, never by name: names repeat, can be copied, and a line's went through
+//             the chat filter; two cards claiming one id: nothing is done) can be muted for
 //             10 min / 1 hour / 1 day, unmuted, messaged, or their chat log fetched. The tab's badge
 //             counts new reports. Uploads are only "as that page reported them": one that wasn't
 //             sealed by the page it names is marked ⚠. Every text here is escaped.
@@ -576,10 +578,16 @@ export class AdminPanel {
     pane.addEventListener('focusout', () => { setTimeout(() => { if (this.chatDirty) this.renderChat(); }, 0); });
   }
 
-  /** The player card a chat line's speaker has (party code + name), or null. */
+  /**
+   * Who said chat line l in party `code`: the card whose party.pid is the room player id the line
+   * carries. -> { card } | { many: [card] } (more than one card claims it: someone fakes one, so the
+   * panel acts on none) | null. Never by name: two kids can have the same one ('Guest'), a bully
+   * can copy someone's, and a line's name went through the chat filter (★, [hidden]).
+   */
   speaker(code, l) {
-    if (!l || l.sys || l.admin || !this.session) return null;
-    return this.session.players().find((c) => c.party && c.party.code === code && c.name === l.name) || null;
+    if (!l || l.sys || l.admin || !this.session || !(l.id > 0) || !/^[A-Z]{4}$/.test(code)) return null;
+    const hits = this.session.players().filter((c) => c.party && c.party.code === code && c.party.pid === l.id);
+    return hits.length === 1 ? { card: hits[0] } : hits.length ? { many: hits } : null;
   }
 
   /** The CHAT tab, drawn from the session's chats() and reports(). force: even while typing. */
@@ -635,7 +643,7 @@ export class AdminPanel {
       };
       pane.innerHTML = `<p class="adm-chatnote">Party chats as each party host's game sends them in (parties with 2 or more people, while you're in admin mode). Players see in their chat that the admin can read it. Tap a line for what you can do.</p>
         <section class="adm-sec adm-reports"><h3>🚩 REPORTS</h3>${reps.length ? reps.map(repHtml).join('')
-          : '<p class="adm-now">No reports. When a player taps 🚩 Report to admin on a chat line, it shows up here.</p>'}</section>
+          : '<p class="adm-now">No reports. When a player taps 🚩 Report to admin on a chat line while you\'re in admin mode, it shows up here (one made while this page is closed is lost: nothing keeps reports).</p>'}</section>
         <section class="adm-sec adm-chats"><h3>🎉 PARTY CHATS</h3>${chats.length ? chats.map(partyHtml).join('')
           : '<p class="adm-now">No party chat yet. New lines show up here as players chat in parties of 2 or more.</p>'}</section>`;
       this.chatLines = lines;
@@ -650,15 +658,17 @@ export class AdminPanel {
     } finally { this.drawing = false; }
   }
 
-  /** The open line's buttons: for its speaker's card (matched by party code + name). */
+  /** The open line's buttons: for its speaker's card (matched by party code + room player id). */
   lineActs(code, l) {
-    const c = this.speaker(code, l);
-    if (!c) return `<div class="adm-lacts"><p class="adm-hint">${esc(l.name)} isn't online in ${code === 'SOLO' ? 'a party' : `party ${esc(code)}`} with a player card right now (they left, or changed their name).</p></div>`;
+    const s = this.speaker(code, l);
+    if (s && s.many) return `<div class="adm-lacts"><p class="adm-hint">⚠ ${s.many.length} player cards in party ${esc(code)} say they are the one who said this (an old card from a reload that hasn't gone yet, or someone faking one), so nothing can be done from here right now. Try again in a minute, or look for ${esc(l.name)} in PLAYERS.</p></div>`;
+    const c = s && s.card;
+    if (!c) return `<div class="adm-lacts"><p class="adm-hint">${esc(l.name)} isn't online in ${code === 'SOLO' ? 'a party' : `party ${esc(code)}`} with a player card right now (they left that party).</p></div>`;
     if (c.me) return '<div class="adm-lacts"><p class="adm-hint">That\'s you.</p></div>';
     const muted = c.muted > Date.now();
     const b = (act, label, extra = '', cls = '') => `<button class="btn adm-la ${cls}" data-act="${act}"${extra}>${label}</button>`;
     return `<div class="adm-lacts" data-id="${esc(c.id)}">
-      <p class="adm-lwho"><b>${esc(c.name)}</b> · Lv ${c.level | 0}${c.party && c.party.code ? ` · ${c.party.kind === 'host' ? '👑 hosting' : '🎉 in'} ${esc(c.party.code)}` : ''}${muted ? ` · 🔇 muted until ${esc(clock(c.muted))}` : ''}</p>
+      <p class="adm-lwho"><b>${esc(c.name)}</b>${c.name !== l.name ? ` (in chat: ${esc(l.name)})` : ''} · Lv ${c.level | 0}${c.party && c.party.code ? ` · ${c.party.kind === 'host' ? '👑 hosting' : '🎉 in'} ${esc(c.party.code)}` : ''}${muted ? ` · 🔇 muted until ${esc(clock(c.muted))}` : ''}</p>
       <input class="adm-in adm-lwhy" maxlength="120" placeholder="Why? (optional, they see it)" value="${esc(this.chatWhy)}">
       <div class="adm-grid">
         ${MUTE_PICKS.map(([m, lb]) => b('mute', `🔇 MUTE ${lb}`, ` data-min="${m}"`)).join('')}
@@ -674,8 +684,8 @@ export class AdminPanel {
   /** A button under an open chat line. */
   lineAct(act, btn = null) {
     const sel = this.chatLines.get(this.chatSel);
-    const c = sel && this.speaker(sel.code, sel.line);
-    if (!c) { this.status('That player is not online with a card right now.', false); return; }
+    const s = sel && this.speaker(sel.code, sel.line), c = s && s.card;
+    if (!c) { this.status(s && s.many ? '✕ More than one player card claims that line: use PLAYERS.' : 'That player is not online with a card right now.', false); return; }
     const pane = $('.adm-chat', this.root);
     switch (act) {
       case 'mute': this.mute(c, +btn.dataset.min, this.chatWhy.trim()); this.chatWhy = ''; break;

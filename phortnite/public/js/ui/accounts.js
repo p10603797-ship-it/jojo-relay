@@ -13,6 +13,7 @@
 import { SKINS } from '../../shared/constants.js';
 import { hashPassword, verifyPassword, encryptTransfer, decryptTransfer, makeSigningIdentity } from '../accounts/crypto.js';
 import { kd, winRate, favoriteMode, playtimeLabel } from '../accounts/stats.js';
+import { playerName } from '../../shared/chatFilter.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -134,6 +135,8 @@ export class AccountsUi {
       const create = async () => {
         const nm = name.value.replace(/[\u0000-\u001f<>&"']/g, '').trim().slice(0, 16);
         if (!nm) { err.textContent = 'Type a username first.'; name.focus(); return; }
+        // (the 🛡 and names like "Admin" are the admin's alone: parties would show 'Player')
+        if (!playerName(nm)) { err.textContent = 'That name is only for the admin (Philip). Pick another one!'; name.focus(); return; }
         if (usepw.checked && pw.value.length < 3) { err.textContent = 'Make the password at least 3 characters.'; pw.focus(); return; }
         const btn = $('.acc-create', b);
         btn.disabled = true; btn.textContent = 'Creating…'; err.textContent = '';

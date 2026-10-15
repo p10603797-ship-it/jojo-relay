@@ -25,6 +25,7 @@
 import { SKINS, MAP } from '../constants.js';
 import { normalizeRules } from '../modes/rules.js';
 import { GAMES } from '../modes/games/index.js';
+import { playerName } from '../chatFilter.js';
 
 export const HOLD_MS = 60000;      // a dropped player keeps their spot this long
 export const COUNTDOWN_MS = 3000;  // PLAY -> 3, 2, 1 -> the bus
@@ -36,7 +37,8 @@ const TOKEN_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 
 const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const clampInt = (v, a, b, d) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(a, Math.min(b, Math.round(v))) : d);
-const cleanName = (s) => String(s ?? '').replace(/[\u0000-\u001f<>&"']/g, '').trim().slice(0, 16) || 'Player';
+// (a name never passes for the admin's: no 🛡, never "Admin" / "Adm1n" / "mod"…: shared/chatFilter.js playerName)
+const cleanName = (s) => playerName(String(s ?? '').replace(/[\u0000-\u001f<>&"']/g, '')) || 'Player';
 const r1 = (v) => Math.round(v * 10) / 10;
 
 function makeToken() {

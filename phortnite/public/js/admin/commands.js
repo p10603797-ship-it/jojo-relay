@@ -52,6 +52,11 @@
 //   chatlog {}                               that page uploads its chat lines (the last 100 it saw this
 //                                            page load) to the admin, and says so in its chat list
 // (one page only, never '*': like every command for one page their args are sealed to that page.)
+//   say {code, text}                         never sent on its own: the admin's page signs one for
+//                                            each chat line it says while watching a party (to '*',
+//                                            in the clear: the party reads the line anyway); the line
+//                                            carries it (env) and every page checks it (adminLineOk)
+//                                            before it shows the 🛡 ADMIN tag
 // Uploads: what pages send the admin, on UP_TOPIC: sealToAdmin(boxPub, payload, SEAL_UP), sealed
 // with the page's own key (js/admin/keys.js `from`) so the admin can tell which page it really
 // came from (e = the pk in that page's card); anyone can still seal SOMETHING to the admin's public
@@ -84,13 +89,19 @@
 //   cleanCard(obj)                       -> the player card fields the admin's panel shows | null
 //                                           (rid + tok: the signed-in account's registry id and its
 //                                           token, not for a guest; the admin's page keeps the rid
-//                                           only when the tok proves it, js/admin/session.js)
+//                                           only when the tok proves it, js/admin/session.js;
+//                                           party.pid: that page's player id in its party's room,
+//                                           only while it has one: chat lines carry it)
 //   makeObserverCheck(signPub, opts)     -> async (env, code) => bool (stage E: a party host
 //                                           checks an observer's signed 'observe' hello with it)
+//   adminLineOk(signPub, env, code, text) -> Promise<bool> is a chat line that claims to be the
+//                                           admin's signed by him ({cmd: 'say', args: {code, text}}),
+//                                           for this party and this text? (every page, js/ui/chat.js)
 //   UP_TOPIC, UP_MAX, UP_LINES, UP_CONTEXT, UP_KINDS, MAX_MUTE_MIN
 //   sealUpload(boxPub, payload, { from }) -> the text to publish on UP_TOPIC (<= UP_MAX) | null
 //   upShape(obj)                          -> is it a sealed upload's shape ({e, iv, ct}, capped)?
-//   cleanUpload(obj)                      -> an opened upload's fields, cleaned and capped | null
+//   cleanUpload(obj, { until, now })      -> an opened upload's fields, cleaned and capped | null
+//                                           (until: a now() deadline, lines cleaned newest first)
 //   cleanChatLine(obj)                    -> one chat line, cleaned and capped | null
 import { signCommand, verifyCommand, randomNonce, sealToAdmin, openSealed, SEAL_PAGE, SEAL_UP } from './keys.js';
 import { cleanChat, quickText, QUICK_CHAT, MAX_CHAT } from '../../shared/chatFilter.js';
@@ -161,6 +172,11 @@ export function cleanArgs(cmd, args) {
       return { on: a.on, text: cleanText(a.text, 300), until: int(a.until, 0, 8.64e15) || 0 };
     }
     case 'observe': return typeof a.code === 'string' && CODE_RE.test(a.code) ? { code: a.code } : null;
+    case 'say': {
+      // (the admin's own chat line in the party he watches: never a live command, see adminLineOk)
+      const text = cleanChat(typeof a.text === 'string' ? a.text.slice(0, MAX_CHAT * 4) : '').text;
+      return typeof a.code === 'string' && CODE_RE.test(a.code) && text ? { code: a.code, text } : null;
+    }
     case 'bans': return cleanBans(a.list);
     default: return null;
   }
@@ -390,7 +406,12 @@ export function cleanCard(c) {
     account: typeof c.account === 'string' ? cleanText(c.account, 16) : null, // short id, 'guest', or null (still choosing)
     mode: cleanText(c.mode, 40),
     phase: c.phase === 'match' ? 'match' : 'lobby',
-    party: kind ? { code: typeof p.code === 'string' && /^[A-Z]{4}$/.test(p.code) ? p.code : '', kind, size: int(p.size, 1, 64) || 1 } : null,
+    // (pid: that page's player id in its party's room, the id its chat lines carry: the admin's CHAT
+    // tab finds a line's speaker by it, never by a name anyone can copy. Only a whole number > 0)
+    party: kind ? {
+      code: typeof p.code === 'string' && /^[A-Z]{4}$/.test(p.code) ? p.code : '', kind, size: int(p.size, 1, 64) || 1,
+      ...(Number.isInteger(p.pid) && p.pid > 0 && p.pid <= 1e6 ? { pid: p.pid } : {}),
+    } : null,
     v: cleanText(c.v, 16),
     since: int(c.since, 0, 8.64e15) || 0,
     admin: c.admin === true, // that page is in admin mode
@@ -424,6 +445,24 @@ export function makeObserverCheck(signPub, { now = () => Date.now(), maxAge = MA
     used.add(env.n);
     return true;
   };
+}
+
+/**
+ * Is a chat line that says it is the admin's ({admin: true, env}: js/ui/chat.js) really his? env is
+ * the envelope his page signed for that very line (AdminSession.sayEnvelope): {cmd: 'say', args:
+ * {code, text}, to: '*'}, for this party's code and this text (a quick line: its QUICK_CHAT text).
+ * The party's room runs on the host's page, so the room's word (admin: true, a negative id) is not
+ * enough: a modded host page could say it of any line. No age or nonce check: a welcome's history
+ * repeats lines minutes old, and a copy can only say the admin's own words again, in the party he
+ * said them in. 'say' is not a live command: the gate (CommandGate.live) refuses it. Never throws.
+ */
+export async function adminLineOk(signPub, env, code, text) {
+  try {
+    if (!signPub || !shaped(env) || env.cmd !== 'say' || env.to !== '*') return false;
+    const a = cleanArgs('say', env.args);
+    if (!a || a.code !== code || a.text !== cleanChat(typeof text === 'string' ? text : '').text) return false;
+    return await verifyCommand(signPub, env);
+  } catch (e) { return false; }
 }
 
 // ------------------------------------------------------------------ uploads (party chat moderation)
@@ -471,13 +510,26 @@ export function upShape(x) {
 /**
  * An opened upload (see the top), cleaned: { k, from, code, v, ... } with lines / re / line,
  * context, reason; null when it isn't one. Never throws.
+ * until: once the newest UP_CONTEXT lines are cleaned (always: a report's whole context, however
+ * slow the first look at the filter is), stop when now() reaches it, the oldest left out: every
+ * line goes through the chat filter again, and lines made up to be slow to filter can't hold the
+ * admin's iPad for long (js/admin/session.js gives each upload UP_CLEAN_MS).
  */
-export function cleanUpload(o) {
+export function cleanUpload(o, { until = Infinity, now = () => performance.now() } = {}) {
   if (!o || typeof o !== 'object' || Array.isArray(o) || !UP_KINDS.includes(o.k)) return null;
   if (typeof o.from !== 'string' || !ID_RE.test(o.from)) return null;
   const code = typeof o.code === 'string' && LINE_CODE_RE.test(o.code) ? o.code : '';
   const base = { k: o.k, from: o.from, code, v: cleanText(o.v, 16) };
-  const list = (a, n) => (Array.isArray(a) ? a.slice(-n).map(cleanChatLine).filter(Boolean) : []);
+  const list = (a, n) => {
+    if (!Array.isArray(a)) return [];
+    const out = [];
+    for (let i = a.length - 1, k = 0; i >= Math.max(0, a.length - n); i--, k++) {
+      if (k >= UP_CONTEXT && until !== Infinity && !(now() < until)) break;
+      const l = cleanChatLine(a[i]);
+      if (l) out.push(l);
+    }
+    return out.reverse();
+  };
   if (o.k === 'chat') {
     // (a live party: its 4-letter code, never 'SOLO' (no O or I in a real code); its players' lines, no system notes)
     if (!CODE_RE.test(code) || code === 'SOLO') return null;

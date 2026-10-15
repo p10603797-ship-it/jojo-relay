@@ -11,29 +11,51 @@
 //   onLine(fn) -> off       fn(line, game) for every chat line the page receives (its own too; a
 //                           welcome's history is kept but never announced as new)
 //   setMute(until, reason)  the admin's mute: until = ms epoch (0 or past clears); kept in
-//                           localStorage ('phortnite.chatMute'); the input and quick chat say
-//                           "🔇 The admin muted your chat until HH:MM" (+ the reason) meanwhile
+//                           localStorage ('phortnite.chatMute'); the drawer says "🔇 The admin
+//                           muted your chat until HH:MM" (+ the reason) meanwhile, and its quick
+//                           chat and input step aside (the list keeps their room: still readable)
 //   muted()                 {until, reason} | null
 //   notice(text)            a system line in this party's list ('🛡 The admin looked at this chat')
 //   open() / close() / isOpen() / toggle()
 //   send(text) / quick(q)   false when muted, Chat is Off (or Quick chat only for free text),
 //                           rate-limited here, or there is no party connection
-// Moderation is open: the drawer always says that the admin (Philip) can read chats.
+// Moderation is open: the drawer always says that the admin (Philip) can read chats, and how to
+// tell his lines: only they have the 🛡 ADMIN tag (an element of its own, in the drawer and the
+// feed alike; a player's name can't hold the 🛡 or read "Admin": shared/chatFilter.js playerName).
+// The admin's lines are signed: watching a party, his page sends each line with a signed {cmd:
+// 'say', args: {code, text}} (app.admin.sayEnvelope), and this page shows the 🛡 ADMIN tag only
+// when that signature checks out against admin.json (js/admin/commands.js adminLineOk). The room
+// runs on the host's page, so its admin: true alone proves nothing: a claim that fails shows as
+// 'Player' (and can be hidden or reported like anyone's). Lines stay in the order they came: one
+// that claims to be the admin's waits for its check, and the lines after it wait for it.
 //
 // The Chat setting (menu.js, settings.chat): 'on' (default) | 'quick' (only QUICK_CHAT can be
 // sent; other players' free text shows as "💬 (message hidden: quick chat only)") | 'off' (no
 // CHAT button, feed or badge, nothing shown; lines() still keeps them for the admin's chat log).
 // Keyboard: Enter opens the chat (T too on the lobby stage: in a match T dances), Enter sends,
-// Escape closes; keys typed in the drawer never reach the game. Touches outside the drawer still
-// play the game, which keeps running while the chat is open.
+// Escape closes; keys pressed in the drawer never reach the game (their release does, so a key
+// held while tapping a chip is let go). Touches outside the drawer still play the game (and put
+// the iPad's keyboard away), which keeps running while the chat is open.
 import { SKINS } from '../../shared/constants.js';
 import { QUICK_CHAT, MAX_CHAT, cleanChat, quickText } from '../../shared/chatFilter.js';
 import { ChatLog, Limiter, chatMode, lineView, sendBlock, muteText, cleanCode } from '../chat/chatLog.js';
+import { adminLineOk } from '../admin/commands.js';
+import { importPublic } from '../admin/keys.js';
 
 const SAFETY = 'Chat with your party. Be kind! 🛡 The admin (Philip) can read chats to keep everyone safe. Never share your real name, address, school or phone number.';
+// how to tell the real admin (a player's name can't look like his: js/chat/chatLog.js playerName)
+const SAFETY_TRUST = 'The real admin always has the 🛡 ADMIN tag, and never asks for them.';
+// a short drawer (a phone on its side, the keyboard up): both points in two lines, never cut off,
+// and (tight, not tiny) the tag in a third
+const SAFETY_SHORT = '🛡 Philip (the admin) can read chats. Never share your name, address, school or phone.';
+const TRUST_SHORT = 'Only the real admin has the 🛡 ADMIN tag.';
 const FEED_MAX = 4; // lines in the in-match feed
 const FEED_MS = 8000; // a feed line fades after this long
 const STATUS_MS = 4500; // a short hint ('Slow down a little!') stays this long
+// a report is published, not delivered: UP_TOPIC is not retained, so only an admin page that is
+// open right now hears it (js/admin/client.js report). Never promise more than that.
+const REPORTED = 'Sent to the admin. Thanks for keeping it fun! Philip gets it if he is online right now. If someone is mean, hide them and tell a grown-up.';
+const REPORTED_MS = 9000;
 const NAME_COLORS = ['#7cf2ff', '#ffd23f', '#8dff97', '#ff9ad5', '#ffb86b', '#c9a6ff', '#7fd6ff', '#ffe86b'];
 const ADMIN_COLOR = '#8fd3ff';
 const BLOCKED = {
@@ -74,6 +96,10 @@ export class Chat {
     this.status = null; // { text, kind, until }
     this.rows = new WeakMap(); // drawer row -> its stored line
     this.reported = new WeakSet();
+    this.inQ = Promise.resolve(); // lines waiting for an admin signature check (and those after it)
+    this.inWait = 0;
+    this.outQ = Promise.resolve(); // the admin's own lines, signed one after the other
+    this.pubP = null; // Promise<admin.json's sign.pub CryptoKey | null>
     this.build();
     this.bind();
     this.applySettings();
@@ -146,7 +172,7 @@ export class Chat {
     if (why) { this.blocked(why); return false; }
     const r = this.limiter.take(c.text, Date.now());
     if (r !== 'ok') { this.setStatus(r === 'dup' ? 'You just said that 🙂' : 'Slow down a little!', 'slow'); return false; }
-    this.app.game.send({ t: 'chat', text: c.text });
+    this.post({ t: 'chat', text: c.text }, c.text);
     if (c.masked) {
       this.setStatus(/\[hidden\]/.test(c.text) ? '🛡 Links, emails, phone numbers and @names are hidden to keep you safe.' : '★ Some words were hidden. Keep it kind!', 'info');
     }
@@ -161,26 +187,86 @@ export class Chat {
     if (why) { this.blocked(why); return false; }
     const r = this.limiter.take(quickText(i), Date.now());
     if (r !== 'ok') { this.setStatus(r === 'dup' ? 'You just said that 🙂' : 'Slow down a little!', 'slow'); return false; }
-    this.app.game.send({ t: 'chat', q: i });
+    this.post({ t: 'chat', q: i }, quickText(i));
     return true;
+  }
+
+  /**
+   * Send a line to the party. The admin watching signs his (app.admin.sayEnvelope: every page checks
+   * it before showing the 🛡 ADMIN tag), one after the other so they keep their order.
+   */
+  post(msg, text) {
+    const app = this.app, g = app.game;
+    const admin = app.admin;
+    if (!g.observer || !admin || typeof admin.sayEnvelope !== 'function') { g.send(msg); return; }
+    this.outQ = this.outQ.then(() => admin.sayEnvelope(g.code, text)).then((env) => {
+      if (app.game === g && !g.disposed) g.send({ ...msg, env });
+    }, (e) => {
+      console.error('chat: could not sign', e);
+      this.setStatus('Couldn\'t send that. Try again.', 'bad');
+    });
   }
 
   // ------------------------------------------------------------------ from the Game (ChatClient)
   /** A welcome or 'resumed': this party's newest lines (kept, not announced as new). */
   joined(game, list) {
     if (game !== this.app.game) return;
-    this.game = game;
-    this.code = cleanCode(game.code);
-    for (const raw of list.slice(-30)) this.log.add(raw, { code: this.code, history: true, game });
-    if (this.opened) this.renderAll();
-    else { this.renderControls(); this.renderHint(); }
-    this.place();
+    const lines = list.slice(-30);
+    this.inOrder(game, lines, (ok) => {
+      this.game = game;
+      this.code = cleanCode(game.code);
+      for (const raw of lines) this.log.add(raw, { code: this.code, history: true, game, adminOk: ok.has(raw) });
+      if (this.opened) this.renderAll();
+      else { this.renderControls(); this.renderHint(); }
+      this.place();
+    });
   }
 
   receive(game, m) {
     if (game !== this.app.game) return;
+    this.inOrder(game, [m], (ok) => this.take(game, m, ok.has(m)));
+  }
+
+  /**
+   * fn(ok) once the lines in `list` that claim to be the admin's are checked (ok: the Set of those
+   * whose signature checks out), in the order the lines came. At once when nothing claims to be his
+   * and nothing is waiting (the usual case). Dropped when the page has moved on to another Game.
+   */
+  inOrder(game, list, fn) {
+    const claims = list.filter((m) => m && typeof m === 'object' && m.admin === true);
+    if (!claims.length && !this.inWait) { fn(new Set()); return; }
+    this.inWait++;
+    const checks = Promise.all(claims.map((m) => this.adminOk(game, m).then((ok) => (ok ? m : null), () => null)));
+    this.inQ = this.inQ.then(() => checks).then((oks) => {
+      if (game === this.app.game && !game.disposed) fn(new Set(oks.filter(Boolean)));
+    }).catch((e) => console.error('chat', e)).finally(() => { this.inWait--; });
+  }
+
+  /** Is this line, which says it is the admin's, signed by him for this party and this text? */
+  async adminOk(game, m) {
+    if (!m.env || !(Number(m.id) < 0)) return false;
+    const pub = await this.signPub();
+    if (!pub) return false;
+    const text = Number.isInteger(m.q) && quickText(m.q) ? quickText(m.q) : cleanChat(typeof m.text === 'string' ? m.text.slice(0, MAX_CHAT * 4) : '').text;
+    return adminLineOk(pub, m.env, String(game.code || ''), text);
+  }
+
+  /** admin.json's signing key (the one every page checks the admin's commands with), or null. */
+  signPub() {
+    const ac = this.app.adminClient;
+    if (ac && ac.pubs && ac.pubs.signPub) return Promise.resolve(ac.pubs.signPub);
+    if (!this.pubP) {
+      this.pubP = Promise.resolve(this.app.adminCfgPromise || null)
+        .then((cfg) => (cfg ? importPublic(cfg) : null)).then((p) => (p && p.signPub) || null).catch(() => null);
+    }
+    return this.pubP;
+  }
+
+  /** A room line, checked (adminOk: the admin's signature checks out on it). */
+  take(game, m, adminOk) {
+    if (game !== this.app.game) return;
     if (this.game !== game) { this.game = game; this.code = cleanCode(game.code); }
-    const line = this.log.add(m, { code: this.code, game });
+    const line = this.log.add(m, { code: this.code, game, adminOk });
     if (!line) return;
     const mine = this.mine(line);
     this.log.count(line, { open: this.opened, mode: this.mode, mine });
@@ -239,8 +325,13 @@ export class Chat {
     x.type = 'button';
     x.setAttribute('aria-label', 'Close chat');
     x.textContent = '✕';
+    // the safety note: the full words (+ how to tell the real admin); a short drawer (tight /
+    // tiny: chat.css) shows the title in it, the short form, and (tight) the short trust line
     const safe = el('p', 'ch-safe', root);
-    safe.textContent = SAFETY;
+    el('b', 'ch-stitle', safe).textContent = 'PARTY CHAT ';
+    el('span', 'ch-sfull', safe).textContent = `${SAFETY} ${SAFETY_TRUST}`;
+    el('span', 'ch-sshort', safe).textContent = SAFETY_SHORT;
+    el('span', 'ch-strust', safe).textContent = ` ${TRUST_SHORT}`;
     const list = el('div', 'ch-list', root);
     list.setAttribute('role', 'log');
     list.setAttribute('aria-live', 'polite');
@@ -284,12 +375,12 @@ export class Chat {
     const app = this.app, E = this.el;
     // nothing in the drawer reaches the stage, the touch controls or the game's keys
     for (const ev of ['pointerdown', 'touchstart', 'mousedown', 'wheel']) this.root.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
-    const keys = (e) => {
+    this.root.addEventListener('keydown', (e) => {
       e.stopPropagation();
-      if (e.type === 'keydown' && e.key === 'Escape') { e.preventDefault(); if (!this.el.menu.classList.contains('hidden')) this.hideMenu(); else this.close(); }
-    };
-    this.root.addEventListener('keydown', keys);
-    this.root.addEventListener('keyup', keys);
+      if (e.key === 'Escape') { e.preventDefault(); if (!this.el.menu.classList.contains('hidden')) this.hideMenu(); else this.close(); }
+    });
+    // (keyups go on to the game: a key let go over a quick chip or SEND is let go there too, or it
+    // would stay held and the player would run on. Input ignores the text input's own keys.)
     E.x.addEventListener('click', () => { this.sfx(); this.close(); });
     E.form.addEventListener('submit', (e) => { e.preventDefault(); this.sendInput(); });
     E.quick.addEventListener('click', (e) => {
@@ -309,8 +400,17 @@ export class Chat {
       if (inp && inp.down) { inp.down.clear(); inp.mouseL = inp.mouseR = false; }
       setTimeout(() => this.fit(), 300);
     });
+    E.input.addEventListener('blur', () => this.root.classList.remove('typing'));
+    E.input.addEventListener('focus', () => this.root.classList.add('typing'));
     E.btn.addEventListener('pointerdown', (e) => e.stopPropagation());
     E.btn.addEventListener('click', (e) => { e.stopPropagation(); this.sfx(); this.toggle(); });
+    // touch: a touch on the game outside the drawer (the joystick, FIRE, the island…) puts the
+    // iPad's keyboard away; the drawer stays open and the same touch still plays. (Capture phase:
+    // the touch buttons stop their pointerdown and the zones preventDefault it, so no mousedown
+    // ever moves the focus by itself.)
+    document.addEventListener('pointerdown', (e) => {
+      if (this.opened && document.activeElement === E.input && !this.root.contains(e.target) && !E.btn.contains(e.target)) E.input.blur();
+    }, true);
     window.addEventListener('keydown', (e) => this.onKey(e));
     window.addEventListener('resize', () => { if (this.opened) { this.place(); this.moveToasts(); } });
     const vv = window.visualViewport;
@@ -322,6 +422,11 @@ export class Chat {
     const modal = document.getElementById('modal');
     if (modal && typeof MutationObserver === 'function') {
       new MutationObserver(() => { if (this.opened && !modal.classList.contains('hidden')) this.close(); }).observe(modal, { attributes: true, attributeFilter: ['class'] });
+    }
+    // the warm-up chip (↩ LOBBY) comes, goes or folds: the drawer moves under it (place)
+    const wu = document.getElementById('lobbypanel');
+    if (wu && typeof MutationObserver === 'function') {
+      new MutationObserver(() => { if (this.opened) this.place(); }).observe(wu, { attributes: true, attributeFilter: ['class'] });
     }
     // desktop, in a match: a click on the island goes back to playing (the admin watching: the ✕)
     const canvas = document.getElementById('game');
@@ -479,7 +584,8 @@ export class Chat {
     E.form.classList.toggle('hidden', this.mode === 'quick');
     E.input.disabled = muted || !on;
     E.send.disabled = muted || !on;
-    E.input.placeholder = muted ? muteText(this.log.muted()) : on ? 'Say something nice…' : 'Not in a party';
+    // (muted: the hint above says until when and why; the chips and the input step aside, chat.css)
+    E.input.placeholder = muted ? '🔇 Muted' : on ? 'Say something nice…' : 'Not in a party';
     for (const b of E.quick.children) b.disabled = muted || !on;
     this.root.classList.toggle('muted', muted);
   }
@@ -496,13 +602,13 @@ export class Chat {
     h.className = `ch-hint ${kind}`;
   }
 
-  /** A short hint in the drawer (or a toast / the HUD notice while it is closed). */
-  setStatus(text, kind = 'info') {
+  /** A short hint in the drawer (or a toast / the HUD notice while it is closed), for ms. */
+  setStatus(text, kind = 'info', ms = STATUS_MS) {
     if (!text) return;
-    this.status = { text, kind, until: Date.now() + STATUS_MS };
+    this.status = { text, kind, until: Date.now() + ms };
     this.renderHint();
     clearTimeout(this.statusTimer);
-    this.statusTimer = setTimeout(() => this.renderHint(), STATUS_MS + 50);
+    this.statusTimer = setTimeout(() => this.renderHint(), ms + 50);
     if (!this.opened) this.say(text);
   }
 
@@ -559,7 +665,7 @@ export class Chat {
   /** Send the line (and up to 10 lines before it) to the admin (js/admin/client.js report()). */
   async report(line) {
     this.hideMenu();
-    if (this.reported.has(line)) { this.setStatus('Sent to the admin. Thanks for keeping it fun!', 'ok'); return; }
+    if (this.reported.has(line)) { this.setStatus(REPORTED, 'ok', REPORTED_MS); return; }
     const before = this.log.party(line.code).filter((l) => !l.sys);
     const i = before.indexOf(line);
     const context = before.slice(Math.max(0, i - 10), Math.max(0, i)).map((l) => ({ ...l }));
@@ -567,7 +673,8 @@ export class Chat {
     let ok = false;
     try { ok = !!(ac && typeof ac.report === 'function' && await ac.report({ ...line }, context)); } catch (e) { ok = false; }
     if (ok) this.reported.add(line);
-    this.setStatus(ok ? 'Sent to the admin. Thanks for keeping it fun!' : 'Couldn\'t reach the admin right now', ok ? 'ok' : 'bad');
+    if (ok) this.setStatus(REPORTED, 'ok', REPORTED_MS);
+    else this.setStatus('Couldn\'t reach the admin right now', 'bad');
   }
 
   // ------------------------------------------------------------------ the in-match feed
@@ -581,9 +688,14 @@ export class Chat {
     const clip = el('div', 'cf-clip', d); // (the line clamp: two lines at most, one on a phone)
     if (v.kind !== 'sys') {
       const nm = el('b', 'cf-name', clip);
-      nm.textContent = v.kind === 'admin' ? '🛡 Admin' : line.name;
+      nm.textContent = line.name;
       nm.style.color = this.color(line);
       clip.appendChild(document.createTextNode(' '));
+      // the admin: the same 🛡 ADMIN tag as in the drawer, an element no player's name can make
+      if (v.kind === 'admin') {
+        el('span', 'ch-tag cf-tag', clip).textContent = '🛡 ADMIN';
+        clip.appendChild(document.createTextNode(' '));
+      }
     }
     fillText(el('span', 'cf-text', clip), v.text);
     while (feed.children.length > FEED_MAX) feed.firstChild.remove();
@@ -605,10 +717,11 @@ export class Chat {
   /**
    * Lobby: over the party rail, above the EMOTE / WARM UP / CHAT row, never over the mode card or
    * PLAY; beside or under Philip's news when it sits under the top bar. Match: the left side under
-   * the ☰ / 💬 buttons, above the health bars (the admin watching: above the watching bar). A
-   * phone on its side has little height: the drawer is wider and goes down to the bottom. With no
-   * room under the news it goes over it ('over': above the banner and the toasts). Then the iPad's
-   * keyboard (fit).
+   * the ☰ / 💬 buttons and the warm-up chip (its ↩ LOBBY stays tappable), above the health bars
+   * (the admin watching: above the watching bar). A phone on its side has little height: the
+   * drawer is wider and goes down to the bottom, and the warm-up chip steps aside while it is open
+   * (chat.css). With no room under the news it goes over it ('over': above the banner and the
+   * toasts). Then the iPad's keyboard (fit).
    */
   place() {
     if (!this.opened) return;
@@ -639,6 +752,8 @@ export class Chat {
       left = menu ? menu.left : 10;
       top = (menu ? menu.bottom : 56) + 8;
       width = short ? Math.min(440, Math.round(W * 0.52)) : Math.min(380, Math.round(W * 0.42));
+      const wu = !short && document.querySelector('#lobbypanel.show') ? box('#lobbypanel') : null;
+      if (wu && wu.left < left + width) top = Math.max(top, wu.bottom + 8);
       bottom = 12;
       if (bars && !short) bottom = Math.max(bottom, H - bars.top + 10);
       if (watch) bottom = Math.max(bottom, H - watch.top + 10);
@@ -679,7 +794,9 @@ export class Chat {
     st.bottom = `${Math.round(bottom)}px`;
     const h = H - top - bottom;
     this.root.classList.toggle('kb', kb > 80);
-    this.root.classList.toggle('tight', h < 330);
+    // (the full layout's fixed parts take ~330 px: below 440 the list would be a line or two, so
+    // go tight; tiny is a phone with its keyboard up)
+    this.root.classList.toggle('tight', h < 440);
     this.root.classList.toggle('tiny', h < 230);
     if (atEnd) list.scrollTop = list.scrollHeight;
   }

@@ -19,7 +19,9 @@
 //                                                                      unbanAccount make it)
 //   app.admin.players()                -> [card] everyone online with a readable card, this page
 //                                         included (me: true): { id, me, name, level, account,
-//                                         mode, phase, party: {code, kind, size} | null, v, since,
+//                                         mode, phase, party: {code, kind, size, pid?} | null (pid:
+//                                         its player id in that party's room, the id its chat lines
+//                                         carry), v, since,
 //                                         admin, pk, s: 'l' | 'm', seen (ms), suspect: true when
 //                                         cards with different keys came for that id (someone is
 //                                         faking it: commands still reach only the real page),
@@ -33,6 +35,9 @@
 //                                           maintenance: {on, text, until} | null } as this page has them
 //   app.admin.observeHello(code)       -> Promise<envelope> a signed {cmd: 'observe', args: {code}}
 //                                         for stage E's observer hello (good for 2 minutes)
+//   app.admin.sayEnvelope(code, text)  -> Promise<envelope> a signed {cmd: 'say', args: {code, text}}
+//                                         for his own chat line in the party he watches (js/ui/chat.js:
+//                                         pages show the 🛡 ADMIN tag only with it)
 //   app.admin.remembered               true when the keys are kept on this iPad (for REMEMBER_DAYS)
 //   app.admin.signOut()                -> Promise: admin mode off here, remembered keys forgotten
 // Party chat moderation (stage 3; players are told in the chat drawer that the admin can read
@@ -44,18 +49,33 @@
 //                                         admin?, at?, got (when it got here), ok}
 //   app.admin.onChats(fn)              -> off(); fn() when chats or reports changed
 //   app.admin.reports()                -> [{ n, from, name (the reporter, from its card), ok, code,
-//                                         line, context, reason, at }] newest first (50 kept)
+//                                         line, context, reason, at }] newest first (50 kept: when
+//                                         full, an unchecked one goes first, else the oldest of
+//                                         whoever has the most kept, so one page's flood pushes out
+//                                         its own reports, never other players')
 //   app.admin.unseenReports() / .seenReports()   the CHAT tab's badge
 //   app.admin.requestLog(id)           -> Promise<{ id, name, code, lines, at } | null> sends
 //                                         'chatlog' to that page and waits (LOG_WAIT_MS) for its
 //                                         sealed answer (null: no answer, offline, an older version)
 //   app.admin.mute(id, minutes, reason) / .unmute(id)   -> Promise<envelope | null> (send())
-// Uploads come in on UP_TOPIC (js/admin/commands.js), opened here only: a budget of UP_RATE per
-// UP_RATE_MS, a size cap before anything is parsed, junk dropped, and nothing kept but PARTIES
-// parties x PARTY_LINES lines, REPORTS reports and LOGS chat logs (memory only: a reload forgets
-// them). Anyone can seal something to the admin's public key, so an upload is only "as reported by
-// that page": ok is true when it was sealed with the key in the card of the page it names (and for
-// live chat, that page's card says it hosts that party). The panel shows the rest marked.
+// Uploads come in on UP_TOPIC (js/admin/commands.js), opened here only, and sorted BEFORE anything
+// is opened: a real page always seals with the key in its own card (e), so an upload whose key no
+// card has can never be checked and gets a small lane of its own (ODD_RATE per UP_RATE_MS); one
+// with a card's key goes in the main lane (UP_RATE per UP_RATE_MS), at most UP_KEY_RATE per key
+// (the rest of that key's go to the small lane). So made-up junk, however much, can't push a real
+// page's 🚩 report or chat log out (the key is in the clear on the broker: someone who copies a
+// few real keys could still crowd the main lane for a while, never for long). A size cap before
+// anything is parsed, junk dropped, and cleaning (every line through the chat filter again) gets
+// at most UP_CLEAN_MS per upload (past its newest UP_CONTEXT lines, always cleaned) and UP_WORK_MS
+// of each UP_RATE_MS per lane: lines made up to be slow to filter can't freeze the iPad. Nothing
+// kept but PARTIES parties x PARTY_LINES lines, REPORTS reports and LOGS chat logs (memory only: a
+// reload forgets them). Anyone can seal something to the admin's public key, so an upload is only
+// "as reported by that page": ok is true when it was sealed with the key in the card of the page
+// it names (and for live chat, that page's card says it hosts that party, and no other card does).
+// The panel shows the rest marked, and unchecked uploads never push checked ones out: when full,
+// the quietest unchecked party goes first (an unchecked newcomer is dropped when every party kept
+// is checked), a checked party's unchecked lines go before its real ones, and unchecked reports
+// go first. Reports and live chat reach only this page while it is open: UP_TOPIC isn't retained.
 // Accounts (js/accounts/registry.js): every page's signed-in account has a sealed, retained entry on
 // REG_PREFIX + rid; this page hears them all (REG_FILTER: the broker hands over every retained one
 // at once) and opens them within a budget (ACCT_RATE per ACCT_RATE_MS, the newest text per account
@@ -122,6 +142,19 @@ export const REMEMBER_DAYS = 30;
 // stall the iPad: the newest wait for room, older ones are dropped), and what is kept, at most
 export const UP_RATE = 30;
 export const UP_RATE_MS = 10000;
+// (sealed with a card's key: at most this many per key in the main lane, per UP_RATE_MS; a real
+// page sends fewer: a live batch every 3 s at most, 5 reports a minute, chat logs only when the
+// admin asks. Any more go to the small lane, not lost)
+export const UP_KEY_RATE = 10;
+// (sealed with a key no card has: never checked, so a small lane of their own)
+export const ODD_RATE = 5;
+// cleaning: at most UP_CLEAN_MS per upload (the newest lines first, the newest UP_CONTEXT always)
+// and UP_WORK_MS of each UP_RATE_MS in the main lane (ODD_WORK_MS in the small one). A real upload
+// takes a few ms: the room filtered its lines already
+export const UP_CLEAN_MS = 150;
+export const UP_WORK_MS = 1000;
+const ODD_WORK_MS = 250;
+const UP_KEYS_MAX = 500; // card keys whose uploads are counted
 export const PARTY_LINES = 500;
 export const PARTIES = 30;
 export const REPORTS = 50;
@@ -213,7 +246,13 @@ export class AdminSession {
     this.waiting = new Map(); // chatlog nonce -> { id, resolve, timer }
     this.chatFns = [];
     this.upSeen = new Lru(500); // seals already opened (a replay costs nothing)
-    this.upBudget = new Budget({ rate: UP_RATE, ms: UP_RATE_MS, queue: 8 });
+    this.upBudget = new Budget({ rate: UP_RATE, ms: UP_RATE_MS, queue: 8 }); // sealed with a card's key
+    this.upOdd = new Budget({ rate: ODD_RATE, ms: UP_RATE_MS, queue: 2 }); // with a key no card has
+    this.upKeys = new Map(); // card key -> when its last uploads were let into the main lane
+    this.upKeyMax = UP_KEY_RATE;
+    // cleaning time spent per lane in this UP_RATE_MS (workNow: ms, performance.now)
+    this.upWork = { card: { at: 0, ms: 0, max: UP_WORK_MS }, odd: { at: 0, ms: 0, max: ODD_WORK_MS } };
+    this.workNow = () => performance.now();
     this.toastAt = 0;
     this.offUp = app.presence && app.presence.listen ? app.presence.listen(UP_TOPIC, (text) => { this.onUpload(text); }) : null;
     // accounts (the registry) and the ban list
@@ -293,6 +332,13 @@ export class AdminSession {
   }
 
   observeHello(code) { return makeEnvelope(this.keys.sign, 'observe', { code: String(code || '').toUpperCase() }, '*'); }
+
+  /**
+   * The admin's own chat line in the party he watches (js/ui/chat.js sends it with the line): a
+   * signed {cmd: 'say', args: {code, text}}. Every page checks it (commands.js adminLineOk) before
+   * the line gets the 🛡 ADMIN tag, so a modded host page can't pass its own lines off as his.
+   */
+  sayEnvelope(code, text) { return makeEnvelope(this.keys.sign, 'say', { code: String(code || '').toUpperCase(), text }, '*'); }
 
   players() { return this.list.map((p) => ({ ...p, party: p.party && { ...p.party } })); }
 
@@ -433,9 +479,18 @@ export class AdminSession {
     const seal = `${sealed.e}|${sealed.iv}`;
     if (this.upSeen.has(seal)) return null;
     this.upSeen.add(seal);
-    if (!(await this.upBudget.slot()) || this.closed) return null;
-    const u = cleanUpload(await openSealed(this.keys.box, sealed, SEAL_UP, { max: UP_MAX }));
-    if (!u || this.closed) return null;
+    // sorted before anything is opened (see the top): a key no card has can never be checked
+    const lane = this.list.some((c) => c.pk && c.pk === sealed.e) && this.upKeyRoom(sealed.e) ? 'card' : 'odd';
+    if (!(await (lane === 'card' ? this.upBudget : this.upOdd).slot()) || this.closed) return null;
+    const o = await openSealed(this.keys.box, sealed, SEAL_UP, { max: UP_MAX });
+    if (!o || this.closed) return null;
+    // (after the await: uploads opened together are cleaned one at a time, each within the lane's time)
+    const w = this.upWork[lane], now = this.workNow();
+    if (!(now - w.at < UP_RATE_MS)) { w.at = now; w.ms = 0; }
+    if (w.ms >= w.max) return null;
+    const u = cleanUpload(o, { until: now + UP_CLEAN_MS, now: this.workNow });
+    w.ms += Math.max(0, this.workNow() - now);
+    if (!u) return null;
     // which page really sealed it: e is the key in that page's card (js/admin/keys.js `from`)
     const card = this.list.find((c) => c.id === u.from) || null;
     u.ok = !!(card && card.pk && card.pk === sealed.e);
@@ -447,15 +502,33 @@ export class AdminSession {
     return u;
   }
 
+  /** A card key's turn in the main upload lane (UP_KEY_RATE per UP_RATE_MS): true, counted, when it has room. */
+  upKeyRoom(e) {
+    const t = Date.now(), list = this.upKeys.get(e) || [];
+    while (list.length && t - list[0] >= UP_RATE_MS) list.shift();
+    if (list.length >= this.upKeyMax) return false;
+    list.push(t);
+    this.upKeys.delete(e); // (kept newest last: the longest quiet keys are forgotten first)
+    this.upKeys.set(e, list);
+    if (this.upKeys.size > UP_KEYS_MAX) this.upKeys.delete(this.upKeys.keys().next().value);
+    return true;
+  }
+
   /** A host's page sent its party's new lines. */
   addChat(u, card) {
-    // (the page it names hosts that party: as far as the admin can tell, the party's real chat)
-    const ok = u.ok && !!card && !!card.party && card.party.code === u.code && card.party.kind === 'host';
+    // (the page it names hosts that party, and no other card says it does: as far as the admin can
+    // tell, the party's real chat)
+    const ok = u.ok && !!card && !!card.party && card.party.code === u.code && card.party.kind === 'host'
+      && this.list.filter((c) => c.party && c.party.code === u.code && c.party.kind === 'host').length === 1;
     let p = this.parties.get(u.code);
     if (!p) {
       if (this.parties.size >= PARTIES) {
+        // (the quietest goes, an unchecked party before any checked one; an unchecked newcomer is
+        // dropped when every party kept is checked: made-up uploads with new codes can't push a
+        // real host's chat out of the admin's view)
         let old = null;
-        for (const x of this.parties.values()) if (!old || x.last < old.last) old = x;
+        for (const x of this.parties.values()) if (!old || (x.ok !== old.ok ? !x.ok : x.last < old.last)) old = x;
+        if (old.ok && !ok) return;
         this.parties.delete(old.code);
       }
       p = { code: u.code, from: u.from, ok, last: 0, lines: [], keys: new Map() };
@@ -471,7 +544,12 @@ export class AdminSession {
       p.lines.push(line);
       added++;
     }
-    while (p.lines.length > PARTY_LINES) p.keys.delete(lineKey(u.code, p.lines.shift()));
+    // (PARTY_LINES at most, the oldest go; in a checked party its unchecked lines go first: made-up
+    // lines can't push the real host's out)
+    while (p.lines.length > PARTY_LINES) {
+      const j = p.ok ? p.lines.findIndex((l) => !l.ok) : -1;
+      p.keys.delete(lineKey(u.code, p.lines.splice(Math.max(0, j), 1)[0]));
+    }
     if (!added) return;
     // (a junk upload can't take a party over from its real host: only a checked one moves 'from')
     if (ok || !p.ok) { p.from = u.from; p.ok = ok; }
@@ -493,12 +571,27 @@ export class AdminSession {
   /** A player's 🚩 report. */
   addReport(u) {
     const line = u.line;
-    const dup = this.reportList.find((r) => r.from === u.from && lineKey(r.code, r.line) === lineKey(line.code, line));
+    // (the same one twice: once. A made-up copy sent first can't keep the real, checked one out)
+    const dup = this.reportList.find((r) => r.from === u.from && (r.ok || !u.ok) && lineKey(r.code, r.line) === lineKey(line.code, line));
     if (dup) return;
-    this.reportList.unshift({
+    const list = this.reportList;
+    list.unshift({
       n: ++this.reportSeq, from: u.from, name: u.name, ok: u.ok, code: line.code, line, context: u.context, reason: u.reason, at: u.at,
     });
-    if (this.reportList.length > REPORTS) this.reportList.length = REPORTS;
+    if (list.length > REPORTS) {
+      // (one goes: the oldest unchecked one; none: the oldest of whoever has the most kept, so a
+      // flood of made-up reports, or one page's own flood, never pushes out other players' reports)
+      let i = -1;
+      for (let j = list.length - 1; j >= 0 && i < 0; j--) if (!list[j].ok) i = j;
+      if (i < 0) {
+        const kept = new Map();
+        for (const r of list) kept.set(r.from, (kept.get(r.from) || 0) + 1);
+        const most = Math.max(...kept.values());
+        for (let j = list.length - 1; j >= 0 && i < 0; j--) if (kept.get(list[j].from) === most) i = j;
+      }
+      list.splice(i, 1);
+      if (i === 0) return; // (the newcomer itself: nothing new to show)
+    }
     this.unseen = Math.min(99, this.unseen + 1);
     this.chatsChanged();
     const t = Date.now(), ac = this.app.adminClient, panel = this.app.adminPanel;
@@ -790,6 +883,7 @@ export class AdminSession {
     if (this.offUp) this.offUp();
     this.offUp = null;
     clearTimeout(this.upBudget.timer);
+    clearTimeout(this.upOdd.timer);
     for (const w of [...this.waiting.values()]) w.resolve(null);
     this.chatFns = [];
     this.parties.clear();

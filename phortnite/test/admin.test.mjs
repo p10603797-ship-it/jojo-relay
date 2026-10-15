@@ -275,7 +275,7 @@ test('sealed cards: only the admin key opens them, a changed one opens to nothin
   const { keys, pubs, otherKeys } = await shared;
   const card = {
     id: 'abc123def456', name: 'Mia'.padEnd(16, 'x'), level: 999, account: 'a1b2c3d4', mode: 'Battle Royale Squads with Bots'.padEnd(40, '!'),
-    phase: 'match', party: { code: 'ABCD', kind: 'member', size: 8 }, v: '2.3.0', since: Date.now(), admin: false, pk: (await newBoxKey()).raw,
+    phase: 'match', party: { code: 'ABCD', kind: 'member', size: 8, pid: 999999 }, v: '2.3.0', since: Date.now(), admin: false, pk: (await newBoxKey()).raw,
   };
   const s = await sealToAdmin(pubs.boxPub, card);
   assert.deepEqual(await openSealed(keys.box, s), card);
@@ -301,6 +301,11 @@ test('sealed cards: only the admin key opens them, a changed one opens to nothin
   assert.deepEqual(cleanCard({ ...card, extra: 'x', name: '<i>Bob</i>' }), { ...card, name: 'iBob/i' });
   assert.equal(cleanCard({ ...card, id: 'NOT VALID' }), null);
   assert.equal(cleanCard({ ...card, pk: 'not a key' }).pk, null);
+  // party.pid: the page's player id in its party's room (the admin's CHAT tab finds a line's
+  // speaker by it): a whole number 1..1e6, else left out
+  const inParty = { ...card, party: { code: 'ABCD', kind: 'member', size: 3 } };
+  assert.deepEqual(cleanCard({ ...inParty, party: { ...inParty.party, pid: 4 } }).party, { code: 'ABCD', kind: 'member', size: 3, pid: 4 });
+  for (const pid of [0, -1, 1.5, 'x', '4', 1e7, NaN, null]) assert.deepEqual(cleanCard({ ...inParty, party: { ...inParty.party, pid } }).party, inParty.party, String(pid));
 });
 
 test('presence: messages with and without a sealed card both count; junk cards are dropped, not the player', () => {

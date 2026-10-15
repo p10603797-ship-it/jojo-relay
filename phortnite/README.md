@@ -65,13 +65,17 @@ Chat with your party in the lobby and in matches:
   @names into *[hidden]*, on your own iPad before a line is sent, again in the party's room and
   again on every iPad that shows it. Nobody can flood the chat (a few lines at a time, at most 20
   a minute). Tap someone's message to **hide** their messages (this party, until you reload) or
-  **🚩 report** it to the admin.
+  **🚩 report** it to the admin. Philip gets a report only if his admin page is open at that
+  moment: reports aren't kept anywhere, so tell a grown-up about anything serious.
 * **Open moderation**: the chat always says so at the top: *🛡 The admin (Philip) can read chats
   to keep everyone safe. Never share your real name, address, school or phone number.* The admin
   can see party chats, look at a player's chat log (their chat then says *🛡 The admin looked at
   this chat*), mute someone's chat for a while (they see *🔇 The admin muted your chat until …*
   and can still play), and talk in a party while spectating it (his lines are tagged
-  **🛡 ADMIN**). See [Admin](#admin).
+  **🛡 ADMIN**). Only the real admin's messages have that tag: his game signs each one and every
+  iPad checks the signature, and nobody else can be called "Admin" (or "Adm1n", "Mod", "🛡 …"):
+  such names show as *Player*. The real admin never asks for your name, school, address or phone
+  number. See [Admin](#admin).
 * **Settings → Chat**: *On* (default), *Quick chat only* (you send only quick chat, and other
   players' typed messages show as *💬 (message hidden: quick chat only)*), or *Off* (no chat
   button, no messages).
@@ -80,8 +84,11 @@ Chat with your party in the lobby and in matches:
   that blocks direct links), every link is now end-to-end encrypted too (a fresh ECDH P-256 key
   pair per link, AES-GCM-256), so people listening on the public relay can't read chat, names or
   the match. (It stops eavesdroppers, not someone actively pretending to be the host on the
-  relay; see `public/js/net/relay.js`.) Pages from before 2.5.0 can't join a 2.5.0 party:
-  everyone should reload.
+  relay; see `public/js/net/relay.js`.) The relay topic is only a hash of the 4-letter party
+  code, so someone listening on purpose can work the code out and join the party like a friend
+  (and read its chat): treat the party code like a key and only share it with friends (and the
+  party sees everyone who joins). Pages from before 2.5.0 can't join a 2.5.0 party: everyone
+  should reload.
 
 ## Publishing the locked website
 
@@ -241,22 +248,33 @@ wrong passwords".
   each signed hello only once (the admin's game signs a new one for every join), so nobody else
   can watch unseen. (Parties on the `npm start` server can't be watched.) The **💬** button on the
   spectating bar opens that party's chat: the admin can talk there, and everyone sees his lines
-  tagged **🛡 ADMIN**.
+  tagged **🛡 ADMIN**. His game signs every line he says (a signed `say` for that party's code and
+  that text) and every game checks it before it shows the tag, so even a host's game that was
+  tampered with can't pass its own lines off as his (a line that fails shows as *Player*). Player
+  names that look like the admin's ("Admin", "Adm1n", "Moderator", "Mod", a 🛡) become *Player*
+  in the party (and the rename / create-account screens refuse them).
 * **🛡 ADMIN → CHAT** (chat moderation, open like everything else: the chat drawer always says
   that the admin can read chats). **🚩 Reports**: when a player taps a chat line and *Report to
   admin*, the line and up to 10 lines before it show up here (the tab's red badge counts new ones,
   and the admin's screen says "🚩 New chat report"). **Party chats**: every party's chat, live, as
   its host's game sends it in (only parties with 2 or more people, newest party first, the last
-  500 lines each; the admin's page keeps them in memory only, a reload forgets them). Tap a line
-  for what to do about who said it: **🔇 mute** their chat for 10 minutes, 1 hour or 1 day (with
-  an optional reason; they see "🔇 The admin muted your chat for 1 hour" and can still play and
-  read the chat), **🔈 unmute**, **✉ message** them, or fetch their **💬 chat log**. The PLAYERS
-  buttons have **💬 CHAT LOG**, **🔇 MUTE CHAT** and **🔈 UNMUTE CHAT** too. A chat log is the
+  500 lines each; the admin's page keeps them in memory only, a reload forgets them). Reports and
+  live chats reach only an admin page that is open at that moment (nothing is kept on the relay):
+  one sent while it's closed is lost. Tap a line for what to do about who said it (found by the
+  player's id in that party, never by name: two players can have the same name, or copy one):
+  **🔇 mute** their chat for 10 minutes, 1 hour or 1 day (with an optional reason; they see
+  "🔇 The admin muted your chat for 1 hour" and can still play and read the chat), **🔈 unmute**,
+  **✉ message** them, or fetch their **💬 chat log**. The PLAYERS buttons have **💬 CHAT LOG**,
+  **🔇 MUTE CHAT** and **🔈 UNMUTE CHAT** too (a muted player's row says *🔇 MUTED UNTIL …*). A mute
+  is kept by that player's game on their iPad (there is no server): a private tab, or clearing
+  the website's data, starts unmuted, and then their row no longer says MUTED, so mute them
+  again. A chat log is the
   last 100 lines that player's game has seen since it was opened (all parties), shown in a sheet;
   their chat says "🛡 The admin looked at this chat". Chats, reports and logs are sealed to the
   admin's key on the relay; anyone *could* seal something to his public key, so the panel marks ⚠
   whatever wasn't sealed by the game it claims to come from (each game seals its uploads with its
-  own key, the one in its player card).
+  own key, the one in its player card). Made-up uploads can't crowd out real ones: they are opened
+  in a small lane of their own, and never push a checked party, line or report out of the panel.
 * **🛡 ADMIN → ACCOUNTS**: everyone who ever made an account (guests never show up), newest first,
   with a **NEW** badge for the ones made since Philip last looked, and a search box. Each row is the
   account's name (tap it) and 🟢 online / 🚫 banned / ⚠ suspect, when it was made and last seen,
