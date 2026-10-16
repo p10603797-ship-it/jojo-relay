@@ -75,7 +75,9 @@ export class Presence {
     this.state = typeof opts.state === 'function' ? opts.state : () => 'l';
     this.id = newId();
     this.topic = PRESENCE_PREFIX + this.id;
-    this.peers = new Map(); // id -> { s, at: when we last heard (local clock), a: sealed card or null }
+    // id -> { s, at: when we last heard (local clock; moved on by a freeze, see tick()), heard: when
+    // we really last heard (never moved: the admin's OFFLINE 'seen'), a: sealed card or null }
+    this.peers = new Map();
     this.snap = new Map(); // the broker's snapshot while it comes in: id -> { s, t, a? }
     this.fns = [];
     this.m = null; // the broker connection in use
@@ -111,13 +113,14 @@ export class Presence {
   }
 
   /**
-   * Everyone else heard with a sealed card: [{ id, s, a, prev, at }] (the admin opens them). prev:
-   * the card before it (null at first): one that was there only for a moment (someone faking that
-   * player, put right again at once by its page) still reaches the admin's panel.
+   * Everyone else heard with a sealed card: [{ id, s, a, prev, at, heard }] (the admin opens them).
+   * prev: the card before it (null at first): one that was there only for a moment (someone faking
+   * that player, put right again at once by its page) still reaches the admin's panel. heard: when
+   * it was really last heard (at is moved on after this page's timers were frozen: tick()).
    */
   cards() {
     const out = [];
-    for (const [id, p] of this.peers) if (p.a) out.push({ id, s: p.s, a: p.a, prev: p.prev || null, at: p.at });
+    for (const [id, p] of this.peers) if (p.a) out.push({ id, s: p.s, a: p.a, prev: p.prev || null, at: p.at, heard: p.heard });
     return out;
   }
 
@@ -442,13 +445,14 @@ export class Presence {
   put(id, s, a = null) {
     const p = this.peers.get(id);
     if (p) {
-      p.at = Date.now();
+      p.at = p.heard = Date.now();
       if (p.s !== s) { p.s = s; this.changed(); }
       if ((p.a && p.a.ct) !== (a && a.ct)) { p.prev = p.a; p.a = a || null; this.cardsChanged(); }
       return;
     }
     if (this.peers.size >= this.o.max) return;
-    this.peers.set(id, { s, at: Date.now(), a: a || null });
+    const now = Date.now();
+    this.peers.set(id, { s, at: now, heard: now, a: a || null });
     this.changed();
   }
 
@@ -482,6 +486,7 @@ export class Presence {
     const frozen = now - this.lastTick - this.o.tickMs;
     this.lastTick = now;
     // timers were frozen (an app switch): we heard nothing meanwhile, and that's nobody's fault
+    // (at only: heard stays when they were really last heard)
     if (frozen > this.o.tickMs * 2) for (const p of this.peers.values()) p.at += frozen;
     this.update();
     if (!this.settled) return;

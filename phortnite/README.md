@@ -236,6 +236,15 @@ wrong passwords".
   during a match, or **set the mode** in the party's lobby; everyone in that party sees that the
   admin did it (kicking or banning a host ends their party, and the others are told why). A row
   marked ⚠ means someone is faking that player's card: commands still reach only the real player.
+  Under the live players, **📴 OFFLINE** lists everyone who has an account but isn't playing right
+  now (once they've opened Phortnite 2.5 or newer; guests never show up), last seen first, 40 at a
+  time (SHOW MORE), each with 🚫 banned / ⚠ suspect, when they were last seen, their level and
+  wins. Tapping a name opens the same sheet as ACCOUNTS (🚫 BAN with an optional reason, ✓ REMOVE
+  BAN): the ban happens the next time they open the game. Someone who comes online moves up into
+  the live rows (never listed twice) and back down when they leave ("last seen" is when the
+  admin's page last saw them online, or else what their game last told the relay, which is at
+  most a day behind). A search box at the top finds a name in both lists, and the totals line
+  counts the offline ones too.
 * **🛡 ADMIN → EVERYONE**: a **banner** across the top of every game (in the lobby and in matches)
   for 5 minutes, 30 minutes, 2 hours or until cleared (a week at most); **maintenance mode** ("🛠 Philip is working
   on the game": everyone is taken out of their match and PLAY waits until it is off); a **message

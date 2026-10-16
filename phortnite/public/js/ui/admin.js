@@ -1,9 +1,12 @@
 // The admin panel (Philip only): the lobby's 🛡 ADMIN button opens it (app.adminPanel.open, wired
 // in js/ui/adminLogin.js). Four tabs:
-//   PLAYERS   everyone online, from their sealed player cards (js/admin/session.js), live. Tap a
-//             player for what the admin can do: SPECTATE their match (js/ui/adminWatch.js), MESSAGE,
-//             RENAME, GIVE XP, RESET STATS, RELOAD, KICK, BAN (a signed-in player's ACCOUNT goes on
-//             the ban list too, the same as ACCOUNTS → BAN; a guest: only that iPad), 💬 CHAT LOG (their game's chat lines,
+//   PLAYERS   everyone online, from their sealed player cards (js/admin/session.js), live; under
+//             them 📴 OFFLINE: every account that isn't online right now (offlineAccounts below:
+//             never a guest, never twice), last seen first, 40 at a time; a search box finds a
+//             name in both. Tap an offline name: the same sheet as ACCOUNTS (BAN with a reason, ✓
+//             REMOVE BAN). Tap a live player for what the admin can do: SPECTATE their match
+//             (js/ui/adminWatch.js), MESSAGE, RENAME, GIVE XP, RESET STATS, RELOAD, KICK, BAN (a
+//             signed-in player's ACCOUNT goes on the ban list too, the same as ACCOUNTS → BAN; a guest: only that iPad), 💬 CHAT LOG (their game's chat lines,
 //             in a sheet), 🔇 MUTE CHAT / 🔈 UNMUTE CHAT; on a party host's page also END MATCH and
 //             PAUSE / RESUME (during a match) or SET MODE (in the party's lobby): the room runs on
 //             that page. A row whose card came with two different keys is marked: someone is faking
@@ -43,6 +46,7 @@ const XP_PICKS = [100, 500, 1000, 5000];
 const MUTE_PICKS = [[10, '10 MIN'], [60, '1 HOUR'], [1440, '1 DAY']];
 const PARTY_SHOWN = 40; // a party's newest lines shown (SHOW ALL: every line kept)
 const ACCTS_SHOWN = 100; // account rows drawn at first (SHOW MORE: the next ones; search finds any)
+const OFF_SHOWN = 40; // PLAYERS → OFFLINE rows drawn at first (SHOW MORE: the next ones)
 const lineKey = (code, l) => `${code}|${l.ts}|${l.id}|${l.text}`;
 const CATS = { br: 'Battle Royale', team: 'Team', party: 'Party games', mutators: 'Mutators', builders: 'Builders', practice: 'Practice', places: 'Places' };
 
@@ -66,19 +70,42 @@ function since(ms) {
   return `${d} day${d === 1 ? '' : 's'} ago`;
 }
 
-/** An account row's small details (every value escaped or a number). */
-function acctChips(a, now) {
+/**
+ * An account row's small details (every value escaped or a number). brief: an OFFLINE row in
+ * PLAYERS (banned, suspect, last seen, level, wins: its name says "(you)" for one on this iPad).
+ */
+function acctChips(a, now, brief = false) {
   const c = [];
-  if (a.isNew) c.push('<span class="adm-anew">NEW</span>');
+  if (a.isNew && !brief) c.push('<span class="adm-anew">NEW</span>');
   if (a.online) c.push('<span class="adm-aon">🟢 online</span>');
   if (a.banned) c.push('<span class="adm-aban">🚫 banned</span>');
   if (a.suspect) c.push('<span class="adm-warn">⚠ suspect</span>');
-  if (a.mine) c.push('<span>📱 this iPad</span>');
+  if (a.mine && !brief) c.push('<span>📱 this iPad</span>');
   if (a.gone) c.push('<span>not on the relay any more</span>');
-  if (a.created) c.push(`<span>made ${since(now - a.created)}</span>`);
+  if (a.created && !brief) c.push(`<span>made ${since(now - a.created)}</span>`);
   if (a.seen && !a.online) c.push(`<span>seen ${since(now - a.seen)}</span>`);
   if (!a.gone) c.push(`<span>Lv ${a.level | 0}</span>`, `<span>🏆 ${a.wins | 0} win${a.wins === 1 ? '' : 's'}</span>`);
   return c.join('');
+}
+
+/** Does a name have the search box's text in it? (Case doesn't matter; an empty box: every name.) */
+export function nameHas(name, q) {
+  const f = String(q ?? '').trim().toLowerCase();
+  return !f || String(name ?? '').toLowerCase().includes(f);
+}
+
+/**
+ * PLAYERS → 📴 OFFLINE: the accounts (session accounts()) that aren't online right now, last seen
+ * first (then newest made, then by name). Never one that is online (a.online, or a live card in
+ * `players` carries its rid: it stays in the live rows only, never listed twice), never a gone one
+ * (banned, its entry no longer on the relay: ACCOUNTS still has it), and never a guest (guests have
+ * no account). q: the search box. DOM-free (test/adminplayers.test.mjs).
+ */
+export function offlineAccounts(accounts, players = [], q = '') {
+  const live = new Set((players || []).map((p) => p && p.rid).filter(Boolean));
+  return (accounts || []).filter((a) => a && a.rid && !a.online && !a.gone && !live.has(a.rid) && nameHas(a.name, q))
+    .sort((a, b) => ((b.seen || 0) - (a.seen || 0)) || ((b.created || 0) - (a.created || 0))
+      || String(a.name).localeCompare(String(b.name)) || String(a.rid).localeCompare(String(b.rid)));
 }
 
 function clock(t) {
@@ -113,6 +140,9 @@ export class AdminPanel {
     this.sel = ''; // the player whose actions are open
     this.form = ''; // the action form open under them ('message', 'rename', …)
     this.actsKey = '';
+    this.plFind = ''; // the PLAYERS search box (live rows and OFFLINE)
+    this.offShow = OFF_SHOWN;
+    this.offKey = ''; // the totals line + OFFLINE as last drawn (drawn again only when it changed)
     this.banMins = 30;
     this.off = null;
     this.timer = 0;
@@ -152,8 +182,15 @@ export class AdminPanel {
         <button class="adm-tab" data-tab="accounts" role="tab" aria-label="Accounts">📇<span class="adm-tw"> ACCOUNTS</span> <b class="adm-count adm-nbadge hidden"></b></button>
       </div>
       <div class="adm-pane adm-players">
+        <div class="adm-afindrow adm-pfindrow"><input class="adm-pfind" type="search" maxlength="16" enterkeyhint="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="🔍 Find a player" aria-label="Find a player"></div>
         <p class="adm-totals"></p>
         <ul class="adm-list"></ul>
+        <p class="adm-pnone hidden"></p>
+        <section class="adm-off">
+          <h3 class="adm-offhead"></h3>
+          <ul class="adm-olist"></ul>
+          <p class="adm-hint adm-onote">Offline: everyone who has an account (once they've opened Phortnite 2.5 or newer). Tap a name to ban — it happens the next time they open the game.</p>
+        </section>
       </div>
       <div class="adm-pane adm-everyone"></div>
       <div class="adm-pane adm-chat"></div>
@@ -176,11 +213,12 @@ export class AdminPanel {
       this.everyone();
       this.chatPane();
       this.acctPane();
+      this.playersPane();
       this.show(this.tab);
       this.renderPlayers();
       this.off = s.onPlayers(() => { this.renderPlayers(); if (this.tab === 'chat') this.renderChat(); });
       this.offChats = s.onChats ? s.onChats(() => this.renderChat()) : null;
-      this.offAccts = s.onAccounts ? s.onAccounts(() => this.renderAccounts()) : null;
+      this.offAccts = s.onAccounts ? s.onAccounts(() => { this.renderAccounts(); this.renderOffline(); }) : null;
       this.badge();
       this.acctBadge();
       this.timer = setInterval(() => this.tick(), TICK_MS);
@@ -196,6 +234,7 @@ export class AdminPanel {
     if (this.offAccts) this.offAccts();
     this.offAccts = null;
     this.acctKey = '';
+    this.offKey = '';
     this.acctSel = '';
     this.acctForm = '';
     this.acctNote = null;
@@ -217,6 +256,18 @@ export class AdminPanel {
 
   ui() { if (this.app.sfx) this.app.sfx.ui(); }
 
+  /**
+   * A name tapped after a search: the search box lets go (an iPad tap on a button leaves the focus
+   * where it was), so its keyboard doesn't stay up over a sheet's or a row's buttons, and what is
+   * typed next never goes into the hidden box behind them.
+   */
+  dropFind() {
+    try {
+      const f = document.activeElement;
+      if (f && f.matches && f.matches('.adm-pfind, .adm-afind')) f.blur();
+    } catch (e) { /* fine */ }
+  }
+
   show(tab) {
     this.tab = tab;
     for (const t of this.root.querySelectorAll('.adm-tab')) {
@@ -228,6 +279,7 @@ export class AdminPanel {
     $('.adm-everyone', this.root).classList.toggle('hidden', tab !== 'everyone');
     $('.adm-chat', this.root).classList.toggle('hidden', tab !== 'chat');
     $('.adm-accts', this.root).classList.toggle('hidden', tab !== 'accounts');
+    if (tab === 'players') { this.offKey = ''; this.renderPlayers(); }
     if (tab === 'everyone') this.stateNow();
     if (tab === 'chat') this.renderChat();
     if (tab === 'accounts') {
@@ -258,16 +310,71 @@ export class AdminPanel {
   }
 
   // ------------------------------------------------------------------ PLAYERS
+  /** The PLAYERS pane's search box and OFFLINE taps, once (OFFLINE rows come and go: delegated). */
+  playersPane() {
+    const pane = $('.adm-players', this.root);
+    const find = $('.adm-pfind', pane);
+    find.value = this.plFind;
+    find.addEventListener('input', () => {
+      this.plFind = find.value;
+      this.offShow = OFF_SHOWN;
+      this.renderPlayers();
+      this.findTop(pane, '.adm-totals');
+    });
+    find.addEventListener('keydown', (e) => { if (e.key === 'Enter') find.blur(); });
+    $('.adm-off', pane).addEventListener('click', (e) => {
+      const name = e.target.closest('.adm-oname');
+      if (name) { this.ui(); this.acctSheet(name.parentNode.dataset.rid); return; }
+      if (e.target.closest('.adm-omore')) { this.ui(); this.offShow += OFF_SHOWN; this.renderOffline(); }
+    });
+  }
+
+  /**
+   * Typed in a search box while scrolled down: the top of the results (its totals line) comes back
+   * just under the sticky box, never left mid-list with the first matches hidden above it (only
+   * ever scrolls up: typing at the top moves nothing).
+   */
+  findTop(pane, totals) {
+    const body = pane.closest('.modal-body'), bar = $('.adm-afindrow', pane), tot = $(totals, pane);
+    if (!body || !bar || !tot) return;
+    const d = tot.getBoundingClientRect().top - bar.getBoundingClientRect().bottom;
+    if (d < 0) body.scrollTop += d;
+  }
+
+  /**
+   * fn() redraws PLAYERS rows: the row at the top of the screen (just under the search box) stays
+   * where it was, so live rows coming and going, or an OFFLINE row added above it, never slide a
+   * different name under the admin's finger (Safari has no scroll anchoring). Only while scrolled.
+   */
+  keepPlace(fn) {
+    const pane = $('.adm-players', this.root), body = pane.closest('.modal-body');
+    if (!body || !body.scrollTop || this.tab !== 'players') { fn(); return; }
+    const top = $('.adm-pfindrow', pane).getBoundingClientRect().bottom;
+    let el = null, y = 0;
+    for (const li of pane.querySelectorAll('.adm-row, .adm-orow')) {
+      const r = li.getBoundingClientRect();
+      if (r.bottom > top) { el = li; y = r.top; break; }
+    }
+    fn();
+    const d = el && el.isConnected ? el.getBoundingClientRect().top - y : 0;
+    if (d) body.scrollTop += d;
+  }
+
+  /** The live rows (the search box's matches), then the totals line and OFFLINE (drawOffline). */
   renderPlayers() {
     if (!this.live()) return;
+    this.keepPlace(() => this.drawPlayers());
+  }
+
+  drawPlayers() {
     const s = this.session, now = Date.now();
-    const list = s.players();
-    const t = s.totals();
+    const all = s.players();
+    const list = all.filter((p) => nameHas(p.name, this.plFind));
     const banned = new Set(s.bans ? s.bans().map((b) => b.r) : []);
-    $('.adm-pcount', this.root).textContent = String(t.total);
-    const missing = t.total - t.cards;
-    $('.adm-totals', this.root).innerHTML = `<b>${t.total}</b> playing now · <b>${t.inMatch}</b> in a match · <b>${t.inLobby}</b> in the lobby · <b>${t.parties}</b> ${t.parties === 1 ? 'party' : 'parties'}`
-      + (missing > 0 ? `<small>${missing} without a player card yet (still connecting, or an older version of the game)</small>` : '');
+    $('.adm-pcount', this.root).textContent = String(s.totals().total);
+    const q = this.plFind.trim(), none = $('.adm-pnone', this.root);
+    none.classList.toggle('hidden', !!list.length || !q);
+    none.textContent = list.length || !q ? '' : `No one playing now has “${q}” in their name.`;
     const ul = $('.adm-list', this.root);
     const rows = new Map([...ul.children].map((li) => [li.dataset.id, li]));
     const seen = new Set();
@@ -293,15 +400,104 @@ export class AdminPanel {
     }
     for (const [id, li] of rows) if (!seen.has(id)) li.remove();
     if (this.sel && !seen.has(this.sel)) {
+      // (still online, but the search box hides them: their row just closes)
+      if (!all.some((p) => p.id === this.sel)) this.status('That player left.', false);
       this.sel = '';
       this.form = '';
       this.actsKey = '';
-      this.status('That player left.', false);
     }
+    this.drawOffline();
+  }
+
+  /** OFFLINE again (the accounts changed, SHOW MORE), the row on screen kept in place. */
+  renderOffline() {
+    if (!this.live() || this.tab !== 'players') return;
+    this.keepPlace(() => this.drawOffline());
+  }
+
+  /**
+   * The totals line and 📴 OFFLINE (offlineAccounts: everyone with an account who isn't online, last
+   * seen first). The search box, a live form and the open account sheet are never touched, so
+   * nothing takes the focus or what is typed. The rows are kept by rid, like the live ones: a clock
+   * tick only rewrites a row's small details ("seen 5 min ago"), never its name button, so a tap
+   * never lands on a button drawn anew mid-tap (or, the rows shifting, on someone else's).
+   */
+  drawOffline() {
+    if (this.tab !== 'players') return;
+    const s = this.session, now = Date.now(), t = s.totals();
+    const missing = t.total - t.cards;
+    const accts = s.accounts ? s.accounts() : null;
+    const off = accts ? offlineAccounts(accts, s.players()) : [];
+    const totals = `<b>${t.total}</b> playing now · <b>${t.inMatch}</b> in a match · <b>${t.inLobby}</b> in the lobby · <b>${t.parties}</b> ${t.parties === 1 ? 'party' : 'parties'}`
+      + (accts ? ` · <b>${off.length}</b> offline` : '')
+      + (missing > 0 ? `<small>${missing} without a player card yet (still connecting, or an older version of the game)</small>` : '');
+    let head = '', empty = '', shown = [], more = 0;
+    if (accts) {
+      const q = this.plFind.trim();
+      const list = q ? off.filter((a) => nameHas(a.name, q)) : off;
+      const st = s.accountStats ? s.accountStats() : { waiting: 0 };
+      head = `📴 OFFLINE · ${q ? `${list.length} of ${off.length}` : off.length}${st.waiting && off.length ? `<small>${st.waiting} more being read…</small>` : ''}`;
+      if (!off.length) empty = st.waiting ? 'Reading the accounts…' : 'No offline accounts yet. Everyone who makes an account shows up here, even when they\'re not playing.';
+      else if (!list.length) empty = `No offline account has “${q}” in its name.`;
+      else { shown = list.slice(0, this.offShow); more = list.length - shown.length; }
+    }
+    const pane = $('.adm-players', this.root);
+    const key = `${totals}|${head}|${!!accts}`;
+    if (key !== this.offKey) {
+      this.offKey = key;
+      $('.adm-totals', pane).innerHTML = totals;
+      $('.adm-off', pane).classList.toggle('hidden', !accts);
+      $('.adm-offhead', pane).innerHTML = head;
+    }
+    const ul = $('.adm-olist', pane);
+    let note = $('.adm-aempty', ul), moreLi = $('.adm-amorerow', ul);
+    if (empty) { // (nothing to list: that one line, as text)
+      for (const li of [...ul.children]) if (li !== note) li.remove();
+      if (!note) { note = document.createElement('li'); note.className = 'adm-aempty'; ul.appendChild(note); }
+      if (note.textContent !== empty) note.textContent = empty;
+      return;
+    }
+    if (note) note.remove();
+    const rows = new Map([...ul.children].filter((li) => li.dataset.rid).map((li) => [li.dataset.rid, li]));
+    const keep = new Set();
+    let prev = null;
+    for (const a of shown) {
+      keep.add(a.rid);
+      let li = rows.get(a.rid);
+      if (!li) {
+        li = document.createElement('li');
+        li.dataset.rid = a.rid;
+        const b = document.createElement('button'), meta = document.createElement('div');
+        b.className = 'adm-oname';
+        meta.className = 'adm-ameta';
+        li.appendChild(b);
+        li.appendChild(meta);
+      }
+      if (prev ? prev.nextSibling !== li : ul.firstChild !== li) ul.insertBefore(li, prev ? prev.nextSibling : ul.firstChild);
+      prev = li;
+      const cls = `adm-orow${a.banned ? ' banned' : ''}${a.suspect ? ' suspect' : ''}`;
+      if (li.className !== cls) li.className = cls;
+      const nm = `${esc(a.name)}${a.mine ? ' <small>(you)</small>' : ''}`, chips = acctChips(a, now, true);
+      if (li.dataset.nm !== nm) { li.dataset.nm = nm; $('.adm-oname', li).innerHTML = nm; }
+      if (li.dataset.chips !== chips) { li.dataset.chips = chips; $('.adm-ameta', li).innerHTML = chips; }
+    }
+    for (const [rid, li] of rows) if (!keep.has(rid)) li.remove();
+    if (!more) { if (moreLi) moreLi.remove(); return; }
+    if (!moreLi) {
+      moreLi = document.createElement('li');
+      moreLi.className = 'adm-amorerow';
+      const b = document.createElement('button');
+      b.className = 'btn adm-omore';
+      moreLi.appendChild(b);
+    }
+    if (ul.lastChild !== moreLi) ul.appendChild(moreLi);
+    const label = `SHOW ${Math.min(OFF_SHOWN, more)} MORE (${more} not shown)`, mb = $('.adm-omore', moreLi);
+    if (mb.textContent !== label) mb.textContent = label;
   }
 
   pick(id) {
     this.ui();
+    this.dropFind();
     if (this.sel === id) { this.sel = ''; this.form = ''; } else { this.sel = id; this.form = ''; }
     this.actsKey = '';
     for (const li of this.root.querySelectorAll('.adm-row')) {
@@ -311,7 +507,22 @@ export class AdminPanel {
     }
     this.renderPlayers();
     const li = this.sel && this.root.querySelector(`.adm-row[data-id="${this.sel}"]`);
-    if (li && li.scrollIntoView) li.scrollIntoView({ block: 'nearest' });
+    if (li) this.reveal(li);
+  }
+
+  /**
+   * A live row or its form into sight, never behind the sticky search box (scrollIntoView knows
+   * nothing about it, and Chrome ignores scroll-margin for 'nearest'): its bottom up into view, but
+   * never its top above the box's bottom edge (taller than the room left: its top shows).
+   */
+  reveal(el, smooth = false) {
+    const pane = $('.adm-players', this.root), body = pane && pane.closest('.modal-body'), bar = pane && $('.adm-pfindrow', pane);
+    if (!body || !bar || !el.isConnected) return;
+    const b = body.getBoundingClientRect(), r = el.getBoundingClientRect();
+    const top = b.top + bar.offsetHeight + 8; // (the box's bottom edge, once it sticks)
+    const d = Math.min(r.bottom > b.bottom ? r.bottom - b.bottom : 0, r.top - top);
+    if (!d) return;
+    try { body.scrollBy({ top: d, behavior: smooth ? 'smooth' : 'auto' }); } catch (e) { body.scrollTop += d; }
   }
 
   /** The selected player's buttons (rebuilt only when what they can do changed: a form keeps its text). */
@@ -467,7 +678,7 @@ export class AdminPanel {
     if (input && input.tagName === 'INPUT') input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     if (input && (this.form === 'message' || this.form === 'rename')) setTimeout(() => { try { input.focus(); } catch (e) { /* fine */ } }, 30);
     // (the form opens under the buttons: low in the list or on a phone it would be out of sight)
-    requestAnimationFrame(() => { try { if (f.isConnected) f.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* fine */ } });
+    requestAnimationFrame(() => { if (this.root) this.reveal(f, true); });
   }
 
   /**
@@ -782,7 +993,7 @@ export class AdminPanel {
     const pane = $('.adm-accts', this.root);
     const find = $('.adm-afind', pane);
     find.value = this.acctFind;
-    find.addEventListener('input', () => { this.acctFind = find.value; this.acctShow = ACCTS_SHOWN; this.renderAccounts(); });
+    find.addEventListener('input', () => { this.acctFind = find.value; this.acctShow = ACCTS_SHOWN; this.renderAccounts(); this.findTop(pane, '.adm-atotals'); });
     find.addEventListener('keydown', (e) => { if (e.key === 'Enter') find.blur(); });
     pane.addEventListener('click', (e) => {
       const name = e.target.closest('.adm-aname');
@@ -828,6 +1039,7 @@ export class AdminPanel {
     const s = this.session;
     const a = s && s.accounts().find((x) => x.rid === rid);
     if (!a) return;
+    this.dropFind();
     const el = this.sheet(a.name, '<div class="adm-acard"></div>');
     this.acctSel = rid;
     el.classList.add('adm-asheet');

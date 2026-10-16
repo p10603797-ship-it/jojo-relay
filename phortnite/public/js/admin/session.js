@@ -22,7 +22,9 @@
 //                                         mode, phase, party: {code, kind, size, pid?} | null (pid:
 //                                         its player id in that party's room, the id its chat lines
 //                                         carry), v, since,
-//                                         admin, pk, s: 'l' | 'm', seen (ms), suspect: true when
+//                                         admin, pk, s: 'l' | 'm', seen (ms), heard (ms: when its
+//                                         card was really last heard; seen is moved on after this
+//                                         iPad slept, js/net/presence.js tick()), suspect: true when
 //                                         cards with different keys came for that id (someone is
 //                                         faking it: commands still reach only the real page),
 //                                         rid: its signed-in account's registry id, only when the
@@ -83,7 +85,12 @@
 // dropped is counted and logged), junk ignored; an empty message means that entry was deleted.
 // The registry lives on the public brokers: a broker that forgets it gets each entry back the next
 // time its page connects, so the list fills in again as players come back.
-//   app.admin.accounts()               -> [{ rid, name, created, seen, level, wins, matches, kills,
+//   app.admin.accounts()               -> [{ rid, name, created, seen (when it last played: its
+//                                         entry's 'seen', or when this page saw its card go offline,
+//                                         the newer; entries refresh 'seen' once a day only, and an
+//                                         entry's never counts as later than when this page got it:
+//                                         an iPad's clock can be set ahead), level, wins,
+//                                         matches, kills,
 //                                         did, v, online (a live card has this rid), banned (on the
 //                                         ban list), suspect (someone put a made-up entry for it on
 //                                         the relay: ignored, the row is still the account's own),
@@ -118,7 +125,8 @@
 // stays as it was and is marked suspect (someone tried). As a second check the first tok seen for
 // a rid is remembered (ACCT_MEM_KEY) and an entry with another one is treated the same. What this
 // page remembers per account, in localStorage ACCT_MEM_KEY ({ rid: { tok, name, created, did,
-// reason, at, live, t } }, at most ACCT_MEM_MAX): names and reasons stay here, never on the broker
+// reason, at, live, on (when its card went offline), t } }, at most ACCT_MEM_MAX):
+// names and reasons stay here, never on the broker
 // (the signed list carries ids only). The newest list this page signed is kept too (BANS_KEY, ids
 // only), and after every connect it goes back on the broker unless that connection handed it over
 // exactly as signed (the broker forgot it, someone deleted or spoiled it, or this page moved to
@@ -166,6 +174,7 @@ export const ACCT_RATE = 40; // entries opened per ACCT_RATE_MS at most
 export const ACCT_RATE_MS = 1000;
 export const ACCTS_MAX = 3000; // accounts kept (and waiting to be opened) at most
 export const ACCT_MEM_MAX = 2000; // accounts this page remembers (localStorage) at most
+export const SEEN_SLACK_MS = 120000; // a page says it's there at least this often (js/net/presence.js refreshMs)
 export const ACCT_MEM_KEY = 'phortnite.adminAccounts';
 export const ACCT_SEEN_KEY = 'phortnite.adminAccountsSeen'; // when the ACCOUNTS tab was last opened
 export const BANS_KEY = 'phortnite.adminBans'; // the newest ban list this page signed (ids only)
@@ -230,6 +239,7 @@ export class AdminSession {
     this.opened = new Map(); // sealed ct -> card | null
     this.pks = new Map(); // id -> the page key its cards carry (a second one: someone fakes that id)
     this.suspects = new Set();
+    this.onAt = new Map(); // rid -> when its card was last heard (the accounts online now)
     this.list = [];
     this.listKey = '';
     this.fns = [];
@@ -256,7 +266,7 @@ export class AdminSession {
     this.toastAt = 0;
     this.offUp = app.presence && app.presence.listen ? app.presence.listen(UP_TOPIC, (text) => { this.onUpload(text); }) : null;
     // accounts (the registry) and the ban list
-    this.accts = new Map(); // rid -> { rid, name, created, seen, level, wins, matches, kills, did, v, suspect, text }
+    this.accts = new Map(); // rid -> { rid, name, created, seen, level, wins, matches, kills, did, v, heardAt, suspect, text }
     this.acctWait = new Map(); // rid -> the newest sealed text waiting to be opened
     this.acctDrops = { big: 0, junk: 0, full: 0, bad: 0 };
     this.acctBudget = new Budget({ rate: ACCT_RATE, ms: ACCT_RATE_MS });
@@ -387,15 +397,23 @@ export class AdminSession {
         if (known === undefined) this.pks.set(p.id, card.pk);
         else if (known !== card.pk) this.suspects.add(p.id);
         if (before && before.id === p.id && before.pk !== card.pk) this.suspects.add(p.id);
-        out.push({ ...card, me: false, s: p.s, seen: p.at, suspect: this.suspects.has(p.id) });
+        out.push({ ...card, me: false, s: p.s, seen: p.at, heard: p.heard ?? p.at, suspect: this.suspects.has(p.id) });
       }
       for (const ct of [...this.opened.keys()]) if (!live.has(ct)) this.opened.delete(ct);
       if (this.pks.size > 2000) { this.pks.clear(); this.suspects.clear(); } // (a flood of made-up ids)
       const mine = this.app.adminClient ? cleanCard(this.app.adminClient.card()) : null;
       if (mine) delete mine.tok; // (this page's own card: its rid is its own)
-      if (mine) out.push({ ...mine, me: true, s: mine.phase === 'match' ? 'm' : 'l', seen: Date.now() });
+      if (mine) out.push({ ...mine, me: true, s: mine.phase === 'match' ? 'm' : 'l', seen: Date.now(), heard: Date.now() });
       out.sort((a, b) => (b.me - a.me) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
       this.list = out;
+      // an account that just went offline: remembered as seen now (its entry says it once a day
+      // only), so the PLAYERS tab's OFFLINE list has it at the top, "seen just now". A card that
+      // went stale (no goodbye) was last heard a while ago: seen SEEN_SLACK_MS after that at most.
+      // (heard, not seen: after this iPad slept, presence moves every card's 'at' on to about now)
+      const on = new Map(), t = Date.now();
+      for (const p of out) if (p.rid) on.set(p.rid, Math.max(on.get(p.rid) || 0, int(p.heard)));
+      for (const [rid, at] of this.onAt) if (!on.has(rid) && at) this.memo(rid, { on: Math.min(t, at + SEEN_SLACK_MS) });
+      this.onAt = on;
       const key = JSON.stringify(out.map((p) => [p.id, p.name, p.level, p.account, p.mode, p.phase, p.party, p.v, p.admin, p.s, p.pk, p.suspect, p.muted, p.rid]));
       if (key !== this.listKey) {
         this.listKey = key;
@@ -674,7 +692,8 @@ export class AdminSession {
     }
     this.memo(rid, { tok: reg.tok, name: reg.name, created: reg.created, did: reg.did });
     const { tok, ...rest } = reg;
-    this.accts.set(rid, { ...rest, suspect: !!(had && had.suspect), text });
+    // (heardAt: its 'seen' comes from the player's iPad clock, which may be set ahead: never later than this)
+    this.accts.set(rid, { ...rest, heardAt: Date.now(), suspect: !!(had && had.suspect), text });
     return true;
   }
 
@@ -737,7 +756,7 @@ export class AdminSession {
     const row = (e, extra = {}) => {
       const banned = bans.has(e.rid), m = this.mem[e.rid] || {};
       return {
-        rid: e.rid, name: e.name, created: e.created, seen: e.seen, level: e.level, wins: e.wins, matches: e.matches, kills: e.kills,
+        rid: e.rid, name: e.name, created: e.created, seen: Math.max(Math.min(e.seen || 0, e.heardAt || Date.now()), m.on || 0), level: e.level, wins: e.wins, matches: e.matches, kills: e.kills,
         did: e.did, v: e.v, online: online.has(e.rid), banned, suspect: !!e.suspect, isNew: e.created > from, gone: false,
         mine: mine.has(e.rid), reason: banned ? m.reason || '' : '', bannedAt: banned ? m.at || 0 : 0, bannedLive: banned && !!m.live, ...extra,
       };
@@ -951,6 +970,7 @@ function readMem() {
     if (typeof m.reason === 'string') o.reason = cleanText(m.reason, 120);
     if (int(m.at)) o.at = int(m.at);
     if (int(m.live)) o.live = int(m.live);
+    if (int(m.on)) o.on = int(m.on);
     out[rid] = o;
   }
   return out;

@@ -27,7 +27,8 @@ import {
   accountIds, cachedIds, deviceId, registration, sealRegistration, regShape, cleanRegistration, Registry, ridOf, tokMatches, banDid,
 } from '../public/js/accounts/registry.js';
 import { AdminClient, BAN_LIST_REASON, TOLD_KEY } from '../public/js/admin/client.js';
-import { AdminSession, ACCT_RATE, ACCTS_MAX, ACCT_MEM_KEY, BANS_KEY } from '../public/js/admin/session.js';
+import { AdminSession, ACCT_RATE, ACCTS_MAX, ACCT_MEM_KEY, BANS_KEY, SEEN_SLACK_MS } from '../public/js/admin/session.js';
+import { offlineAccounts } from '../public/js/ui/admin.js';
 import { AccountStore } from '../public/js/accounts/store.js';
 import { defaultStats } from '../public/js/accounts/stats.js';
 import { topicMatches } from '../public/js/net/mqtt.js';
@@ -752,6 +753,143 @@ test('admin accounts(): entries opened (newest made first), deduped, deleted by 
     guest.client.stop();
     A.restore();
   }
+});
+
+test("admin accounts(): an account that goes offline is 'seen' then (its entry says it once a day only; a stale card: a little after it was last heard), remembered on the admin's iPad: PLAYERS → OFFLINE has it first", async () => {
+  const { cfg, keys, pubs } = await shared;
+  const broker = fakeBroker();
+  // Max makes an account first, Ruby a moment later (her entry's 'seen' is the newer one); Ruby
+  // closes the game before the admin opens his page, Max plays on
+  const max = await playerPage(broker, 'page000000a0', cfg, pubs, { names: ['Max'] });
+  const maxRid = (await accountIds(max.app.activeAccount.id)).rid;
+  await until(() => broker.retained.has(REG_PREFIX + maxRid), 3000, 'Max registered');
+  await sleep(30);
+  const ruby = await playerPage(broker, 'page000000a1', cfg, pubs, { names: ['Ruby'] });
+  const rubyRid = (await accountIds(ruby.app.activeAccount.id)).rid;
+  await until(() => broker.retained.has(REG_PREFIX + rubyRid), 3000, 'Ruby registered');
+  ruby.client.stop();
+  ruby.app.presence.goOffline();
+  const A = await adminPage(broker, cfg, pubs, keys);
+  const row = (rid, s = A.session) => s.accounts().find((a) => a.rid === rid);
+  try {
+    await until(() => A.session.accounts().length === 2, 3000, 'both listed');
+    await until(async () => { await A.session.refresh(); return row(maxRid).online; }, 3000, 'Max online');
+    const entry = row(maxRid).seen;
+    assert.ok(row(rubyRid).seen > entry, "Ruby's entry is the newer one");
+    assert.deepEqual(offlineAccounts(A.session.accounts(), A.session.players()).map((a) => a.name), ['Ruby'], 'Max is online: only in the live rows');
+    await sleep(40);
+    // Max closes the game: OFFLINE, seen when he went (not his entry's day-old 'seen')
+    max.client.stop();
+    const t0 = Date.now();
+    max.app.presence.goOffline();
+    await until(async () => { await A.session.refresh(); return !row(maxRid).online; }, 3000, 'Max offline');
+    const heard = row(maxRid).seen;
+    assert.ok(heard >= t0 && heard <= Date.now(), `seen when he went (${heard - t0} ms)`);
+    assert.equal(row(rubyRid).seen < heard, true);
+    assert.deepEqual(offlineAccounts(A.session.accounts(), A.session.players()).map((a) => a.name), ['Max', 'Ruby'], 'Max left last: first');
+    // kept on the admin's iPad: after a reload of his page, Max is still seen then
+    A.session.saveMem();
+    assert.equal(JSON.parse(A.store.getItem(ACCT_MEM_KEY))[maxRid].on, heard);
+    A.session.close();
+    const s2 = new AdminSession(A.app, { cfg, pubs, keys });
+    A.app.admin = s2;
+    live.push(() => s2.close());
+    await until(() => s2.accounts().length === 2, 3000, 'listed again');
+    assert.equal(row(maxRid, s2).seen, heard);
+    assert.deepEqual(offlineAccounts(s2.accounts(), s2.players()).map((a) => a.name), ['Max', 'Ruby']);
+    // an entry newer than that (he played again on another iPad): the entry's 'seen' wins
+    await sleep(5);
+    broker.page('page000000a2').publish(REG_PREFIX + maxRid, await sealRegistration(pubs.boxPub, await entryFor(max.app.activeAccount, max.client.registry.did)), { retain: true });
+    await until(() => row(maxRid, s2).seen > heard, 3000, "his new entry's seen");
+    assert.equal(row(maxRid, s2).name, 'Max');
+    // a card that went stale (no goodbye: the iPad slept) was last heard long ago: seen a little after that
+    const card = s2.players().find((p) => p.rid === maxRid);
+    assert.equal(card, undefined, 'Max is offline');
+    const long = Date.now() - 3600000;
+    s2.onAt.set(maxRid, long);
+    await s2.refresh();
+    await until(() => s2.mem[maxRid].on === long + SEEN_SLACK_MS, 3000, 'seen a little after it was last heard');
+  } finally {
+    A.session.close();
+    A.client.stop();
+    A.restore();
+  }
+});
+
+test("admin accounts(): someone who left while the admin's iPad slept is 'seen' a little after they were last heard before it, never 'just now' (the real presence moves every card's 'at' on after a freeze)", async () => {
+  const { cfg, keys, pubs } = await shared;
+  const b = await startBroker();
+  useBrokers([{ url: b.url }]);
+  const FAST = { refreshMs: 600, perPlayerMs: 0, staleMin: 1500, minGapMs: 0, hideMs: 150, tickMs: 50, settleMs: 150, notifyMs: 20, backoffMs: 50, maxBackoffMs: 400, connectMs: 2000 };
+  const pr = new Presence({ ...FAST }), pa = new Presence({ ...FAST });
+  const realNow = Date.now;
+  try {
+    // Ruby plays; the admin's page sees her card
+    const ruby = await playerPage({ page: () => pr }, 'unused', cfg, pubs, { names: ['Ruby'] });
+    const rubyRid = (await accountIds(ruby.app.activeAccount.id)).rid;
+    pr.start();
+    const A = await adminPage({ page: () => pa }, cfg, pubs, keys);
+    pa.start();
+    const s = A.session;
+    await until(async () => { await s.refresh(); return s.onAt.has(rubyRid); }, 8000, 'Ruby online on the admin page');
+    const before = pa.peers.get(pr.id).heard;
+    assert.ok(before > 0);
+    // the admin's iPad sleeps (locked): its timers stop and it hears nothing; Ruby closes the game meanwhile
+    clearInterval(pa.ticker);
+    clearInterval(s.timer);
+    clearInterval(pa.m.timer);
+    const heard = pa.heard;
+    pa.heard = () => {};
+    ruby.client.stop();
+    pr.stop();
+    await sleep(50);
+    Date.now = () => realNow() + 3600000; // an hour later, it wakes: the overdue timers run first
+    pa.heard = heard;
+    pa.ticker = setInterval(() => pa.tick(), pa.o.tickMs);
+    s.timer = setInterval(() => s.refresh(), 5000);
+    pa.tick();
+    assert.ok(Date.now() - pa.peers.get(pr.id).at < 60000, "presence forgives the freeze: Ruby's 'at' reads about now");
+    assert.equal(pa.peers.get(pr.id).heard, before, 'but not when she was really last heard');
+    await s.refresh();
+    assert.equal(s.onAt.get(rubyRid), before);
+    // then the dead connection goes: the reconnect's snapshot has no Ruby
+    b.drop((c) => c.id === pa.m.id);
+    await until(() => !pa.peers.has(pr.id), 8000, 'Ruby gone on the admin page');
+    await until(async () => { await s.refresh(); return !!(s.mem[rubyRid] && s.mem[rubyRid].on); }, 8000, 'her went-offline time');
+    assert.equal(s.mem[rubyRid].on, before + SEEN_SLACK_MS, 'seen SEEN_SLACK_MS after she was last heard, at most');
+    const row = s.accounts().find((a) => a.rid === rubyRid);
+    assert.ok(Date.now() - row.seen > 55 * 60000, `OFFLINE says about an hour ago, not "just now" (${Math.round((Date.now() - row.seen) / 60000)} min)`);
+  } finally {
+    Date.now = realNow;
+    pr.stop();
+    pa.stop();
+    useBrokers(null);
+    await b.stop();
+  }
+});
+
+test("admin accounts(): an entry's 'seen' from an iPad whose clock is set ahead counts as when the admin's page got it, at most: never pinned to the top of OFFLINE, never over the admin's own went-offline time", async () => {
+  const { cfg, keys, pubs } = await shared;
+  const broker = fakeBroker();
+  const st = new AccountStore(memStorage());
+  const ruby = st.create({ name: 'Ruby' }), leo = st.create({ name: 'Leo' });
+  const rubyRid = (await accountIds(ruby.id)).rid, leoRid = (await accountIds(leo.id)).rid;
+  const put = async (acc, seen) => broker.page('page000000b9').publish(REG_PREFIX + (await accountIds(acc.id)).rid, await sealRegistration(pubs.boxPub, await entryFor(acc, 'abcdefghijkl', { seen })), { retain: true });
+  await put(ruby, Date.now() - 10000); // left 10 s ago
+  await put(leo, Date.now() + 365 * 86400000); // his iPad's date is a year ahead
+  const t0 = Date.now();
+  const A = await adminPage(broker, cfg, pubs, keys);
+  const row = (rid) => A.session.accounts().find((a) => a.rid === rid);
+  await until(() => A.session.accounts().length === 2, 3000, 'both listed');
+  assert.ok(row(leoRid).seen >= t0 && row(leoRid).seen <= Date.now(), 'not in the future: when this page got his entry');
+  assert.ok(row(rubyRid).seen < t0, "Ruby's own (earlier) 'seen' stays");
+  // the admin's page then sees Ruby, and Leo, go offline: those times show, and the newest is first
+  await sleep(10);
+  const t1 = Date.now();
+  A.session.memo(leoRid, { on: t1 });
+  A.session.memo(rubyRid, { on: t1 + 5 });
+  assert.equal(row(leoRid).seen, t1);
+  assert.deepEqual(offlineAccounts(A.session.accounts(), A.session.players()).map((a) => a.name), ['Ruby', 'Leo']);
 });
 
 test("admin accounts(): an entry must prove its topic (its tok hashes to the rid): a made-up one for a real account is dropped, before or after the admin's first look, and never renames the row or moves its iPad", async () => {
