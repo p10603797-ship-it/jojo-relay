@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phortnite map art gallery</title>
+<!--
+  Every tree species at every LOD, every prop / decor / pad model, the biome rock tints and every
+  texture layer (SURFACES and LOOKS) of the biome island, for reviewing the map art.
+  Serve the phortnite folder (e.g. `python3 -m http.server -d phortnite 8099`) and open
+  http://localhost:8099/tools/gallery.html  (?size=256 for the Low textures)
+-->
+<style>
+  :root { --bg: #11161d; --panel: #1b222c; --text: #e9eef5; --muted: #8ea0b4; --accent: #ffd23f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  header { padding: 16px 20px; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  h2 { margin: 18px 20px 8px; font-size: 17px; color: var(--accent); }
+  p { margin: 0; color: var(--muted); }
+  .scene { position: relative; margin: 0 20px; background: var(--panel); border-radius: 8px; overflow: hidden; }
+  .scene canvas { display: block; width: 100%; }
+  .label { position: absolute; transform: translate(-50%, 0); font-size: 11px; text-align: center; white-space: nowrap; color: var(--text); text-shadow: 0 1px 2px #000; pointer-events: none; }
+  .label b { color: var(--accent); font-weight: 600; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; margin: 0 20px 20px; }
+  .sw { background: var(--panel); border-radius: 6px; padding: 6px; font-size: 11px; text-align: center; }
+  .sw canvas { width: 100%; aspect-ratio: 1; display: block; border-radius: 4px; image-rendering: auto; }
+  .sw .k { font-weight: 600; margin-top: 4px; }
+  .sw .ms { color: var(--muted); }
+</style>
+<script type="importmap">
+  { "imports": {
+      "three": "../node_modules/three/build/three.module.js",
+      "three/addons/": "../node_modules/three/examples/jsm/"
+  } }
+</script>
+</head>
+<body>
+<header>
+  <h1>Map art gallery</h1>
+  <p id="sub">Trees (10 species x LOD 0 / 1 / 2), props, decor and pads, rock tints, and the texture layers.</p>
+</header>
+<h2>Trees: LOD 0 (full) / LOD 1 (mid) / LOD 2 (far cards)</h2>
+<div class="scene" id="trees"></div>
+<h2>Props, decor and pads</h2>
+<div class="scene" id="props"></div>
+<h2>Ground surfaces (SURFACES)</h2>
+<div class="swatches" id="surfaces"></div>
+<h2>Building looks (LOOKS)</h2>
+<div class="swatches" id="looks"></div>
+<script type="module">
+import * as THREE from 'three';
+import * as M from '../public/js/world/models.js';
+import * as G from '../public/js/gfx/texgen.js';
+import { SPECIES, SURFACES, LOOKS, PADS, BIOMES } from '../public/shared/world/keys.js';
+import { PROP_TYPES, DECOR_TYPES } from '../public/shared/world/props.js';
+
+const SIZE = Number(new URLSearchParams(location.search).get('size')) || 256;
+const stats = { textures: {}, trees: {}, props: {} };
+window.__gallery = { ready: false, stats };
+
+function tex(img) {
+  const t = new THREE.DataTexture(img.color, img.size, img.size, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true;
+  t.needsUpdate = true;
+  return t;
+}
+const foliage = tex(G.foliage(256)), barkT = tex(G.bark(256)), rockT = tex(G.rock(256));
+
+/** A row-and-column grid of objects in one scene, with DOM labels. */
+function makeScene(el, cells, cols, cellW, cellH, height) {
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  const w = el.clientWidth;
+  renderer.setSize(w, height, false);
+  renderer.setPixelRatio(1);
+  el.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x9cc6e8);
+  scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a5a3a, 1.2));
+  const sun = new THREE.DirectionalLight(0xfff0d8, 2.4);
+  sun.position.set(30, 50, 40);
+  scene.add(sun);
+  const rows = Math.ceil(cells.length / cols);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(cols * cellW + 20, rows * cellH + 20), new THREE.MeshStandardMaterial({ color: 0x5a8a46 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set((cols - 1) * cellW / 2, 0, (rows - 1) * cellH / 2);
+  scene.add(ground);
+  const cam = new THREE.PerspectiveCamera(30, w / height, 1, 4000);
+  const cx = (cols - 1) * cellW / 2, cz = (rows - 1) * cellH / 2;
+  // fit the grid's width (and depth) into the view, looking down about 30 degrees
+  const hfov = 2 * Math.atan(Math.tan((cam.fov * Math.PI) / 360) * cam.aspect);
+  const dist = Math.max((cols * cellW * 0.55) / Math.tan(hfov / 2), (rows * cellH * 0.62) / Math.tan((cam.fov * Math.PI) / 360));
+  cam.position.set(cx, dist * 0.5, cz + dist * 0.87);
+  cam.lookAt(cx, 1.2, cz);
+  cells.forEach((c, i) => {
+    const x = (i % cols) * cellW, z = Math.floor(i / cols) * cellH;
+    c.obj.position.set(x, 0, z);
+    scene.add(c.obj);
+  });
+  renderer.render(scene, cam);
+  // labels under each cell
+  const v = new THREE.Vector3();
+  cells.forEach((c, i) => {
+    const x = (i % cols) * cellW, z = Math.floor(i / cols) * cellH;
+    v.set(x, 0, z + cellH * 0.38).project(cam);
+    const d = document.createElement('div');
+    d.className = 'label';
+    d.style.left = `${(v.x * 0.5 + 0.5) * 100}%`;
+    d.style.top = `${(-v.y * 0.5 + 0.5) * height}px`;
+    d.innerHTML = c.label;
+    el.appendChild(d);
+  });
+  return renderer;
+}
+
+const std = (o) => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, ...o });
+const barkMat = std({ map: barkT }), leafMat = std({ map: foliage }), leafMat2 = std({ map: foliage, side: THREE.DoubleSide });
+const propMat = std({ roughness: 0.7 }), rockMat = std({ map: rockT });
+
+// ---------------------------------------------------------------- trees
+const treeCells = [];
+for (const lod of [0, 1, 2]) {
+  for (const sp of SPECIES) {
+    const t0 = performance.now();
+    const g = M.treeGeometry(sp, lod);
+    const ms = performance.now() - t0;
+    const tris = (g.trunk.index.count + g.leaves.index.count) / 3;
+    stats.trees[`${sp}/${lod}`] = tris;
+    const grp = new THREE.Group();
+    grp.add(new THREE.Mesh(g.trunk, barkMat));
+    grp.add(new THREE.Mesh(g.leaves, M.SPECIES_INFO[sp].doubleSided && lod < 2 ? leafMat2 : leafMat));
+    treeCells.push({ obj: grp, label: `${sp} <b>L${lod}</b><br>${tris} tris` });
+    void ms;
+  }
+}
+makeScene(document.getElementById('trees'), treeCells, SPECIES.length, 8, 12, 620);
+
+// ---------------------------------------------------------------- props, decor, pads, rocks
+const propCells = [];
+for (const t of [...Object.keys(PROP_TYPES), ...DECOR_TYPES, ...PADS]) {
+  const g = M.propGeometry(t, 1);
+  stats.props[t] = g.index.count / 3;
+  const mesh = new THREE.Mesh(g, propMat);
+  const big = t === 'container' || t === 'fountain' || t === 'stall' || t === 'tent' || t === 'car' || t === 'mushroom';
+  if (!big && !['lamp', 'sign', 'fence', 'umbrella', 'launch', 'geyser'].includes(t)) mesh.scale.setScalar(1.8);
+  propCells.push({ obj: mesh, label: `${t}<br>${g.index.count / 3} tris` });
+}
+for (const b of BIOMES) {
+  const rg = M.rockGeometry(BIOMES.indexOf(b) % 3).clone();
+  const col = new THREE.Color(M.ROCK_TINTS[b]);
+  const c = rg.attributes.color;
+  for (let i = 0; i < c.count; i++) c.setXYZ(i, c.getX(i) * col.r, c.getY(i) * col.g, c.getZ(i) * col.b);
+  const m = new THREE.Mesh(rg, rockMat);
+  m.scale.setScalar(1.6);
+  m.position.y = 0.6;
+  const grp = new THREE.Group(); grp.add(m);
+  propCells.push({ obj: grp, label: `rock: ${b}` });
+}
+makeScene(document.getElementById('props'), propCells, 11, 6, 6.5, 560);
+
+// ---------------------------------------------------------------- texture layers
+async function swatches(id, keys) {
+  const el = document.getElementById(id);
+  for (const k of keys) {
+    const t0 = performance.now();
+    const img = G.layerTexture(k, SIZE);
+    const ms = performance.now() - t0;
+    stats.textures[k] = Math.round(ms);
+    const c = document.createElement('canvas');
+    c.width = c.height = img.size;
+    const ctx = c.getContext('2d');
+    const id2 = ctx.createImageData(img.size, img.size);
+    id2.data.set(img.color);
+    ctx.putImageData(id2, 0, 0);
+    const d = document.createElement('div');
+    d.className = 'sw';
+    d.append(c);
+    const kk = document.createElement('div'); kk.className = 'k'; kk.textContent = k + (img.emissive ? ' (emissive)' : '');
+    const mm = document.createElement('div'); mm.className = 'ms'; mm.textContent = `${img.size} px, ${ms.toFixed(0)} ms`;
+    d.append(kk, mm);
+    el.append(d);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+await swatches('surfaces', [...SURFACES, 'asphaltPlain']);
+await swatches('looks', LOOKS.filter((k) => k !== 'ice'));
+document.getElementById('sub').textContent += ` Textures at ${SIZE} px: ${Object.values(stats.textures).reduce((a, b) => a + b, 0)} ms in total.`;
+window.__gallery.ready = true;
+</script>
+</body>
+</html>
