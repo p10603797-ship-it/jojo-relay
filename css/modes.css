@@ -46,13 +46,13 @@
   box-shadow: 0 6px 0 rgba(0, 0, 0, 0.35);
 }
 .dv-hero::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.35)); pointer-events: none; }
-.dv-hero:active { transform: scale(0.98); }
+.dv-hero:active, .dv-tile:active { filter: brightness(0.8); } /* (darker, not smaller: see .mp-card:active) */
 .dv-hero-emoji { font-size: 110px; line-height: 1; flex: none; }
 .dv-hero-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; position: relative; z-index: 1; }
 .dv-hero-text small { font-size: 13px; letter-spacing: 2px; opacity: 0.9; }
 .dv-hero-text > b { font-family: var(--font-title); font-weight: normal; font-size: 40px; line-height: 1; text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35); }
 .dv-hero-desc { font-size: 15px; line-height: 1.35; opacity: 0.95; font-family: system-ui, -apple-system, sans-serif; max-width: 560px; }
-.dv-hero .dv-badges { position: static; margin-top: 4px; }
+.dv-hero .dv-badges { position: static; margin-top: 4px; max-width: none; }
 
 .dv-row { content-visibility: auto; contain-intrinsic-size: auto 160px; margin-bottom: 6px; }
 .dv-row h3, .dv-results h3 {
@@ -68,9 +68,8 @@
 .dv-tile {
   position: relative; flex: none; width: 168px; height: 112px; padding: 0; border: 0; border-radius: 14px; cursor: pointer; overflow: hidden;
   background: linear-gradient(140deg, var(--c1), var(--c2)); color: #fff; text-align: left;
-  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.35); transition: transform 0.08s;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.35);
 }
-.dv-tile:active { transform: scale(0.95); }
 .dv-tile.cur { box-shadow: 0 0 0 4px var(--yellow), 0 4px 0 rgba(0, 0, 0, 0.35); }
 .dv-emoji { position: absolute; right: 8px; top: 8px; font-size: 46px; line-height: 1; }
 .dv-name {
@@ -80,6 +79,32 @@
 .dv-badges { position: absolute; left: 8px; top: 8px; display: flex; gap: 4px; flex-wrap: wrap; max-width: 120px; }
 .dv-badges b { font-size: 12px; font-weight: normal; letter-spacing: 0.5px; padding: 3px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.45); line-height: 1; }
 .dv-badges b.new { background: var(--yellow); color: #2a1a00; }
+/* a mode's picture (js/ui/pictures.js: a lazy <img class="pic-img"> over the gradient). Once it is in,
+   the tile's own name and emoji step aside: the picture has the title lettered in */
+.dv-tile.pic-on .dv-name, .dv-tile.pic-on .dv-emoji { opacity: 0; }
+/* the hero with its picture: the whole row wide, the picture (16:9, the hero's height) at its left
+   end and the text beside it, never over it. The picture has the title lettered in, so the hero's
+   own title steps aside; its emoji goes to the far end when there is room */
+.dv-hero.pic {
+  --hh: clamp(180px, 17.5vw, 240px); max-width: none; height: var(--hh); padding-left: calc(var(--hh) * 16 / 9 + 22px);
+  background: var(--pic) left center / auto 100% no-repeat, linear-gradient(120deg, var(--c1), var(--c2));
+}
+.dv-hero.pic::after { left: calc(var(--hh) * 16 / 9); background: linear-gradient(90deg, rgba(0, 0, 0, 0.28), rgba(0, 0, 0, 0) 26px); }
+.dv-hero.pic .dv-hero-text > b { display: none; }
+.dv-hero.pic .dv-hero-text { flex: 1 1 auto; }
+.dv-hero.pic .dv-hero-text small { font-size: 15px; }
+.dv-hero.pic .dv-hero-desc { font-size: clamp(15px, 1.4vw, 19px); max-width: 620px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.dv-hero.pic .dv-hero-emoji { order: 2; }
+@media (max-width: 999px) { .dv-hero.pic .dv-hero-emoji { display: none; } }
+/* the detail sheet's banner: the whole picture, the card's width (narrower and centred on a low screen) */
+.dv-dpic {
+  position: relative; width: min(100%, calc(46vh * 16 / 9)); aspect-ratio: 16 / 9; margin: 0 auto 12px; border-radius: 14px; overflow: hidden;
+  background: linear-gradient(140deg, var(--c1), var(--c2));
+}
+.dv-row h3 .dv-newtag {
+  font-family: var(--font-hud); font-weight: normal; font-size: 13px; letter-spacing: 1px; padding: 3px 7px; margin-right: 4px; border-radius: 5px;
+  background: var(--yellow); color: #2a1a00; vertical-align: 3px;
+}
 .dv-cur { position: absolute; right: 0; bottom: 0; font-size: 10px; padding: 3px 8px; background: var(--yellow); color: #2a1a00; border-top-left-radius: 8px; }
 .dv-action .dv-emoji { right: auto; left: 50%; top: 14px; transform: translateX(-50%); }
 .dv-action .dv-name { text-align: center; }
@@ -209,6 +234,8 @@
   .dv-search { height: 48px; }
   .dv-x, .mc-x, .mc-back { width: 48px; height: 48px; }
   .dv-hero { height: 118px; gap: 14px; }
+  .dv-hero.pic { --hh: 118px; }
+  .dv-hero.pic .dv-hero-desc { font-size: 13px; -webkit-line-clamp: 2; }
   .dv-hero-emoji { font-size: 70px; }
   .dv-hero-text > b { font-size: 28px; }
   .dv-hero-desc { font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -238,6 +265,12 @@
   .dv-hero-emoji { font-size: 64px; }
   .dv-hero-text > b { font-size: 28px; }
   .dv-hero-desc { font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  /* (no room beside the picture: the gradient, emoji and title) */
+  .dv-hero.pic { height: auto; padding-left: 16px; background: linear-gradient(120deg, var(--c1), var(--c2)); }
+  .dv-hero.pic::after { left: 0; background: linear-gradient(90deg, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.35)); }
+  .dv-hero.pic .dv-hero-emoji, .dv-hero.pic .dv-hero-text > b { display: block; order: 0; }
+  .dv-hero.pic .dv-hero-text small { font-size: 13px; }
+  .dv-hero.pic .dv-hero-desc { font-size: 13px; -webkit-line-clamp: 3; }
 }
 
 /* ================================================================== In-match mode HUD (js/game/modeViews.js) */
@@ -368,7 +401,7 @@ body.touch #modehud > .mh-line.on { display: block; width: auto; max-width: 100%
    teammates panel (two lines) so nothing overlaps (tools/layout-sweep.mjs, mode state) */
 @media (max-height: 460px) {
   body.touch #notice { font-size: 18px; }
-  body.touch.mode-score #notice { top: calc(76px + var(--sat)); }
+  body.touch.mode-score #notice { top: max(calc(76px + var(--sat)), calc(var(--announce-bottom, 0px) + 6px)); }
   body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed { top: calc(144px + var(--sat)); }
   body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed .kf:nth-last-child(n+3) { display: none; }
   /* 667 x 375 (iPhone SE / 8): the strip clears the minimap and the emote button on both sides
@@ -380,7 +413,7 @@ body.touch #modehud > .mh-line.on { display: block; width: auto; max-width: 100%
 @media (max-height: 460px) and (max-width: 700px) {
   /* narrower, so it clears the teammates panel; under the strip even when it takes three rows */
   body.touch #notice { font-size: 14px; }
-  body.touch.mode-score #notice { top: calc(100px + var(--sat)); }
+  body.touch.mode-score #notice { top: max(calc(100px + var(--sat)), calc(var(--announce-bottom, 0px) + 6px)); }
 }
 
 /* portrait iPads / phones: the creator's 8 tabs wrap onto two rows (a scrolled strip cut BOTS off) */

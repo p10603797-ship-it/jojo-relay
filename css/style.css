@@ -583,4 +583,10 @@ body.ingame.dead #hotbar, body.ingame.dead #ammo, body.ingame.dead #bars { displ
 /* in the lobby announce.js places it between the top bar's buttons, or under the bar right of the
    party (then the toasts make room) */
 body.announce-low #toasts { top: var(--toasts-top, calc(142px + var(--sat))); }
+/* (not over the map picker's or Discover's first cards: they cover the lobby; in a match announce.js
+   puts it under the mode's score strip) */
+body:has(#mappicker) #announce, body:has(#discover) #announce { visibility: hidden; }
 @media (max-width: 760px) { #announce { max-width: 70vw; font-size: 14px; } }
+
+/* key art on a card (js/ui/pictures.js): the picture fills the card over its gradient, under its text */
+.pic-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; -webkit-user-drag: none; }

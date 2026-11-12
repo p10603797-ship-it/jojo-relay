@@ -1,6 +1,6 @@
 {
  "v": 1,
- "version": "2.5.1",
+ "version": "2.6.0",
  "kdf": "PBKDF2-SHA256",
  "iter": 600000,
  "salt": "0UF3J2wETCCl4Znr8T56zg==",
@@ -65,11 +65,11 @@
  "files": {
   "gz": {
    "path": "game.lock",
-   "iv": "E/dJ0FIrP5NUz2i/"
+   "iv": "SV0bdT2C9sDZhDVb"
   },
   "raw": {
    "path": "game.raw.lock",
-   "iv": "ngWKHAOHMlhTOOFZ"
+   "iv": "QqUh1ruwUyb6PFDb"
   }
  },
  "built": [
@@ -80,6 +80,7 @@
   "game.lock",
   "game.raw.lock",
   "icons",
+  "img",
   "index.html",
   "lock.js",
   "lock.json",

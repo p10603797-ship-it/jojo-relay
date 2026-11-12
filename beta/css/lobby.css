@@ -103,6 +103,9 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), inset 0 0 0 2px rgba(255, 255, 255, 0.12);
 }
 .lb-memoji { width: 60px; height: 60px; flex: none; border-radius: 12px; display: grid; place-items: center; font-size: 38px; background: rgba(0, 0, 0, 0.25); font-family: system-ui, sans-serif; }
+/* the mode's picture (js/ui/pictures.js) in place of the emoji, which shows until it is in */
+.lb-memoji.pic { position: relative; width: 104px; height: 58px; overflow: hidden; box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.2); }
+.lb-memoji.pic-on .lb-mem { visibility: hidden; }
 .lb-mtxt { flex: 1; min-width: 0; }
 .lb-mname { font-family: var(--font-title); font-size: 24px; line-height: 1.05; letter-spacing: 0.5px; overflow: hidden; text-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
@@ -352,6 +355,7 @@ body.endcard:not(.roundcard) #bigmsg { display: none !important; }
   .lb-br { width: min(320px, 46vw); }
   .lb-mode { padding: 6px 8px; }
   .lb-memoji { width: 46px; height: 46px; font-size: 28px; }
+  .lb-memoji.pic { width: 80px; height: 45px; }
   .lb-mname { font-size: 19px; }
   .lb-play { height: 58px; font-size: 30px; }
   .lb-bl .lb-btn { min-height: 48px; font-size: 15px; padding: 0 12px; }
