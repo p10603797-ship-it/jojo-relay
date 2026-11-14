@@ -1,0 +1,23 @@
+{
+  "about": "Key slots for the CLOSED Phortnite website (tools/lock.mjs closed): its own game key, opened only by Philip's code. No password or key is stored here.",
+  "v": 1,
+  "kdf": "PBKDF2-SHA256",
+  "iter": 600000,
+  "salt": "y7z6oYqQH+klE0cUZuOVHA==",
+  "next": 2,
+  "slots": [
+    {
+      "n": 1,
+      "iv": "zj7t5EltGVvMQssf",
+      "wk": "B8PB+X0rxqiuExYvHOouuYE6IUsKLBqky/7ET83FbDtTm27kc044l9SAED/ogy5x"
+    }
+  ],
+  "closed": {
+    "text": "Phortnite is closed for now. Philip is getting a big update ready — check back soon!"
+  },
+  "unban": {
+    "salt": "zpdUGOX3C3v8KIq5eXnSrQ==",
+    "iter": 600000,
+    "hash": "KxKx6RPJh1N3zeYL3fJWXYdzT+UYuDYASIFw1HkRtz8="
+  }
+}

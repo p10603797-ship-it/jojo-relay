@@ -1,0 +1,65 @@
+{
+  "about": "Key slots for the locked Phortnite website (tools/lock.mjs). Each slot is the game key encrypted with one password; no password or key is stored here.",
+  "v": 1,
+  "kdf": "PBKDF2-SHA256",
+  "iter": 600000,
+  "salt": "0UF3J2wETCCl4Znr8T56zg==",
+  "next": 11,
+  "slots": [
+    {
+      "n": 1,
+      "iv": "8gBxnvZ7eZQBrK2o",
+      "wk": "333/d92yCU+gBhPWlppa35sR6Sy+v+xKDP+puwtVCF1H6jgiWOUeRJg7BatHQepU"
+    },
+    {
+      "n": 2,
+      "iv": "NXb1IbGmP6JqqAWF",
+      "wk": "1+V+mhLVJ2PZEk4eXuc5pbfPbfVu1rQyElBYqH1t5y1Vt3+KVJ1uK4fD9TH4DMon"
+    },
+    {
+      "n": 3,
+      "iv": "crHjw0xtiMlVzCE4",
+      "wk": "/6QNBYAKhAGYV4qf+CrvdUGriBJbBoH8rMuPFzrV8vajvlgB1fDLvnIi3NHafh2n"
+    },
+    {
+      "n": 4,
+      "iv": "RVn8APxzyd87D8Lh",
+      "wk": "5rcMXIeNhqItSkKABrx9egqAPv0uCmiLRddsJUXwVryaAm/1aQ86Ge4eDVbM3uF0"
+    },
+    {
+      "n": 5,
+      "iv": "g/3So95Pxe9MXwps",
+      "wk": "b9E7lh5lfR7BqSsFZqAqqCQBbh2k0YPz/ka3Zx6QrQ/IqAjiLXmtuPZDANjUBc5J"
+    },
+    {
+      "n": 6,
+      "iv": "iUD9vhi+/7EFXdx5",
+      "wk": "SsANeNQ8wQU85YjhbVXkA2seMj5kflvLMoODsa6Frh8yNOQLOIt1UoftC4kMDUFU"
+    },
+    {
+      "n": 7,
+      "iv": "mnYpI9v65h6GtnqP",
+      "wk": "E2DssUTUR8vjd4skrqM7ak0mMCWsUr5seypsB0jkmuWt9xjKHQHbjEg0Illp/NEr"
+    },
+    {
+      "n": 8,
+      "iv": "TpmdXmUk4wBB3bMk",
+      "wk": "lsKf0urvRJ9/T4jAf+VGtsgCyfQv57FSuhCuahjt/szOhooXc6GQ4pV3Cj/kjdFk"
+    },
+    {
+      "n": 9,
+      "iv": "6uB20Xm2LCROKu9C",
+      "wk": "l4WHqzCQDXA72boGgOv0uLGhD2EFnRtJLKNLb/e5eZY7IWlpjrQJWjUNqhPvqjOp"
+    },
+    {
+      "n": 10,
+      "iv": "utdMA5HmJkKcTMpu",
+      "wk": "30iPndKncv/pdAOtrXdvhjJHvLC0FzS9knHWwlxFK6KzqbgskHJMQJ4T0LjlSGjX"
+    }
+  ],
+  "unban": {
+    "salt": "zpdUGOX3C3v8KIq5eXnSrQ==",
+    "iter": 600000,
+    "hash": "KxKx6RPJh1N3zeYL3fJWXYdzT+UYuDYASIFw1HkRtz8="
+  }
+}

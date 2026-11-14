@@ -1,0 +1,382 @@
+/* The admin (js/admin/client.js, js/ui/adminLogin.js): what players see when Philip moderates
+   (maintenance / ban / update screens, messages, chips, the admin's banner) and the admin's own bits
+   (the 🛡 ADMIN button, the password box). iPad first: tap targets of 56 px, big friendly type. */
+
+/* ------------------------------------------------------------------ the lobby's 🛡 ADMIN button */
+.lb-admin {
+  display: flex; align-items: center; gap: 6px; height: 56px; min-width: 56px; padding: 0 18px 0 14px; border: 0; border-radius: 28px; flex: none;
+  background: linear-gradient(180deg, #7cc8ff, #2a7be0); color: #fff; font-size: 20px; letter-spacing: 1px; white-space: nowrap;
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.25);
+}
+.lb-admin:active { transform: translateY(2px); }
+@media (max-width: 760px), (orientation: portrait) {
+  .lb-admin { padding: 0; justify-content: center; width: 56px; }
+  .lb-adword { display: none; }
+}
+
+/* ------------------------------------------------------------------ the admin's banner (js/ui/announce.js) */
+#announce.admin { background: linear-gradient(180deg, #8fd3ff, #3a8ff0); color: #08203f; }
+#announce.admin .an-x { background: rgba(8, 32, 63, 0.15); color: #08203f; }
+#announce .an-tag { font-family: var(--font-title); font-weight: normal; font-size: 12px; letter-spacing: 1px; background: #08203f; color: #fff; border-radius: 6px; padding: 2px 6px; margin-right: 4px; vertical-align: 2px; }
+
+/* ------------------------------------------------------------------ the "Admin" button + password box */
+.acc-adminrow { margin-top: 6px; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 6px; text-align: center; }
+.acc-adminrow:empty { display: none; }
+.adm-note { margin-top: 6px; font-size: 14px; opacity: 0.85; }
+.adm-open { min-height: 48px; min-width: 88px; font-size: 14px; opacity: 0.85; }
+.adm-login .rn-row input { letter-spacing: 2px; }
+.adm-login .btn.big { min-height: 56px; } /* (a phone's short-screen rule makes .btn.big 37 px) */
+/* "Who's playing?": the note right under the title, where everyone sees it without scrolling (a phone too) */
+.modal-body .adm-note-top { margin: -4px 0 10px; }
+.adm-basic .adm-plist { list-style: none; margin: 8px 0 0; padding: 0; max-height: 46vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.adm-basic .adm-plist li { padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.06); margin-bottom: 6px; font-size: 15px; line-height: 1.35; }
+.adm-basic .adm-plist b { font-family: var(--font-title); font-weight: normal; font-size: 18px; color: var(--yellow); }
+
+/* ------------------------------------------------------------------ what players see (#adminlayer) */
+/* full-screen: maintenance, a ban, "Updating the game…" (above everything, the lobby modal too) */
+#adminlayer .adm-over {
+  position: fixed; inset: 0; z-index: 150; display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: radial-gradient(circle at 50% 35%, #3a2a8f, #140b3a 70%); color: #fff; font-family: var(--font-hud); text-align: center;
+  touch-action: none;
+}
+#adminlayer .adm-ban { z-index: 160; background: radial-gradient(circle at 50% 35%, #6a1f2c, #1d0710 70%); }
+#adminlayer .adm-reload { z-index: 155; }
+#adminlayer .adm-ocard { max-width: 560px; }
+#adminlayer .adm-ocard h2 { font-family: var(--font-title); font-weight: normal; font-size: clamp(28px, 5vw, 44px); letter-spacing: 1px; margin: 6px 0 12px; line-height: 1.1; }
+#adminlayer .adm-ocard p { font-size: 19px; line-height: 1.45; margin: 0 0 10px; opacity: 0.95; }
+#adminlayer .adm-ocard .adm-small { font-size: 15px; opacity: 0.7; }
+#adminlayer .adm-big { font-size: 72px; line-height: 1; }
+
+/* "Message from the admin" cards and the small persistent chips ('⏸ The admin paused the match',
+   '🛠 Maintenance is ON…' on the admin's own page, stage E's '👁 Admin is watching'): at the top of
+   the toasts' column (#toasts, js/admin/client.js boxes()), so they sit wherever the toasts do
+   (never over the top bar or the party cards) and the toasts line up under them. */
+#toasts .adm-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 100%; }
+#toasts .adm-msgs { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+#toasts .adm-chips:empty, #toasts .adm-msgs:empty { display: none; }
+.adm-msg {
+  pointer-events: auto; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 12px 12px 12px 18px;
+  border-radius: 16px; background: rgba(16, 12, 44, 0.95); color: #fff; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 0 0 2px #5aaeff;
+  font-family: var(--font-hud); animation: admin-in 0.25s ease-out; text-align: left;
+}
+.adm-msg .adm-mhead { grid-column: 1; font-family: var(--font-title); font-size: 15px; letter-spacing: 1px; color: #8fd3ff; }
+.adm-msg .adm-mtext { grid-column: 1; font-size: 19px; line-height: 1.35; overflow-wrap: anywhere; }
+.adm-msg .adm-mtext b { color: var(--yellow); font-weight: normal; }
+.adm-msg .adm-mtext small { font-size: 15px; opacity: 0.85; }
+.adm-msg .adm-ok {
+  grid-column: 2; grid-row: 1 / 3; min-width: 72px; height: 56px; border: 0; border-radius: 28px; cursor: pointer;
+  background: linear-gradient(180deg, #ffe86b, #ffb800); color: #2a1a00; font-family: var(--font-title); font-size: 20px;
+}
+/* (a slide only: under a heavy load the card must never sit invisible at the start of a fade) */
+@keyframes admin-in { from { transform: translateY(-10px); } to { transform: none; } }
+.adm-chip {
+  height: 36px; display: flex; align-items: center; padding: 0 14px; border-radius: 18px; white-space: nowrap;
+  background: rgba(16, 12, 44, 0.88); color: #fff; font-family: var(--font-hud); font-size: 15px; box-shadow: inset 0 0 0 2px #5aaeff;
+}
+/* in a match the column starts under Philip's banner, however many lines it takes (js/ui/announce.js
+   sets --announce-bottom), and under the HUD's big notice ('The storm eye is shrinking!', 16% down),
+   so a chip or card never covers either; an admin banner shows two lines at most there (tap: all) */
+body:not(.onstage) #toasts { top: max(calc(16% + 48px + var(--sat)), calc(var(--announce-bottom, 0px) + 50px)); }
+/* (the big notice itself goes under a banner instead of onto it; score modes keep their own spot) */
+body:not(.onstage) #notice { top: max(calc(16% + var(--sat)), calc(var(--announce-bottom, 0px) + 6px)); }
+body:not(.onstage) #announce.admin .an-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: pointer;
+  padding: 0 4px; margin: 8px 0; /* (margin, not padding: the clipped third line must not peek out) */
+}
+body:not(.onstage) #announce.admin.open .an-text { display: block; -webkit-line-clamp: none; }
+/* a phone held sideways: clear of the timer / players pills on the right too */
+@media (max-height: 520px) {
+  body:not(.onstage) #toasts { width: min(460px, 54vw); }
+  .adm-msg { padding: 8px 8px 8px 14px; }
+  .adm-msg .adm-mtext { font-size: 16px; }
+}
+
+/* ------------------------------------------------------------------ the admin panel (js/ui/admin.js) */
+#modal.adm-wide .modal-card { width: min(980px, 100%); }
+/* (pinned to the top, not centred: the panel's height follows a tab or a search's results, so a
+   centred card would jump under the finger while typing in a search box, and the tabs and ✕ would
+   move when switching tabs) */
+#modal.adm-wide { align-items: flex-start; }
+/* (the EVERYONE tab says what the banner shows; the admin password box and status: nothing over them) */
+body.adm-panel-open #announce, body.adm-login-open #announce { visibility: hidden; }
+/* the panel open: toasts (its own "Ruby is banned.") and chips at the bottom of the screen, never over
+   its tabs or a sheet's name and buttons (taps go through them: #toasts has no pointer events) */
+html body.adm-panel-open #toasts { top: auto; bottom: calc(14px + var(--sab)); }
+.adm-panel { font-family: system-ui, -apple-system, sans-serif; }
+.adm-head { padding-right: 52px; } /* (the modal's ✕) */
+.modal-body .adm-head h2 { margin: 0 0 2px; }
+.adm-open-note { margin: 0 0 10px; font-size: 14px; opacity: 0.75; }
+.adm-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+/* (a tab's word gives way, shortened with "…", before its badge does: a short tab like CHAT lends
+   its spare room to ACCOUNTS, and the NEW badge never ends up cut off or under the ✕) */
+.adm-tab {
+  flex: 1 1 auto; min-width: 0; min-height: 56px; border: 0; border-radius: 14px; cursor: pointer; color: #fff; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.08); font-family: var(--font-title); font-size: 20px; letter-spacing: 1px; padding: 0 8px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+.adm-tab > .adm-tw { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.adm-tab.sel { background: linear-gradient(180deg, #7cc8ff, #2a7be0); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.25); }
+.adm-count { flex: none; font-family: var(--font-hud); font-weight: normal; font-size: 15px; background: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 2px 8px; }
+.adm-pane.hidden { display: none; }
+.adm-totals { margin: 0 0 8px; font-size: 15px; }
+.adm-totals b { color: var(--yellow); font-family: var(--font-hud); font-weight: normal; }
+.adm-totals small { display: block; opacity: 0.7; font-size: 13px; }
+
+/* PLAYERS: one row each; the selected one opens its buttons */
+.adm-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.adm-row { border-radius: 14px; background: rgba(255, 255, 255, 0.06); }
+.adm-row.sel { background: rgba(124, 200, 255, 0.13); box-shadow: inset 0 0 0 2px #5aaeff; }
+.adm-rowhead {
+  width: 100%; min-height: 60px; display: grid; grid-template-columns: minmax(120px, 0.55fr) 1fr auto; align-items: center; gap: 4px 12px;
+  padding: 8px 12px; border: 0; background: none; color: #fff; text-align: left; cursor: pointer; font: inherit;
+}
+.adm-nm { font-family: var(--font-title); font-size: 21px; letter-spacing: 0.5px; color: var(--yellow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.adm-nm small { font-family: var(--font-hud); font-size: 12px; color: #fff; opacity: 0.75; letter-spacing: 0; }
+.adm-meta { display: flex; flex-wrap: wrap; gap: 4px 6px; font-size: 13px; }
+.adm-meta span { background: rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 3px 8px; white-space: nowrap; }
+.adm-meta .adm-warn { background: rgba(255, 110, 90, 0.25); color: #ffd0c8; white-space: normal; }
+.adm-chev { font-size: 18px; opacity: 0.6; transition: transform 0.15s; }
+.adm-row.sel .adm-chev { transform: rotate(180deg); }
+.adm-acts { padding: 2px 12px 12px; }
+.adm-acts.hidden { display: none; }
+.adm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.adm-panel .btn { min-height: 56px; font-size: 17px; text-align: center; padding: 8px 12px; }
+.adm-act.on { outline: 3px solid var(--yellow); outline-offset: 1px; }
+.adm-sub { margin: 12px 0 6px; font-family: var(--font-hud); font-size: 13px; letter-spacing: 1px; opacity: 0.8; }
+.adm-form { margin-top: 10px; padding: 10px; border-radius: 12px; background: rgba(0, 0, 0, 0.22); display: flex; flex-direction: column; gap: 8px; }
+.adm-form:empty { display: none; }
+.adm-panel textarea {
+  width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; font-family: var(--font-hud); font-size: 18px; padding: 10px 14px;
+  border-radius: 6px; border: 2px solid rgba(255, 255, 255, 0.25); background: rgba(0, 0, 0, 0.35); color: #fff;
+}
+.adm-panel input, .adm-panel select { width: 100%; box-sizing: border-box; min-height: 56px; font-size: 18px; }
+.adm-panel textarea:focus, .adm-panel input:focus { border-color: var(--yellow); outline: none; }
+.adm-inrow { display: flex; gap: 8px; align-items: stretch; }
+.adm-inrow input, .adm-inrow select { flex: 1; min-width: 0; }
+.adm-inrow .btn { flex: none; }
+.adm-btns2 { display: flex; gap: 8px; flex-wrap: wrap; }
+.adm-btns2 .btn { flex: 1; min-width: 150px; }
+.adm-picks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.modal-body .adm-q { margin: 0; font-size: 16px; }
+.modal-body .adm-hint { margin: 0; font-size: 13px; opacity: 0.7; }
+.adm-status { min-height: 22px; margin-top: 10px; font-family: var(--font-hud); font-size: 15px; }
+.adm-status.ok { color: #8dffb0; }
+.adm-status.bad { color: #ff9b9b; }
+
+/* PLAYERS: the search box (sticky, like ACCOUNTS'), then 📴 OFFLINE under the live rows: every
+   account that isn't online, dimmer than the live rows (greyed name, no card colour), the name a
+   big button that opens the account sheet */
+.modal-body .adm-pnone { margin: 0; padding: 14px; text-align: center; font-size: 15px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); }
+.adm-off { margin-top: 18px; padding-top: 4px; border-top: 1px solid rgba(255, 255, 255, 0.12); display: flex; flex-direction: column; gap: 8px; }
+.modal-body .adm-offhead {
+  margin: 8px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px;
+  font-size: 18px; color: #c9c4ee; letter-spacing: 1px;
+}
+.adm-offhead small { font-family: var(--font-hud); font-size: 13px; letter-spacing: 0; opacity: 0.7; }
+.adm-olist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+/* (its own columns, not ACCOUNTS': a few short details, so the name gets the room: 16 letters on one line) */
+.adm-orow {
+  display: grid; grid-template-columns: minmax(160px, 1.2fr) minmax(0, 1fr); align-items: center; gap: 6px 12px;
+  padding: 6px 12px 6px 6px; border-radius: 14px; background: rgba(0, 0, 0, 0.16); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.adm-orow.banned { background: rgba(255, 90, 90, 0.1); }
+.adm-orow .adm-ameta span { background: rgba(255, 255, 255, 0.07); }
+.adm-orow .adm-ameta .adm-aban { background: rgba(255, 90, 90, 0.35); }
+.adm-orow .adm-ameta .adm-warn { background: rgba(255, 110, 90, 0.25); }
+/* (a long name wraps, never cut, like ACCOUNTS) */
+.adm-oname {
+  min-height: 56px; min-width: 0; border: 0; border-radius: 12px; cursor: pointer; padding: 6px 14px; text-align: left;
+  background: rgba(255, 255, 255, 0.05); color: #d8d3b8; font-family: var(--font-title); font-size: 22px; letter-spacing: 0.5px;
+  white-space: normal; overflow-wrap: anywhere; line-height: 1.1; box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.adm-oname small { font-family: var(--font-hud); font-size: 13px; letter-spacing: 0; opacity: 0.8; }
+.adm-oname:active { transform: translateY(2px); }
+.modal-body .adm-onote { margin-top: 2px; }
+
+/* EVERYONE */
+.adm-sec { padding: 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.06); margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
+.modal-body .adm-sec h3 { margin: 0; }
+.modal-body .adm-now { margin: 0; font-size: 15px; }
+.adm-onnow { color: #ff9b9b; font-family: var(--font-hud); font-weight: normal; }
+.adm-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.adm-panel .adm-bmin { font-size: 16px; }
+.adm-bmin.on { background: linear-gradient(180deg, #7cc8ff, #2a7be0); outline: 3px solid #fff; outline-offset: 1px; }
+.adm-sec.adm-me { background: none; align-items: center; }
+.adm-sec.adm-me .btn { min-width: 240px; }
+
+/* CHAT (party chat moderation): reports and every party's live chat. Every text in it is escaped. */
+.adm-count.hidden { display: none; }
+.adm-rbadge { background: #ff5a5a; color: #fff; }
+.adm-picks.adm-picks3 { grid-template-columns: repeat(3, 1fr); }
+.modal-body .adm-chatnote { margin: 0 0 10px; font-size: 14px; opacity: 0.8; }
+.modal-body .adm-warn { margin: 0; font-size: 13px; color: #ffd0c8; }
+.adm-rep { padding: 10px; border-radius: 12px; background: rgba(255, 90, 90, 0.1); box-shadow: inset 0 0 0 2px rgba(255, 110, 90, 0.45); display: flex; flex-direction: column; gap: 6px; }
+.modal-body .adm-rhead { margin: 0; font-size: 15px; }
+.modal-body .adm-rhead b { color: var(--yellow); font-weight: 600; }
+.modal-body .adm-rwhy { margin: 0; font-size: 15px; font-style: italic; overflow-wrap: anywhere; }
+.adm-ctx summary { min-height: 48px; display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; opacity: 0.85; padding: 0 6px; list-style: none; }
+.adm-ctx summary::-webkit-details-marker { display: none; }
+.adm-ctx summary::before { content: '▸'; font-size: 16px; }
+.adm-ctx[open] summary::before { content: '▾'; }
+.adm-party { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 12px; background: rgba(0, 0, 0, 0.2); }
+.modal-body .adm-phead { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 14px; }
+.modal-body .adm-phead > b { font-family: var(--font-title); font-weight: normal; font-size: 20px; letter-spacing: 1px; color: var(--yellow); }
+.modal-body .adm-phead span { opacity: 0.85; }
+.adm-panel .btn.adm-more { font-size: 14px; align-self: flex-start; }
+.adm-clist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.adm-cbox { max-height: min(320px, 46vh); overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.adm-cbox.open { max-height: none; }
+.adm-cl { border-radius: 10px; }
+.adm-cl.sel { background: rgba(124, 200, 255, 0.13); box-shadow: inset 0 0 0 2px #5aaeff; }
+.adm-clb {
+  width: 100%; min-height: 48px; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; align-content: center; gap: 2px 8px;
+  padding: 8px 10px; border: 0; border-radius: 10px; background: rgba(255, 255, 255, 0.05); color: #fff; text-align: left; font: inherit; font-size: 16px; cursor: pointer;
+}
+button.adm-clb:disabled { cursor: default; opacity: 1; color: #fff; }
+.adm-ct { font-family: var(--font-hud); font-size: 12px; opacity: 0.6; white-space: nowrap; }
+.adm-cn { color: var(--yellow); font-weight: 600; white-space: nowrap; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; }
+.adm-cn.adm-cadmin { color: #8fd3ff; }
+.adm-cx { overflow-wrap: anywhere; min-width: 0; }
+.adm-cl.sys .adm-clb { opacity: 0.6; font-style: italic; grid-template-columns: auto 1fr; }
+.adm-cl.admin .adm-clb { background: rgba(90, 174, 255, 0.12); }
+.adm-unv { font-style: normal; color: #ffb4a8; }
+.adm-lacts { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+.modal-body .adm-lwho { margin: 0; font-size: 15px; }
+.modal-body .adm-lwho b { color: var(--yellow); }
+.modal-body .adm-lgh { margin: 12px 0 4px; font-family: var(--font-title); font-weight: normal; font-size: 18px; color: var(--yellow); letter-spacing: 1px; }
+/* the chat log: a sheet over the whole panel (its own CLOSE) */
+.adm-sheet {
+  position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; gap: 8px; padding: 18px 20px 14px;
+  background: linear-gradient(180deg, #2a2070, #160f44); border-radius: 12px;
+}
+.adm-shead { display: flex; align-items: center; gap: 12px; }
+.modal-body .adm-shead h3 { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-panel .adm-shead .btn { flex: none; min-width: 120px; }
+.adm-sbody { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.adm-sbody .adm-clb { cursor: default; }
+
+/* ACCOUNTS (the account registry): a search box, then one row per account: its name as a big
+   button (tap: the sheet with BAN / REMOVE BAN / MESSAGE / KICK) and small details. */
+.adm-nbadge { background: #ffd23f; color: #2a1a00; font-weight: 700; font-size: 13px; letter-spacing: 0.5px; white-space: nowrap; }
+/* (the search box stays put at the top while a long list scrolls under it: clear of the modal's ✕,
+   under the account sheet) */
+.adm-afindrow { position: sticky; top: 0; z-index: 1; margin: 0; padding: 4px 52px 8px 0; background: #281f6c; }
+.modal-body .adm-atotals { margin: 0 0 8px; font-size: 15px; }
+.adm-atotals b { color: var(--yellow); font-family: var(--font-hud); font-weight: normal; }
+.adm-atotals small { display: block; opacity: 0.7; font-size: 13px; }
+.adm-alist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.adm-arow {
+  display: grid; grid-template-columns: minmax(160px, 0.42fr) 1fr; align-items: center; gap: 6px 12px;
+  padding: 6px 12px 6px 6px; border-radius: 14px; background: rgba(255, 255, 255, 0.06);
+}
+.adm-arow.banned { background: rgba(255, 90, 90, 0.12); }
+/* (a long name wraps onto a second line, never cut: "SuperCoolPlayer1" and "…2" must not look the same) */
+.adm-aname {
+  min-height: 56px; min-width: 0; border: 0; border-radius: 12px; cursor: pointer; padding: 6px 14px; text-align: left;
+  background: rgba(255, 255, 255, 0.09); color: var(--yellow); font-family: var(--font-title); font-size: 22px; letter-spacing: 0.5px;
+  white-space: normal; overflow-wrap: anywhere; line-height: 1.1; box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
+}
+.adm-aname:active { transform: translateY(2px); }
+.adm-ameta { display: flex; flex-wrap: wrap; gap: 4px 6px; font-size: 13px; min-width: 0; }
+.adm-ameta span { background: rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 3px 8px; white-space: nowrap; }
+.adm-ameta .adm-anew { background: #ffd23f; color: #2a1a00; font-weight: 700; }
+.adm-ameta .adm-aon { background: rgba(80, 220, 120, 0.25); }
+.adm-ameta .adm-aban { background: rgba(255, 90, 90, 0.35); }
+.adm-ameta .adm-warn { background: rgba(255, 110, 90, 0.25); color: #ffd0c8; }
+.adm-aempty { padding: 18px 14px; text-align: center; font-size: 16px; line-height: 1.45; border-radius: 14px; background: rgba(255, 255, 255, 0.05); }
+.adm-amorerow .btn { width: 100%; }
+.modal-body .adm-anote { margin-top: 10px; }
+/* the account's sheet (over the panel, like the chat log) */
+.adm-acard { display: flex; flex-direction: column; gap: 10px; }
+.adm-adet { font-size: 14px; }
+.modal-body .adm-abanned { color: #ffc0b8; }
+.modal-body .adm-ares { margin: 0; font-family: var(--font-hud); font-size: 16px; overflow-wrap: anywhere; }
+.adm-ares.ok { color: #8dffb0; }
+.adm-ares.bad { color: #ff9b9b; }
+.adm-aact.on { outline: 3px solid var(--yellow); outline-offset: 1px; }
+.adm-acard .adm-form { margin-top: 0; }
+/* its buttons: a row of big ones, never squeezed into a narrow column ("✓ REMOVE BAN" on one line) */
+.adm-aacts { display: flex; flex-wrap: wrap; gap: 8px; }
+.adm-panel .adm-aacts .btn { flex: 0 1 240px; min-width: 190px; white-space: nowrap; }
+.modal-body .adm-asheet .adm-shead h3 { font-size: 26px; white-space: normal; overflow-wrap: anywhere; line-height: 1.1; } /* (the whole name above BAN) */
+/* an iPad held upright: four tabs with their words and badges still fit */
+@media (max-width: 860px) {
+  .adm-tab { font-size: 16px; letter-spacing: 0.5px; padding: 0 6px; gap: 4px; }
+}
+
+/* a phone held sideways (844×390) or a narrow window */
+@media (max-width: 760px), (max-height: 520px) {
+  #modal.adm-wide { padding: 8px; }
+  #modal.adm-wide .modal-card { padding: 14px 14px 10px; max-height: calc(100% - 4px); }
+  .adm-head { display: none; } /* (the tabs say where you are: room for the list) */
+  .adm-tabs { margin-bottom: 8px; padding-right: 52px; gap: 6px; }
+  .adm-tab { font-size: 16px; letter-spacing: 0.5px; padding: 0 6px; }
+  .adm-tab .adm-count { padding: 2px 6px; }
+  .adm-arow, .adm-orow { padding: 5px 8px 5px 5px; }
+  .adm-arow { grid-template-columns: minmax(130px, 0.4fr) 1fr; }
+  .adm-orow { grid-template-columns: minmax(130px, 1.2fr) minmax(0, 1fr); }
+  .adm-aname, .adm-oname { font-size: 20px; }
+  .adm-rowhead { grid-template-columns: 1fr auto; }
+  .adm-meta { grid-column: 1 / -1; grid-row: 2; }
+  .adm-chev { grid-column: 2; grid-row: 1; }
+  .adm-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+  .adm-panel .btn { font-size: 15px; }
+  .adm-seg, .adm-picks { grid-template-columns: repeat(2, 1fr); }
+  .adm-picks.adm-picks3 { grid-template-columns: repeat(3, 1fr); }
+  .adm-sheet { padding: 12px 12px 10px; }
+  .adm-clb { font-size: 15px; }
+  .adm-cbox { max-height: none; } /* (a short screen: the panel scrolls, not a box inside it) */
+}
+/* four tabs in a narrow window: the pictures (and badges) say which is which */
+@media (max-width: 620px) {
+  .adm-tab .adm-tw { display: none; }
+  .adm-tab { font-size: 22px; }
+}
+/* a phone held upright: the tabs still fit; a chat line's text under its name; a name over its details */
+@media (max-width: 520px) {
+  .adm-tab { letter-spacing: 0; padding: 0 4px; }
+  .adm-arow, .adm-orow { grid-template-columns: 1fr; }
+  .adm-clb { grid-template-columns: auto 1fr; }
+  .adm-clb .adm-cx { grid-column: 1 / -1; }
+  .adm-picks.adm-picks3 { grid-template-columns: 1fr; }
+  .modal-body .adm-asheet .adm-shead h3 { font-size: 22px; }
+}
+
+/* ------------------------------------------------------------------ the admin watching (js/ui/adminWatch.js) */
+#adminwatch {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(18px + var(--sab)); z-index: 40;
+  display: flex; align-items: center; gap: 14px; padding: 10px 10px 10px 18px; border-radius: 22px; max-width: calc(100vw - 24px); box-sizing: border-box;
+  background: rgba(16, 12, 44, 0.9); color: #fff; font-family: var(--font-hud); box-shadow: inset 0 0 0 2px #5aaeff, 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+#adminwatch.hidden, body.onstage #adminwatch { display: none; }
+#adminwatch .aw-info { min-width: 0; }
+#adminwatch .aw-top { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; min-width: 0; }
+#adminwatch .aw-tag { font-family: var(--font-title); font-size: 16px; letter-spacing: 1px; color: #8fd3ff; flex: none; }
+#adminwatch .aw-name { font-family: var(--font-title); font-weight: normal; font-size: 24px; color: var(--yellow); overflow: hidden; text-overflow: ellipsis; max-width: 38vw; }
+#adminwatch .aw-sub { font-size: 13px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#adminwatch .aw-btns { display: flex; gap: 8px; flex: none; }
+#adminwatch .aw-btns button {
+  min-width: 56px; height: 56px; border: 0; border-radius: 28px; cursor: pointer; color: #fff;
+  background: rgba(255, 255, 255, 0.15); font-family: var(--font-title); font-size: 22px;
+}
+#adminwatch .aw-btns .aw-leave { padding: 0 20px; background: linear-gradient(180deg, #ffe86b, #ffb800); color: #2a1a00; font-size: 20px; letter-spacing: 1px; }
+#adminwatch .aw-btns .aw-chat { background: rgba(90, 174, 255, 0.35); }
+#adminwatch .aw-btns .aw-chat.hidden { display: none; }
+/* watching: no player bits (the death card, the warm-up chip), and no "turn your iPad sideways to
+   play" wall (watching works either way round, and the wall would hide ◀ ▶ LEAVE) */
+body.observing #elimscreen, body.observing #lobbypanel, body.observing #prompt, body.observing #mats, body.observing #rotate { display: none !important; }
+@media (max-width: 760px), (max-height: 520px) {
+  #adminwatch { bottom: calc(8px + var(--sab)); gap: 8px; padding: 6px 6px 6px 12px; }
+  #adminwatch .aw-name { font-size: 20px; }
+  #adminwatch .aw-sub { display: none; }
+}
+/* a phone held upright: ◀ ▶ 💬 LEAVE take the whole width, so 👁 SPECTATING and the name get a
+   row of their own above them (side by side, the name had no room left at all). The HUD's own 💬
+   steps aside while watching: the bar has one, and up there it sits under Philip's banner */
+@media (max-width: 520px) {
+  #adminwatch { flex-wrap: wrap; justify-content: center; row-gap: 4px; padding: 6px 8px; }
+  #adminwatch .aw-info { flex: 1 1 100%; }
+  #adminwatch .aw-top { justify-content: center; }
+  #adminwatch .aw-name { max-width: none; }
+  body.observing #chatbtn { display: none; }
+}

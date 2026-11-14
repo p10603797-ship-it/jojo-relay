@@ -1,0 +1,16 @@
+{
+  "name": "Phortnite",
+  "short_name": "Phortnite",
+  "description": "3D battle royale in your browser - build, loot and phight with friends on the same Wi-Fi.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#1a0f3d",
+  "theme_color": "#1a0f3d",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
