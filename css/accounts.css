@@ -1,0 +1,92 @@
+/* Player accounts (js/ui/accounts.js): the "Who's playing?" chooser, create / sign-in screens, the
+   STATS card and account management. iPad first — every tap target is at least 56 px, big friendly
+   type. It rides inside the shared modal card (style.css), so only the account-specific bits live
+   here. */
+
+/* a locked modal (the "Who's playing?" gate) can't be dismissed: hide the ✕, keep the backdrop. */
+#modal.locked .modal-x { display: none; }
+/* a phone (upright or sideways): Philip's news chip (js/ui/announce.js, above every modal) waits for the
+   lobby; on the account screens it sat over the name box and the "sent to the admin" note */
+@media (max-width: 760px), (max-height: 520px) { body:has(#modal:not(.hidden) .acc) #announce { visibility: hidden; } }
+
+.acc { font-family: system-ui, -apple-system, sans-serif; }
+.acc h2 { font-family: var(--font-title); font-weight: normal; }
+.acc-sub { opacity: 0.82; margin: 2px 0 14px; line-height: 1.45; }
+.acc-note { font-size: 13px; opacity: 0.6; margin: 10px 0 0; line-height: 1.4; }
+.acc-err { color: #ff8f8f; font-weight: 600; min-height: 20px; margin-top: 10px; }
+
+/* ---------------------------------------------------------- Who's playing? */
+.who-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.who-card {
+  appearance: none; border: 2px solid rgba(255, 255, 255, 0.14); cursor: pointer; color: #fff;
+  background: rgba(255, 255, 255, 0.06); border-radius: 14px; padding: 16px 12px 14px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; position: relative;
+  min-height: 150px; justify-content: center; transition: transform 0.08s, border-color 0.12s, background 0.12s;
+}
+.who-card:hover { border-color: var(--yellow); background: rgba(255, 255, 255, 0.1); }
+.who-card:active { transform: translateY(2px); }
+.who-ava { width: 62px; height: 62px; border-radius: 14px; display: block; }
+.who-plus { display: flex; align-items: center; justify-content: center; font-family: var(--font-title); font-size: 40px; color: var(--yellow); background: rgba(255, 210, 63, 0.14); }
+.who-name { font-family: var(--font-title); font-size: 20px; letter-spacing: 0.5px; text-align: center; line-height: 1.05; }
+.who-lv { font-size: 12px; opacity: 0.7; text-transform: uppercase; letter-spacing: 1px; }
+.who-lock { position: absolute; top: 8px; right: 10px; font-size: 18px; }
+.who-admin { font-family: var(--font-hud); font-size: 10px; background: var(--yellow); color: #2a1a00; border-radius: 4px; padding: 1px 5px; vertical-align: middle; }
+.who-new { border-style: dashed; }
+.acc-guest { width: 100%; text-align: center; min-height: 56px; }
+.acc-link {
+  appearance: none; border: 0; background: none; cursor: pointer; color: var(--yellow);
+  font-family: var(--font-hud); font-size: 15px; text-decoration: underline; padding: 12px 6px; margin-top: 4px; min-height: 48px;
+}
+
+/* ---------------------------------------------------------- create / locks */
+.acc-regnote { margin: 6px 0 0; opacity: 0.85; font-size: 14px; } /* "Your account name is sent to the admin…" */
+.acc-locks { margin: 14px 0 4px; padding: 12px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.05); }
+.acc-lockhead { font-family: var(--font-hud); margin-bottom: 8px; }
+.acc-lockhead small { opacity: 0.6; }
+.acc-opt { display: flex; align-items: center; gap: 12px; min-height: 56px; cursor: pointer; font-size: 18px; }
+.acc-opt input { width: 26px; height: 26px; accent-color: var(--yellow); }
+.acc-opt span { font-family: var(--font-hud); }
+.acc-pwrow { margin: 6px 0 4px; }
+.acc-pwrow input, .acc textarea { width: 100%; font-size: 20px !important; }
+.acc textarea { font-family: var(--font-hud); padding: 10px 14px; border-radius: 6px; border: 2px solid rgba(255, 255, 255, 0.25); background: rgba(0, 0, 0, 0.35); color: #fff; outline: none; resize: none; -webkit-user-select: text; user-select: text; }
+.acc textarea:focus { border-color: var(--yellow); }
+
+/* the danger button (DELETE) */
+.btn.danger { background: linear-gradient(180deg, #ff6b6b, #c22a2a); }
+
+/* a quick shake when a password / PIN is wrong */
+@keyframes acc-shake { 10%, 90% { transform: translateX(-2px); } 30%, 70% { transform: translateX(5px); } 50% { transform: translateX(-7px); } }
+.acc-shake { animation: acc-shake 0.4s; }
+
+/* ---------------------------------------------------------- STATS / panel */
+.acc-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.acc-badge { font-family: var(--font-hud); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.14); opacity: 0.85; }
+.acc-badge.saved { background: rgba(124, 242, 255, 0.18); }
+.acc-badge.admin { background: var(--yellow); color: #2a1a00; }
+.acc-levelline { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--font-hud); margin-top: 6px; }
+.acc-lvl { font-family: var(--font-title); font-size: 24px; color: var(--yellow); }
+.acc-xp { font-size: 13px; opacity: 0.75; }
+.acc-tiles { margin-top: 12px; }
+.acc-fav { text-align: center; margin: 12px 0 0; opacity: 0.9; }
+.acc-manage { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+.acc-manage .btn { min-height: 56px; text-align: center; font-size: 17px; }
+.acc-manage .btn.danger, .acc-manage .btn.yellow { grid-column: 1 / 3; }
+
+/* ---------------------------------------------------------- transfer code */
+.acc-code { margin-top: 14px; }
+.acc-codehead { font-size: 14px; opacity: 0.85; margin-bottom: 8px; line-height: 1.4; }
+.acc-codebox { font-family: var(--font-hud); font-size: 13px; word-break: break-all; background: rgba(0, 0, 0, 0.4); border: 2px solid rgba(255, 255, 255, 0.18); border-radius: 10px; padding: 12px; line-height: 1.5; -webkit-user-select: all; user-select: all; }
+.acc-btns { display: flex; gap: 10px; margin-top: 10px; }
+.acc-btns .btn { flex: 1; min-height: 52px; text-align: center; }
+.acc-qr { margin-top: 14px; text-align: center; }
+.acc-qr img { width: 220px; max-width: 70vw; height: auto; border-radius: 10px; background: #fff; padding: 8px; }
+.acc-qr.none { display: none; }
+
+@media (max-width: 760px), (max-height: 520px) {
+  .acc h2 { font-size: 26px; }
+  .who-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
+  .who-card { min-height: 128px; padding: 12px 8px; }
+  .who-ava { width: 50px; height: 50px; }
+  .who-name { font-size: 17px; }
+  .acc-manage .btn { font-size: 15px; }
+}
