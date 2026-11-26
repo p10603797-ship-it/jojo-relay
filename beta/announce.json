@@ -1,5 +1,5 @@
 {
-  "message": "New in 2.6: 67 new maps, 14 new modes (The Pit, Reload, Red vs Blue…), walk up stairs and hills without jumping, slide, climb ledges, and new characters!",
-  "id": "update-2.6.0",
-  "version": "2.6.0"
+  "message": "New in 2.7: anti-cheat! Cheats like speed hacks and teleporting get undone, so matches stay fair. Plus lots of fixes.",
+  "id": "update-2.7.0",
+  "version": "2.7.0"
 }

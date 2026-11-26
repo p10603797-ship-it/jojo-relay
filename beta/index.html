@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob: 'wasm-unsafe-eval' 'sha256-rTHltuC+WDi1olfykMIGBP6dQSs6PIQwkXGofCxu8dQ='; worker-src blob:; child-src blob:; frame-src 'none'; connect-src 'self' https://0.peerjs.com wss://0.peerjs.com wss://public.cloud.shiftr.io wss://broker.emqx.io:8084 wss://broker.hivemq.com:8884; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; manifest-src 'self'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -13,29 +14,17 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Russo+One&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css">
-  <link rel="stylesheet" href="css/lobby.css">
-  <link rel="stylesheet" href="css/modes.css">
-  <link rel="stylesheet" href="css/map.css">
-  <link rel="stylesheet" href="css/accounts.css">
-  <link rel="stylesheet" href="css/admin.css">
-  <link rel="stylesheet" href="css/chat.css">
-  <link rel="stylesheet" href="css/maps.css">
-  <!-- Libraries come from the jsDelivr CDN so the site works on any static host.
-       The bundled Node server (npm start) rewrites these to its own local copies. -->
-  <!-- import maps polyfill for older Safari / iPadOS (only kicks in when needed) -->
-  <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@2.8.4/dist/es-module-shims.js"></script>
-  <!-- the lock screen (tools/lock.mjs): the game is encrypted; lock.js opens it with a password -->
-  <script>(function (c) { var b = false, m; try { b = parseInt(localStorage.getItem('phortnite.ban'), 10) >= 3; } catch (e) {} try { m = /(?:^|;\s*)phortnite_ban=(\d+)/.exec(document.cookie); b = b || (!!m && +m[1] >= 3); } catch (e) {} if (b) c.add('ls-banned'); else try { if (typeof PublicKeyCredential === 'function' && localStorage.getItem('phortnite.face:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-faceid'); else if (localStorage.getItem('phortnite.pass:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-auto'); } catch (e) {} })(document.documentElement.classList);</script>
+  <link rel="stylesheet" href="css/fonts.css?h=ff189f23f6">
+  <link rel="stylesheet" href="css/style.css?h=1dd34b9e55">
+  <link rel="stylesheet" href="css/lobby.css?h=69f20ed074">
+  <link rel="stylesheet" href="css/modes.css?h=f092a12c6f">
+  <link rel="stylesheet" href="css/map.css?h=75a81525f9">
+  <link rel="stylesheet" href="css/accounts.css?h=714ffc0d67">
+  <link rel="stylesheet" href="css/admin.css?h=9fb33b4a13">
+  <link rel="stylesheet" href="css/chat.css?h=240adcf483">
+  <link rel="stylesheet" href="css/maps.css?h=f0375511d8">
+  <script>(function (c) { var b = false, m; try { b = parseInt(localStorage.getItem('phortnite.ban'), 10) >= 3; } catch (e) {} try { m = /(?:^|;\s*)phortnite_ban=(\d+)/.exec(document.cookie); b = b || (!!m && +m[1] >= 3); } catch (e) {} if (b) c.add('ls-banned'); else try { if (typeof PublicKeyCredential === 'function' && localStorage.getItem('phortnite.face:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-faceid'); else if (localStorage.getItem('phortnite.pass:' + location.pathname.replace(/[^/]*$/, '')) || sessionStorage.getItem('phortnite.carry:' + location.pathname.replace(/[^/]*$/, ''))) c.add('ls-auto'); } catch (e) {} })(document.documentElement.classList);</script>
   <style>
-    /* the lock screen (tools/lockscreen): over everything until lock.js has unlocked the game.
-       States (data-state on #lockscreen, set by lock.js): ask, wait (a remembered password), error
-       (TRY AGAIN), fatal (this browser can't unlock), banned, offer (Face ID next time?). Before
-       lock.js runs, the page's <head> sets html.ls-auto ("wait"), html.ls-banned ("banned") or
-       html.ls-faceid (Face ID is set up: its button, from the first frame). */
     #lockscreen {
       position: fixed; inset: 0; z-index: 200; overflow-y: auto; -webkit-overflow-scrolling: touch;
       display: flex; flex-direction: column; align-items: center;
@@ -44,7 +33,6 @@
       color: #fff; font-family: var(--font-hud); touch-action: pan-y; transition: opacity 0.35s;
     }
     #lockscreen.ls-gone { opacity: 0; pointer-events: none; }
-    /* the card sits high, so the iPad keyboard never covers the box and nothing has to move */
     .ls-wrap { width: min(440px, 100%); margin: clamp(8px, 7vh, 80px) 0 auto; display: flex; flex-direction: column; align-items: center; gap: clamp(16px, 3.4vh, 30px); }
     .ls-logo .logo-main { font-size: clamp(46px, 7.4vw, 92px); }
     .ls-card {
@@ -80,8 +68,6 @@
     #lockscreen[data-state="error"] .ls-field > :not(.ls-msg), #lockscreen[data-state="fatal"] .ls-field > :not(.ls-msg) { display: none; }
     #lockscreen[data-state="error"] .ls-retry { display: block; }
     #lockscreen[data-state="error"] .ls-ask, #lockscreen[data-state="fatal"] .ls-ask { display: none; }
-    /* banned: the ban message instead of the password box; "Philip: unban" (only when the build has an
-       unban code: data-unban) opens the unban box (.ls-unbanning) */
     .ls-t-ban, .ls-ban, .ls-unban, .ls-unban-open { display: none; }
     #lockscreen[data-state="banned"] .ls-t-lock, html.ls-banned #lockscreen:not([data-state]) .ls-t-lock { display: none; }
     #lockscreen[data-state="banned"] .ls-t-ban, html.ls-banned #lockscreen:not([data-state]) .ls-t-ban { display: inline; }
@@ -89,8 +75,6 @@
     #lockscreen[data-state="banned"] .ls-field, html.ls-banned #lockscreen:not([data-state]) .ls-field,
     #lockscreen[data-state="banned"] .ls-ask, html.ls-banned #lockscreen:not([data-state]) .ls-ask { display: none; }
     #lockscreen[data-state="banned"][data-unban]:not(.ls-unbanning) .ls-unban-open { display: block; }
-    /* closed (data-closed): "Closed for now" and Philip's message instead of "This game is locked";
-       no "Remember" box (the code isn't kept). A ban still shows as a ban. */
     .ls-t-closed, .ls-closed { display: none; }
     #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="offer"]) .ls-t-lock { display: none; }
     #lockscreen[data-closed]:not([data-state="banned"]):not([data-state="offer"]) .ls-t-closed { display: inline; }
@@ -98,20 +82,15 @@
     #lockscreen[data-closed] .ls-remember, #lockscreen[data-closed] .ls-ask { display: none; }
     .ls-closed { margin: 0 0 14px; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 17px; line-height: 1.4; }
     #lockscreen[data-state="banned"].ls-unbanning .ls-unban { display: flex; }
-    /* the code box (and its message) where the password box was: above the iPad keyboard */
     #lockscreen.ls-unbanning .ls-ban-text { display: none; }
     .ls-ban { flex-direction: column; gap: 14px; }
     .ls-ban-text { margin: 0; text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 18px; line-height: 1.4; }
     .ls-unban { flex-direction: column; gap: 14px; }
-    /* dots, not the code: a child looking over Philip's shoulder can't read it off the box */
     .ls-code { font-size: 28px; letter-spacing: 0.12em; text-indent: 0.12em; -webkit-text-security: disc; }
-    /* a 44 px tap target that looks as small as before (the negative margins take up the difference) */
     .ls-link {
       align-self: center; min-height: 44px; padding: 4px 12px; margin: -8px 0 -10px; border: 0; background: none; cursor: pointer;
       color: rgba(255, 255, 255, 0.45); font-family: system-ui, -apple-system, sans-serif; font-size: 13px; text-decoration: underline; touch-action: manipulation;
     }
-    /* Face ID set up on this device (data-face): the big button first, "or type a password", no
-       "Remember" (the face takes its place), and "Forget Face ID" at the bottom */
     .ls-face, .ls-face-forget, .ls-offer, .ls-t-face { display: none; }
     #lockscreen[data-face] .ls-face, html.ls-faceid #lockscreen:not([data-state]) .ls-face { display: flex; }
     #lockscreen[data-face] .ls-face-forget, html.ls-faceid #lockscreen:not([data-state]) .ls-face-forget { display: block; }
@@ -120,9 +99,7 @@
     .ls-face .ls-go { font-size: 26px; }
     .ls-or { text-align: center; font-family: system-ui, -apple-system, sans-serif; font-size: 15px; opacity: 0.75; }
     .ls-face-forget { margin-top: -10px; }
-    /* typing a password on a touch screen: the Face ID button steps aside (keyboard) */
     #lockscreen.ls-typing .ls-face, #lockscreen.ls-typing .ls-face-forget { display: none !important; }
-    /* the offer after the right password: its own title and buttons instead of the password box */
     #lockscreen[data-state="offer"] .ls-t-lock { display: none; }
     #lockscreen[data-state="offer"] .ls-t-face { display: inline; }
     #lockscreen[data-state="offer"] .ls-field, #lockscreen[data-state="offer"] .ls-ask { display: none; }
@@ -136,11 +113,8 @@
     .ls-card.ls-shake { animation: ls-shake 0.42s; }
     @keyframes ls-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-12px); } 40% { transform: translateX(10px); } 60% { transform: translateX(-7px); } 80% { transform: translateX(4px); } }
     @media (prefers-reduced-motion: reduce) { .ls-card.ls-shake { animation: none; } .ls-busy { animation-duration: 3s; } }
-    /* tall iPads (portrait): a little lower, still well above the keyboard */
     @media (orientation: portrait) and (min-height: 900px) { .ls-wrap { margin-top: 14vh; } }
-    /* iPads on their side: the keyboard takes the lower half, so the box and its message sit higher */
     @media (orientation: landscape) and (max-height: 900px) { .ls-wrap { margin-top: clamp(8px, 3vh, 40px); gap: 14px; } }
-    /* phones on their side: the logo beside the card */
     @media (max-height: 520px) and (orientation: landscape) {
       .ls-wrap { width: min(780px, 100%); flex-direction: row; justify-content: center; gap: 28px; margin: auto 0; }
       .ls-logo { flex: 1; } .ls-logo .logo-main { font-size: clamp(40px, 7vw, 64px); }
@@ -158,9 +132,7 @@
       .ls-face-no { font-size: 20px; }
     }
     @media (max-width: 380px) { .ls-input { font-size: 28px; letter-spacing: 0.16em; text-indent: 0.16em; } .ls-card { padding: 18px 14px 14px; } }
-    /* (after the rule above, which would otherwise widen the 10-character code past its box on phones) */
     @media (max-width: 420px) { .ls-code { font-size: min(24px, 6.5vw); letter-spacing: 0.06em; text-indent: 0.06em; } }
-    /* "UNLOCK WITH FACE ID" on one line on phones */
     @media (max-width: 480px) { .ls-face .ls-go { font-size: min(22px, 5vw); padding-left: 8px; padding-right: 8px; letter-spacing: 0.5px; } }
   </style>
 </head>
@@ -168,7 +140,6 @@
   <canvas id="game"></canvas>
   <div id="touch"></div>
 
-  <!-- ===================================================== HUD -->
   <div id="hud" class="hidden">
     <div id="stormtint"></div>
     <div id="hurt"></div>
@@ -180,7 +151,6 @@
     <div id="dmgnums"></div>
 
     <button id="menubtn" class="hudbtn" aria-label="Menu">☰</button>
-    <!-- party chat (js/ui/chat.js): the 💬 button and the small fading feed -->
     <button id="chatbtn" class="hudbtn" aria-label="Party chat">💬</button>
     <div id="chatfeed" aria-hidden="true"></div>
     <div id="netinfo"></div>
@@ -223,22 +193,16 @@
     <div id="progress"><div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg"/></svg></div><span></span></div>
     <div id="busprompt"></div>
 
-    <!-- the warm-up chip (js/ui/lobbyPanel.js) -->
     <div id="lobbypanel" class="panel"></div>
 
-    <!-- the death card / victory / match over (js/ui/endscreen.js) -->
     <div id="elimscreen" class="hidden"></div>
   </div>
 
   <div id="fullmap" class="hidden"><canvas width="900" height="900"></canvas><div class="fm-close">Tap / M to close</div></div>
 
-  <!-- ===================================================== LOBBY -->
-  <!-- the party lobby over the stage (js/ui/lobby.js builds it; js/lobby/stage.js adds the nameplates) -->
   <div id="lobby" class="hidden"></div>
-  <!-- the party chat drawer, lobby and matches (js/ui/chat.js) -->
   <div id="chat" class="hidden"></div>
   <div id="toasts"></div>
-  <!-- news from Philip (js/ui/announce.js, announce.json) -->
   <div id="announce" class="hidden" role="status"></div>
   <div id="netstatus" class="hidden"></div>
 
@@ -253,17 +217,13 @@
 
   <div id="rotate"><div>↻ Turn your iPad sideways to play</div><button class="btn yellow rot-lobby">↩ LOBBY</button></div>
 
-  <!-- ===================================================== LOCK SCREEN -->
-  <!-- tools/lock.mjs puts this in place of the game script; lock.js unlocks the encrypted game -->
   <div id="lockscreen" role="dialog" aria-modal="true" aria-labelledby="ls-title">
     <div class="ls-wrap">
       <div class="logo ls-logo"><div class="logo-main">PHORTNITE</div></div>
-      <form id="ls-card" class="ls-card" autocomplete="off" novalidate onsubmit="return false">
+      <form id="ls-card" class="ls-card" autocomplete="off" novalidate>
         <h1 id="ls-title" class="ls-title"><span class="ls-t-lock"><span aria-hidden="true">🔒</span> This game is locked</span><span class="ls-t-ban"><span aria-hidden="true">🚫</span> Banned</span><span class="ls-t-face"><span aria-hidden="true">🙂</span> Use Face ID next time?</span><span class="ls-t-closed"><span aria-hidden="true">🚧</span> Closed for now</span></h1>
-        <!-- the game is closed (lock.json "closed", lock.js: data-closed): only Philip's code opens it -->
         <p id="ls-closed" class="ls-closed"></p>
         <div class="ls-field">
-          <!-- Face ID set up on this device (lock.js: data-face): the face first, the password box still works -->
           <div class="ls-face">
             <button id="ls-face-go" class="btn yellow ls-go" type="button"><span aria-hidden="true">🙂</span> <span id="ls-face-label">UNLOCK WITH FACE ID</span></button>
             <div class="ls-or">or type a password</div>
@@ -271,20 +231,17 @@
           <input id="ls-pass" class="ls-input" type="text" aria-label="Password" placeholder="••••••••"
             autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off"
             inputmode="text" enterkeyhint="go" maxlength="12">
-          <!-- right under the box: in iPad landscape the keyboard covers everything below the button -->
           <div id="ls-msg" class="ls-msg" role="alert" aria-live="assertive"></div>
           <button id="ls-go" class="btn yellow ls-go" type="submit">UNLOCK</button>
           <label class="ls-remember"><input id="ls-remember" type="checkbox" checked> Remember on this device</label>
           <button id="ls-face-forget" class="ls-link ls-face-forget" type="button">Forget Face ID on this device</button>
         </div>
-        <!-- after the right password, once: Face ID next time? (lock.js: data-state="offer") -->
         <div class="ls-offer">
           <p id="ls-offer-text" class="ls-offer-text" aria-live="polite">Scan your face instead of typing the password. (Touch ID works too.)</p>
           <p class="ls-offer-note">Then this device forgets the password and asks for your face instead.</p>
           <button id="ls-face-on" class="btn yellow ls-go" type="button">TURN ON FACE ID</button>
           <button id="ls-face-no" class="btn ls-face-no" type="button">NOT NOW</button>
         </div>
-        <!-- 3 wrong passwords in a row ban this device (lock.js); Philip's unban code lifts it -->
         <div class="ls-ban">
           <p class="ls-ban-text">Too many wrong passwords. This device can’t open Phortnite any more.</p>
           <div class="ls-unban">
@@ -306,6 +263,6 @@
     </div>
     <noscript><p class="ls-msg">Turn on JavaScript to play Phortnite.</p></noscript>
   </div>
-  <script src="lock.js?h=4d76ffe25d"></script>
+  <script src="lock.js?h=aeb57fa2bb"></script>
 </body>
 </html>

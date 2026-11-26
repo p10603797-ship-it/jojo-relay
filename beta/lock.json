@@ -1,6 +1,13 @@
 {
  "v": 1,
- "version": "2.6.0",
+ "version": "2.7.0",
+ "build": "6d4f241a1c55",
+ "builds": [
+  {
+   "id": "6d4f241a1c55",
+   "version": "2.7.0"
+  }
+ ],
  "kdf": "PBKDF2-SHA256",
  "iter": 600000,
  "salt": "0UF3J2wETCCl4Znr8T56zg==",
@@ -57,19 +64,26 @@
   }
  ],
  "imports": {
-  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
-  "rapier": "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs"
+  "three": "./lib/three@0.186.1/three.module.js",
+  "rapier": "./lib/rapier3d-compat@0.21.0/rapier.mjs",
+  "https://cdn.jsdelivr.net/npm/peerjs@1.5.5/+esm": "./lib/peerjs@1.5.5/peerjs.mjs",
+  "https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm": "./lib/qrcode@1.5.4/qrcode.mjs",
+  "three/addons/": "./lib/three@0.186.1/addons/"
  },
+ "preload": [
+  "lib/three@0.186.1/three.module.js",
+  "lib/three@0.186.1/three.core.js",
+  "lib/rapier3d-compat@0.21.0/rapier.mjs"
+ ],
  "main": "js/main.js",
  "files": {
   "gz": {
    "path": "game.lock",
-   "iv": "SV0bdT2C9sDZhDVb"
+   "iv": "4TBH/+n4qk9c0meP"
   },
   "raw": {
    "path": "game.raw.lock",
-   "iv": "QqUh1ruwUyb6PFDb"
+   "iv": "5OIo2Bmfd7Yzro5n"
   }
  },
  "built": [
@@ -77,11 +91,13 @@
   "admin.json",
   "announce.json",
   "css",
+  "fonts",
   "game.lock",
   "game.raw.lock",
   "icons",
   "img",
   "index.html",
+  "lib",
   "lock.js",
   "lock.json",
   "manifest.webmanifest"

@@ -1,7 +1,4 @@
-/* Discover screen, mode creator and in-match mode HUD (js/ui/discover.js, js/ui/creator.js, js/game/modeViews.js).
-   iPad first: every tap target is at least 56 px; only transform / opacity animate. */
 
-/* ================================================================== Discover */
 .dv-sheet {
   position: fixed; inset: 0; z-index: 58; display: flex; flex-direction: column;
   background: radial-gradient(ellipse at 50% -10%, #4b2bb8 0%, #22125a 45%, #0b0820 100%);
@@ -36,7 +33,7 @@
 .dv-scroll {
   flex: 1; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain;
   padding: 4px 0 calc(24px + var(--sab));
-  will-change: scroll-position; /* composited scrolling: 15 -> 60 fps when scrolling the sheet (measured, 1180x820) */
+  will-change: scroll-position;
 }
 
 .dv-hero {
@@ -46,7 +43,7 @@
   box-shadow: 0 6px 0 rgba(0, 0, 0, 0.35);
 }
 .dv-hero::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.35)); pointer-events: none; }
-.dv-hero:active, .dv-tile:active { filter: brightness(0.8); } /* (darker, not smaller: see .mp-card:active) */
+.dv-hero:active, .dv-tile:active { filter: brightness(0.8); }
 .dv-hero-emoji { font-size: 110px; line-height: 1; flex: none; }
 .dv-hero-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; position: relative; z-index: 1; }
 .dv-hero-text small { font-size: 13px; letter-spacing: 2px; opacity: 0.9; }
@@ -79,12 +76,7 @@
 .dv-badges { position: absolute; left: 8px; top: 8px; display: flex; gap: 4px; flex-wrap: wrap; max-width: 120px; }
 .dv-badges b { font-size: 12px; font-weight: normal; letter-spacing: 0.5px; padding: 3px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.45); line-height: 1; }
 .dv-badges b.new { background: var(--yellow); color: #2a1a00; }
-/* a mode's picture (js/ui/pictures.js: a lazy <img class="pic-img"> over the gradient). Once it is in,
-   the tile's own name and emoji step aside: the picture has the title lettered in */
 .dv-tile.pic-on .dv-name, .dv-tile.pic-on .dv-emoji { opacity: 0; }
-/* the hero with its picture: the whole row wide, the picture (16:9, the hero's height) at its left
-   end and the text beside it, never over it. The picture has the title lettered in, so the hero's
-   own title steps aside; its emoji goes to the far end when there is room */
 .dv-hero.pic {
   --hh: clamp(180px, 17.5vw, 240px); max-width: none; height: var(--hh); padding-left: calc(var(--hh) * 16 / 9 + 22px);
   background: var(--pic) left center / auto 100% no-repeat, linear-gradient(120deg, var(--c1), var(--c2));
@@ -96,7 +88,6 @@
 .dv-hero.pic .dv-hero-desc { font-size: clamp(15px, 1.4vw, 19px); max-width: 620px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .dv-hero.pic .dv-hero-emoji { order: 2; }
 @media (max-width: 999px) { .dv-hero.pic .dv-hero-emoji { display: none; } }
-/* the detail sheet's banner: the whole picture, the card's width (narrower and centred on a low screen) */
 .dv-dpic {
   position: relative; width: min(100%, calc(46vh * 16 / 9)); aspect-ratio: 16 / 9; margin: 0 auto 12px; border-radius: 14px; overflow: hidden;
   background: linear-gradient(140deg, var(--c1), var(--c2));
@@ -116,7 +107,6 @@
 .dv-grid { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px calc(16px + var(--sar)) 12px calc(16px + var(--sal)); }
 .dv-none { margin: 10px 18px; opacity: 0.75; font-family: system-ui, sans-serif; }
 
-/* detail + code sheets */
 .dv-detail, .dv-codesheet {
   position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; padding: 16px;
   background: rgba(5, 3, 20, 0.66); animation: dv-fade 0.14s ease-out;
@@ -163,7 +153,6 @@
 .dv-codeprev { min-height: 48px; font-family: system-ui, sans-serif; font-size: 15px; line-height: 1.6; }
 .dv-codeprev b { color: var(--yellow); }
 
-/* ================================================================== Creator */
 .mc-sheet {
   position: fixed; inset: 0; z-index: 59; display: flex; flex-direction: column; color: #fff; font-family: var(--font-hud);
   background: linear-gradient(180deg, #24156b, #0f0a33); pointer-events: auto; animation: dv-in 0.18s ease-out;
@@ -201,8 +190,6 @@
 .mc-where { display: flex; flex-direction: column; }
 .mc-mapwrap { position: relative; width: min(380px, 100%, 52vh); aspect-ratio: 1; margin: 0 0 12px; border-radius: 12px; overflow: hidden; border: 3px solid rgba(255, 255, 255, 0.8); }
 .mc-map { display: block; width: 100%; height: 100%; }
-/* taps on the map pick the nearest place (creator.js pickOnMap): 26 places are closer than a
-   finger, so the 48 px dot buttons don't take pointer input themselves (keyboard / gamepad still do) */
 .mc-dots { position: absolute; inset: 0; cursor: pointer; touch-action: manipulation; }
 .mc-dot {
   position: absolute; width: 48px; height: 48px; margin: -24px 0 0 -24px; padding: 0; border: 0; background: none; cursor: pointer;
@@ -227,7 +214,6 @@
 .mc-codehint { font-family: system-ui, sans-serif; font-size: 15px; opacity: 0.85; }
 .mc-coderow { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
-/* phones in landscape */
 @media (max-height: 460px) {
   .dv-top { padding-top: calc(6px + var(--sat)); padding-bottom: 4px; }
   .dv-title { font-size: 24px; }
@@ -260,12 +246,10 @@
 }
 @media (max-width: 600px) {
   .dv-title { display: none; }
-  /* portrait phones: the hero fits (its title and text no longer run off the side) */
   .dv-hero { height: auto; min-height: 132px; padding: 12px 16px; gap: 12px; }
   .dv-hero-emoji { font-size: 64px; }
   .dv-hero-text > b { font-size: 28px; }
   .dv-hero-desc { font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-  /* (no room beside the picture: the gradient, emoji and title) */
   .dv-hero.pic { height: auto; padding-left: 16px; background: linear-gradient(120deg, var(--c1), var(--c2)); }
   .dv-hero.pic::after { left: 0; background: linear-gradient(90deg, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.35)); }
   .dv-hero.pic .dv-hero-emoji, .dv-hero.pic .dv-hero-text > b { display: block; order: 0; }
@@ -273,13 +257,10 @@
   .dv-hero.pic .dv-hero-desc { font-size: 13px; -webkit-line-clamp: 3; }
 }
 
-/* ================================================================== In-match mode HUD (js/game/modeViews.js) */
-/* what a mode does not have */
 body.mode-nobuild #buildbar, body.mode-nobuild #mats, body.mode-nobuild .tb-build, body.mode-nobuild .tbtn.bonly,
 body.mode-nobuild .tb-wall, body.mode-nobuild .tb-floor, body.mode-nobuild .tb-ramp, body.mode-nobuild .tb-cone,
 body.mode-nobuild .tb-edit, body.mode-nobuild .tb-mat, body.mode-nobuild [data-build-only] { display: none !important; }
 body.mode-nostorm #st-storm { display: none; }
-/* while the respawn countdown runs, it replaces the elimination screen */
 body.respawning #elimscreen { display: none; }
 
 #modehud { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; width: min(250px, 32vw); pointer-events: none; text-shadow: 0 1px 0 #000; }
@@ -323,7 +304,6 @@ body.respawning #elimscreen { display: none; }
 .mh-line.danger { background: rgba(230, 60, 15, 0.85); animation: mh-pulse 0.7s ease-in-out infinite alternate; }
 @keyframes mh-pulse { to { transform: scale(1.05); } }
 
-/* teammates, top left under the menu button */
 .mh-mates { position: absolute; left: calc(10px + var(--sal)); top: calc(64px + var(--sat)); width: 176px; display: flex; flex-direction: column; gap: 4px; pointer-events: none; }
 .mh-mates.hidden { display: none; }
 .mh-mate { position: relative; height: 28px; padding: 3px 8px 0; background: rgba(0, 0, 0, 0.5); border-left: 4px solid var(--tc); border-radius: 3px; font-size: 12px; text-shadow: 0 1px 0 #000; }
@@ -336,7 +316,6 @@ body.respawning #elimscreen { display: none; }
 .mh-mate.dead span::after { content: ' ✖'; color: #ff6b6b; }
 .mh-more { font-size: 11px; opacity: 0.8; padding-left: 4px; }
 
-/* respawn countdown */
 .mh-respawn { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
 .mh-respawn.hidden { display: none; }
 .mh-rring { position: relative; width: 116px; height: 116px; }
@@ -348,7 +327,6 @@ body.respawning #elimscreen { display: none; }
 .mh-rtext { font-family: var(--font-title); font-size: 30px; letter-spacing: 2px; text-shadow: 0 3px 0 #3a1b8a, 0 6px 14px rgba(0, 0, 0, 0.6); }
 .mh-rsub { font-size: 16px; opacity: 0.9; text-shadow: 0 1px 2px #000; }
 
-/* off-screen hill arrow */
 .mh-arrow { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
 .mh-arrow.hidden { display: none; }
 .mh-arrow i { position: absolute; left: -18px; top: -20px; width: 36px; height: 40px; font-style: normal; font-size: 34px; line-height: 40px; text-align: center; color: var(--yellow); text-shadow: 0 0 4px #000, 0 2px 0 #6a3a00; }
@@ -369,7 +347,6 @@ body.respawning #elimscreen { display: none; }
   .mh-rtext { font-size: 22px; }
 }
 
-/* Hide & Seek: a seeker's head start */
 .mh-blind { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: rgba(5, 3, 18, 0.94); pointer-events: none; }
 .mh-blind.hidden { display: none; }
 .mh-blind div { font-size: 90px; line-height: 1; }
@@ -377,8 +354,6 @@ body.respawning #elimscreen { display: none; }
 .mh-blind span { font-size: 18px; opacity: 0.9; }
 .mh-line.seeker { background: rgba(255, 140, 20, 0.8); }
 
-/* touch (iPad): the right column belongs to the touch controls, so the mode HUD is a compact
-   strip at the top centre, like Fortnite's scoreboard (at most two rows) */
 body.touch #modehud {
   position: fixed; top: calc(8px + var(--sat)); left: 50%; transform: translateX(-50%);
   width: min(560px, 56vw); flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: stretch; gap: 4px;
@@ -397,26 +372,20 @@ body.touch #modehud > .mh-line.on { display: block; width: auto; max-width: 100%
   body.touch .mh-top li span { max-width: 64px; }
 }
 
-/* phones (touch): the notice goes under the two-row mode strip, and the kill feed under the
-   teammates panel (two lines) so nothing overlaps (tools/layout-sweep.mjs, mode state) */
 @media (max-height: 460px) {
   body.touch #notice { font-size: 18px; }
   body.touch.mode-score #notice { top: max(calc(76px + var(--sat)), calc(var(--announce-bottom, 0px) + 6px)); }
   body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed { top: calc(144px + var(--sat)); }
   body.touch #hud:has(.mh-mates:not(.hidden)) #killfeed .kf:nth-last-child(n+3) { display: none; }
-  /* 667 x 375 (iPhone SE / 8): the strip clears the minimap and the emote button on both sides
-     (344 = 2 x (10 + minimap + 10 + emote 52)), the clock and bar stay on one row */
   body.touch #modehud { width: min(460px, 52vw, calc(100vw - 344px - 2 * var(--sar))); }
   body.touch .mh-bar { width: min(320px, calc(100% - 64px)); }
   body.touch #hud:has(.mh-mates:not(.hidden) .mh-more) #killfeed { top: calc(160px + var(--sat)); }
 }
 @media (max-height: 460px) and (max-width: 700px) {
-  /* narrower, so it clears the teammates panel; under the strip even when it takes three rows */
   body.touch #notice { font-size: 14px; }
   body.touch.mode-score #notice { top: max(calc(100px + var(--sat)), calc(var(--announce-bottom, 0px) + 6px)); }
 }
 
-/* portrait iPads / phones: the creator's 8 tabs wrap onto two rows (a scrolled strip cut BOTS off) */
 @media (orientation: portrait) {
   .mc-tabs { flex-wrap: wrap; overflow-x: visible; touch-action: auto; }
   .mc-tab { min-height: 48px; padding: 0 12px; font-size: 16px; }
