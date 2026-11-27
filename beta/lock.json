@@ -1,10 +1,14 @@
 {
  "v": 1,
  "version": "2.7.0",
- "build": "6d4f241a1c55",
+ "build": "f75a649820ae",
  "builds": [
   {
    "id": "6d4f241a1c55",
+   "version": "2.7.0"
+  },
+  {
+   "id": "f75a649820ae",
    "version": "2.7.0"
   }
  ],
@@ -79,11 +83,11 @@
  "files": {
   "gz": {
    "path": "game.lock",
-   "iv": "4TBH/+n4qk9c0meP"
+   "iv": "zEUob2gT+sgolUU/"
   },
   "raw": {
    "path": "game.raw.lock",
-   "iv": "5OIo2Bmfd7Yzro5n"
+   "iv": "W0BIB9ZSdIRGb0oM"
   }
  },
  "built": [
